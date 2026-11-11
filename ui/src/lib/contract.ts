@@ -10,6 +10,7 @@ export const automationContract = {
     "about.journalVersion": "about.journalVersion",
     "about.version": "about.version",
     "about.window.root": "about.window.root",
+    "settings.deck": "settings.deck",
     "settings.exclusions.activity": "settings.exclusions.activity",
     "settings.exclusions.appAdd": "settings.exclusions.appAdd",
     "settings.exclusions.appInput": "settings.exclusions.appInput",
@@ -112,6 +113,7 @@ export const automationContract = {
     "settings.updates.state": "settings.updates.state",
     "settings.window.root": "settings.window.root",
     "tray.menu.about": "tray.menu.about",
+    "tray.menu.attention": "tray.menu.attention",
     "tray.menu.browsers": "tray.menu.browsers",
     "tray.menu.getHelp": "tray.menu.getHelp",
     "tray.menu.openJournal": "tray.menu.openJournal",
@@ -125,6 +127,7 @@ export const automationContract = {
     "tray.menu.reportProblem": "tray.menu.reportProblem",
     "tray.menu.restartObserving": "tray.menu.restartObserving",
     "tray.menu.resume": "tray.menu.resume",
+    "tray.menu.status": "tray.menu.status",
     "tray.root": "tray.root"
   },
   "endpoints": {

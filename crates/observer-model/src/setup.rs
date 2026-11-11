@@ -174,6 +174,10 @@ pub struct SetupConfig {
     pub desktop_activity_window_titles: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub desktop_activity_page_addresses: Option<bool>,
+    /// The owner's computer-sound choice, remembered while the audio tile is off.
+    /// Absent until the owner changes an audio control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_audio_wanted: Option<bool>,
 }
 
 impl SetupConfig {
@@ -190,6 +194,7 @@ impl SetupConfig {
             desktop_activity_through_pause: None,
             desktop_activity_window_titles: None,
             desktop_activity_page_addresses: None,
+            system_audio_wanted: None,
         }
     }
 
@@ -206,6 +211,7 @@ impl SetupConfig {
             desktop_activity_through_pause: None,
             desktop_activity_window_titles: None,
             desktop_activity_page_addresses: None,
+            system_audio_wanted: None,
         }
     }
 
@@ -222,6 +228,7 @@ impl SetupConfig {
             desktop_activity_through_pause: None,
             desktop_activity_window_titles: None,
             desktop_activity_page_addresses: None,
+            system_audio_wanted: None,
         }
     }
 
@@ -303,7 +310,19 @@ impl SetupConfig {
             native_handoff_rejected: false,
             handoff_persist_failed: false,
             has_deferred_link: false,
+            system_audio_wanted: self.system_audio_wanted,
         }
+    }
+}
+
+/// Computer sound to restore when the audio tile turns on.
+/// A stored choice wins. With none, a microphone that is on keeps today's
+/// computer-sound value, and every other missing case is on.
+pub fn derived_system_audio_wanted(mic: bool, system_audio: bool, stored: Option<bool>) -> bool {
+    match stored {
+        Some(value) => value,
+        None if mic => system_audio,
+        None => true,
     }
 }
 
@@ -375,6 +394,9 @@ pub struct SetupSnapshot {
     pub handoff_persist_failed: bool,
     #[serde(default)]
     pub has_deferred_link: bool,
+    /// Stored computer-sound choice. Absent until the owner changes an audio control.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_audio_wanted: Option<bool>,
     /// The saved choices behind the desktop activity values above. Seeding
     /// from this keeps an unset choice unset, so a later save never writes a
     /// default.
@@ -428,6 +450,7 @@ impl Default for SetupSnapshot {
             native_handoff_rejected: false,
             handoff_persist_failed: false,
             has_deferred_link: false,
+            system_audio_wanted: None,
             desktop_activity_choices: DesktopActivityChoices::default(),
         }
     }
@@ -740,6 +763,7 @@ impl SetupAuthority {
     pub fn seed(&mut self, snapshot: &SetupSnapshot) {
         self.durable.mic = snapshot.mic;
         self.durable.system_audio = snapshot.system_audio;
+        self.durable.system_audio_wanted = snapshot.system_audio_wanted;
         self.durable.screen = snapshot.screen;
         self.durable
             .set_desktop_activity_choices(snapshot.desktop_activity_choices);
@@ -809,7 +833,59 @@ impl SetupAuthority {
             native_handoff_rejected: self.overlay.native_handoff_rejected,
             handoff_persist_failed: self.overlay.handoff_persist_failed,
             has_deferred_link: self.overlay.has_deferred_link,
+            system_audio_wanted: self.durable.system_audio_wanted,
             desktop_activity_choices: self.durable.desktop_activity_choices(),
+        }
+    }
+
+    /// Turn the audio tile on or off in one save.
+    /// Running bits stay as they are until that rename succeeds.
+    pub fn set_audio_tile(&mut self, on: bool) -> bool {
+        let mut candidate = self.candidate_with_pending_off();
+        // A failed off has not landed in the file. The remembered choice follows
+        // the last saved keys, not that unsaved off.
+        if candidate.system_audio_wanted.is_none() {
+            candidate.system_audio_wanted = Some(derived_system_audio_wanted(
+                self.durable.mic,
+                self.durable.system_audio,
+                None,
+            ));
+        }
+        let wanted = candidate.system_audio_wanted.unwrap_or(true);
+        if on {
+            candidate.mic = true;
+            candidate.system_audio = wanted;
+        } else {
+            candidate.mic = false;
+            candidate.system_audio = false;
+        }
+        self.persist_audio_live(candidate)
+    }
+
+    /// Remember computer sound. The live key changes only while the tile is on.
+    pub fn set_computer_sound(&mut self, wanted: bool) -> bool {
+        let mut candidate = self.candidate_with_pending_off();
+        let tile_on = self.durable.mic || self.durable.system_audio;
+        candidate.system_audio_wanted = Some(wanted);
+        if tile_on {
+            candidate.system_audio = wanted;
+        }
+        self.persist_audio_live(candidate)
+    }
+
+    fn persist_audio_live(&mut self, candidate: SetupConfig) -> bool {
+        let mic = candidate.mic;
+        let system_audio = candidate.system_audio;
+        if self.persist(candidate) {
+            self.set_running(SourceKind::Mic, mic);
+            self.set_running(SourceKind::SystemAudio, system_audio);
+            self.remove_failed_source(SourceKind::Mic);
+            self.remove_failed_source(SourceKind::SystemAudio);
+            true
+        } else {
+            self.record_failed_source(SourceKind::Mic, mic);
+            self.record_failed_source(SourceKind::SystemAudio, system_audio);
+            false
         }
     }
 
@@ -2303,6 +2379,174 @@ mod tests {
 
             let _ = fs::remove_dir_all(&root);
         }
+    }
+
+    fn write_audio(root: &std::path::Path, mic: bool, system_audio: bool) -> Vec<u8> {
+        let mut config = SetupConfig::fresh();
+        config.mic = mic;
+        config.system_audio = system_audio;
+        config.screen = true;
+        config.wizard = WizardStep::Done;
+        atomic_write_setup(root, &config).unwrap();
+        fs::read(root.join(SETUP_FILE_NAME)).unwrap()
+    }
+
+    fn authority_on(root: &std::path::Path) -> SetupAuthority {
+        let saved = parse_setup(&fs::read(root.join(SETUP_FILE_NAME)).unwrap()).unwrap();
+        let mut auth = SetupAuthority::new();
+        auth.set_root(root.to_path_buf());
+        auth.seed(&saved.config.to_snapshot());
+        auth
+    }
+
+    fn read_setup_value(root: &std::path::Path) -> serde_json::Value {
+        serde_json::from_slice(&fs::read(root.join(SETUP_FILE_NAME)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn missing_computer_sound_bit_is_derived_and_not_written() {
+        let root = temp_test_dir("audio-derived");
+        let before = write_audio(&root, true, false);
+        let _ = load_or_classify(&root);
+        assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), before);
+        let auth = authority_on(&root);
+        assert!(!derived_system_audio_wanted(true, false, None));
+        assert!(auth.projection().system_audio_wanted.is_none());
+        let _ = auth.projection();
+        assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), before);
+
+        let sound_only = temp_test_dir("audio-sound-only");
+        let sound_before = write_audio(&sound_only, false, true);
+        let sound = authority_on(&sound_only);
+        assert!(derived_system_audio_wanted(false, true, None));
+        assert!(sound.projection().system_audio);
+        assert_eq!(
+            fs::read(sound_only.join(SETUP_FILE_NAME)).unwrap(),
+            sound_before
+        );
+
+        let both_off = temp_test_dir("audio-both-off");
+        let off_before = write_audio(&both_off, false, false);
+        let off = authority_on(&both_off);
+        assert!(derived_system_audio_wanted(false, false, None));
+        assert!(off.projection().system_audio_wanted.is_none());
+        assert_eq!(
+            fs::read(both_off.join(SETUP_FILE_NAME)).unwrap(),
+            off_before
+        );
+
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&sound_only);
+        let _ = fs::remove_dir_all(&both_off);
+    }
+
+    #[test]
+    fn audio_tile_off_then_on_keeps_computer_sound_off_in_one_save() {
+        let root = temp_test_dir("audio-off-on");
+        write_audio(&root, true, false);
+        let mut auth = authority_on(&root);
+        assert!(auth.set_audio_tile(false));
+        assert!(auth.set_audio_tile(true));
+        let value = read_setup_value(&root);
+        assert_eq!(value["mic"], true);
+        assert_eq!(value["system_audio"], false);
+        assert_eq!(value["system_audio_wanted"], false);
+        assert!(auth.running_mic);
+        assert!(!auth.running_system_audio);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stored_computer_sound_off_wins_when_the_tile_turns_on() {
+        let root = temp_test_dir("audio-stored-off");
+        let mut config = SetupConfig::fresh();
+        config.wizard = WizardStep::Done;
+        config.system_audio_wanted = Some(false);
+        atomic_write_setup(&root, &config).unwrap();
+        let mut auth = authority_on(&root);
+        assert!(auth.set_audio_tile(true));
+        let value = read_setup_value(&root);
+        assert_eq!(value["mic"], true);
+        assert_eq!(value["system_audio"], false);
+        assert_eq!(value["system_audio_wanted"], false);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn computer_sound_switch_follows_whether_the_tile_is_on() {
+        let on_root = temp_test_dir("audio-sub-on");
+        write_audio(&on_root, true, false);
+        let mut on = authority_on(&on_root);
+        assert!(on.set_computer_sound(true));
+        let on_value = read_setup_value(&on_root);
+        assert_eq!(on_value["mic"], true);
+        assert_eq!(on_value["system_audio"], true);
+        assert_eq!(on_value["system_audio_wanted"], true);
+        assert!(on.running_system_audio);
+
+        let off_root = temp_test_dir("audio-sub-off");
+        write_audio(&off_root, false, false);
+        let mut off = authority_on(&off_root);
+        assert!(off.set_computer_sound(false));
+        let off_value = read_setup_value(&off_root);
+        assert_eq!(off_value["mic"], false);
+        assert_eq!(off_value["system_audio"], false);
+        assert_eq!(off_value["system_audio_wanted"], false);
+        assert!(!off.running_system_audio);
+        let _ = fs::remove_dir_all(&on_root);
+        let _ = fs::remove_dir_all(&off_root);
+    }
+
+    #[test]
+    fn a_failed_microphone_off_does_not_flip_the_remembered_computer_sound() {
+        let root = temp_test_dir("audio-pending-off");
+        write_audio(&root, true, false);
+        let mut auth = authority_on(&root);
+        fs::create_dir(root.join("setup.json.tmp")).unwrap();
+        auth.set_source(SourceKind::Mic, false);
+        fs::remove_dir(root.join("setup.json.tmp")).unwrap();
+        assert!(auth.set_audio_tile(false));
+        let value = read_setup_value(&root);
+        assert_eq!(value["system_audio_wanted"], false);
+        assert_eq!(value["mic"], false);
+        assert_eq!(value["system_audio"], false);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn failed_audio_rename_leaves_both_keys_and_both_running_bits() {
+        let root = temp_test_dir("audio-rename-fail");
+        let before = write_audio(&root, true, true);
+        let mut auth = authority_on(&root);
+        assert!(auth.running_mic);
+        assert!(auth.running_system_audio);
+        fs::create_dir(root.join("setup.json.tmp")).unwrap();
+        assert!(!auth.set_audio_tile(false));
+        assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), before);
+        assert!(auth.running_mic);
+        assert!(auth.running_system_audio);
+        fs::remove_dir(root.join("setup.json.tmp")).unwrap();
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn screen_save_does_not_add_the_computer_sound_bit_or_change_bytes() {
+        let root = temp_test_dir("audio-screen-quiet");
+        let before = write_audio(&root, true, false);
+        let _ = load_or_classify(&root);
+        assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), before);
+        let mut auth = authority_on(&root);
+        let _ = auth.projection();
+        assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), before);
+        assert!(auth.set_source(SourceKind::Screen, true));
+        assert_eq!(fs::read(root.join(SETUP_FILE_NAME)).unwrap(), before);
+        auth.set_source(SourceKind::Screen, false);
+        let value = read_setup_value(&root);
+        assert!(value.get("system_audio_wanted").is_none());
+        assert_eq!(value["screen"], false);
+        assert_eq!(value["mic"], true);
+        assert_eq!(value["system_audio"], false);
+        let _ = fs::remove_dir_all(&root);
     }
 }
 

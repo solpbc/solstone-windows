@@ -52,6 +52,22 @@ pub fn quit(app: tauri::AppHandle) {
     crate::lifecycle::quit(&app);
 }
 
+/// Read the counter file for the settings window.
+///
+/// This does not create the file, does not open a backup, and does not add the
+/// document to health. No file, a backup alone, an unreadable file, and a
+/// failed read are all no rows.
+#[tauri::command]
+pub fn get_source_counters() -> Option<source_counters::WindowCounterPayload> {
+    match source_counters::read_window_counters(&platform_win::local_data_root()) {
+        Ok(read) => source_counters::window_payload(&read),
+        Err(error) => {
+            tracing::warn!(target: "storage", %error, "counter window read failed");
+            None
+        }
+    }
+}
+
 /// Return the current honest health snapshot (same payload as `--dump-state`
 /// and `/healthz`).
 #[tauri::command]
@@ -64,20 +80,55 @@ pub fn get_health(state: tauri::State<'_, crate::app::AppState>) -> Result<Healt
 }
 
 /// Where the owner's gathered media lives on this PC, for the Status surface.
-/// `bytes` is best-effort and currently always `None` — segments_dir holds
-/// per-segment SUBDIRECTORIES, so a shallow read_dir sum is meaningless and a
-/// deep walk is refused; the UI renders a size only when it is `Some`.
+/// `bytes` is a capped walk of the segments directory. Zero is an empty or
+/// missing directory, which the pane reads as nothing yet.
+const KEPT_WALK_CAP: u32 = 10_000;
+
 #[derive(serde::Serialize)]
 pub struct StorageInfo {
     root: String,
     bytes: Option<u64>,
 }
 
+fn kept_bytes(root: &std::path::Path) -> u64 {
+    let mut bytes = 0u64;
+    let mut seen = 0u32;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            seen = seen.saturating_add(1);
+            if seen > KEPT_WALK_CAP {
+                return bytes;
+            }
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_symlink() {
+                continue;
+            }
+            if kind.is_dir() {
+                stack.push(entry.path());
+                continue;
+            }
+            if kind.is_file() {
+                if let Ok(meta) = entry.metadata() {
+                    bytes = bytes.saturating_add(meta.len());
+                }
+            }
+        }
+    }
+    bytes
+}
+
 #[tauri::command]
 pub fn storage_info() -> StorageInfo {
+    let root = platform_win::segments_dir();
     StorageInfo {
-        root: platform_win::segments_dir().to_string_lossy().into_owned(),
-        bytes: None,
+        bytes: Some(kept_bytes(&root)),
+        root: root.to_string_lossy().into_owned(),
     }
 }
 
@@ -138,6 +189,15 @@ pub fn open_microphone_privacy_settings(app: tauri::AppHandle) -> Result<(), Str
     use tauri_plugin_opener::OpenerExt;
     app.opener()
         .open_url("ms-settings:privacy-microphone", None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// Open the Windows sound page. A missing microphone or output is turned on there.
+#[tauri::command]
+pub fn open_sound_settings(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url("ms-settings:sound", None::<&str>)
         .map_err(|e| e.to_string())
 }
 
@@ -893,6 +953,100 @@ fn require_setup_sequence() -> Result<(), String> {
     } else {
         Err("setup sequence is unavailable in this build".into())
     }
+}
+
+/// The page reports the sun-arc color at the top edge. The caption follows it.
+#[tauri::command]
+pub fn set_caption_color(window: tauri::WebviewWindow, red: u8, green: u8, blue: u8) {
+    crate::windows::paint_caption_rgb(&window, red, green, blue);
+}
+
+/// Turn the audio tile on or off in one save.
+#[tauri::command]
+pub fn set_audio_tile(
+    state: tauri::State<'_, crate::app::AppState>,
+    on: bool,
+) -> Result<(), String> {
+    require_setup_sequence()?;
+    let (saved, mic, system_audio) = {
+        let mut auth = state
+            .setup
+            .lock()
+            .map_err(|_| "failed to acquire setup lock")?;
+        let saved = auth.set_audio_tile(on);
+        let projection = auth.projection();
+        (saved, projection.mic, projection.system_audio)
+    };
+    if saved {
+        let _ = state.commands.send(EngineCommand::SetSourceEnabled {
+            kind: observer_model::SourceKind::Mic,
+            enabled: mic,
+        });
+        let _ = state.commands.send(EngineCommand::SetSourceEnabled {
+            kind: observer_model::SourceKind::SystemAudio,
+            enabled: system_audio,
+        });
+    }
+    publish_setup(&state);
+    if !saved {
+        return Err("failed to save audio".to_string());
+    }
+    Ok(())
+}
+
+/// Remember computer sound. The live key changes only while the tile is on.
+#[tauri::command]
+pub fn set_computer_sound(
+    state: tauri::State<'_, crate::app::AppState>,
+    wanted: bool,
+) -> Result<(), String> {
+    require_setup_sequence()?;
+    let (saved, system_audio) = {
+        let mut auth = state
+            .setup
+            .lock()
+            .map_err(|_| "failed to acquire setup lock")?;
+        let saved = auth.set_computer_sound(wanted);
+        let projection = auth.projection();
+        (saved, projection.system_audio)
+    };
+    if saved {
+        let _ = state.commands.send(EngineCommand::SetSourceEnabled {
+            kind: observer_model::SourceKind::SystemAudio,
+            enabled: system_audio,
+        });
+    }
+    publish_setup(&state);
+    if !saved {
+        return Err("failed to save computer sound".to_string());
+    }
+    Ok(())
+}
+
+/// Open the help page in the owner's browser. The address is fixed here.
+#[tauri::command]
+pub fn open_help(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(crate::support::HELP_URL, None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// Open the support report for this PC. The address is built here, not passed in.
+#[tauri::command]
+pub fn open_support_report(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::app::AppState>,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dump = state
+        .health
+        .lock()
+        .map(|health| health.clone())
+        .map_err(|_| "health mutex poisoned".to_string())?;
+    app.opener()
+        .open_url(crate::support::report_url(&dump), None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 /// Enable or disable a single capture source.

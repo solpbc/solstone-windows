@@ -239,6 +239,18 @@ pub fn status() -> Option<serde_json::Value> {
     handle().and_then(|h| serde_json::to_value(h.document()).ok())
 }
 
+/// The vault source's own needs-attention state, for the one tray row.
+pub fn needs_attention() -> bool {
+    status()
+        .and_then(|value| {
+            value
+                .pointer("/status/state")
+                .and_then(|state| state.as_str())
+                .map(|state| state == "needs_attention")
+        })
+        .unwrap_or(false)
+}
+
 pub fn found() -> Vec<FoundVault> {
     found_vaults()
 }

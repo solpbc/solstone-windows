@@ -18,7 +18,6 @@ use observer_log::{
     classify_journal_open_failure, strip_cap, usable_failure_reason, UsableFailureReason,
 };
 use tauri::webview::{PageLoadEvent, ScrollBarStyle};
-use tauri::window::{Effect, EffectsBuilder};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tokio::sync::{oneshot, Notify};
 
@@ -38,8 +37,81 @@ fn shared_webview_environment(
         .scroll_bar_style(ScrollBarStyle::FluentOverlay)
 }
 
-fn mica_effects() -> tauri::utils::config::WindowEffectsConfig {
-    EffectsBuilder::new().effect(Effect::Mica).build()
+fn caption_is_dark(window: &WebviewWindow) -> bool {
+    matches!(window.theme(), Ok(tauri::Theme::Dark))
+}
+
+/// Day ground, used only until the page reports the sun-arc frame.
+fn caption_stand_in(dark: bool) -> (u8, u8, u8) {
+    if dark {
+        (0x39, 0x2E, 0x26)
+    } else {
+        (0xFE, 0xFC, 0xF8)
+    }
+}
+
+fn caption_colors() -> &'static std::sync::Mutex<std::collections::HashMap<String, (u8, u8, u8)>> {
+    static COLORS: OnceLock<std::sync::Mutex<std::collections::HashMap<String, (u8, u8, u8)>>> =
+        OnceLock::new();
+    COLORS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn remembered_caption(label: &str) -> Option<(u8, u8, u8)> {
+    caption_colors()
+        .lock()
+        .ok()
+        .and_then(|colors| colors.get(label).copied())
+}
+
+fn remember_caption(label: &str, color: (u8, u8, u8)) {
+    if let Ok(mut colors) = caption_colors().lock() {
+        colors.insert(label.to_string(), color);
+    }
+}
+
+/// Color the native caption and hide its text. Decorations stay, so Windows
+/// keeps drawing the buttons. A refused call (Windows 10) leaves the system
+/// caption in place.
+fn paint_caption(window: &WebviewWindow, red: u8, green: u8, blue: u8) {
+    remember_caption(window.label(), (red, green, blue));
+    #[cfg(windows)]
+    {
+        if let Ok(hwnd) = window.hwnd() {
+            let _ = platform_win::caption_color::apply_caption_colors(
+                hwnd.0 as isize,
+                red,
+                green,
+                blue,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, red, green, blue);
+    }
+}
+
+pub(crate) fn paint_caption_rgb(window: &WebviewWindow, red: u8, green: u8, blue: u8) {
+    paint_caption(window, red, green, blue);
+}
+
+fn paint_remembered_caption(window: &WebviewWindow) {
+    let (red, green, blue) = remembered_caption(window.label())
+        .unwrap_or_else(|| caption_stand_in(caption_is_dark(window)));
+    paint_caption(window, red, green, blue);
+}
+
+fn bind_caption(window: &WebviewWindow) {
+    paint_remembered_caption(window);
+    let caption_window = window.clone();
+    window.on_window_event(move |event| {
+        if matches!(
+            event,
+            tauri::WindowEvent::ThemeChanged(_) | tauri::WindowEvent::Focused(true)
+        ) {
+            paint_remembered_caption(&caption_window);
+        }
+    });
 }
 
 pub(crate) fn settings_proof_eligible(app: &tauri::AppHandle) -> bool {
@@ -93,12 +165,11 @@ impl OpenJournalError {
     }
 }
 
-fn open_settings_internal(app: &tauri::AppHandle, sources: bool) -> tauri::Result<()> {
+fn open_settings_internal(app: &tauri::AppHandle, destination: &str) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("settings") {
         window.set_focus()?;
-        if sources {
-            let _ = window.emit("settings://navigate", "sources");
-        }
+        // Focus alone is not navigation. The same event opens the deck or a source page.
+        let _ = window.emit("settings://navigate", destination);
         tracing::info!(
             target: "window",
             label = "settings",
@@ -108,20 +179,23 @@ fn open_settings_internal(app: &tauri::AppHandle, sources: bool) -> tauri::Resul
         return Ok(());
     }
 
-    let url = if sources {
+    let url = if destination == "sources" {
         WebviewUrl::App("index.html?route=sources".into())
+    } else if matches!(destination, "audio" | "screen" | "browsers" | "obsidian") {
+        WebviewUrl::App(format!("index.html?route={destination}").into())
     } else {
         WebviewUrl::App("index.html".into())
     };
 
+    // Native decorations stay. This window is opaque, so the webview's ground
+    // is the ground. About uses this same caption.
     let window = shared_webview_environment(WebviewWindowBuilder::new(app, "settings", url))
-        .title("solstone settings")
-        .inner_size(820.0, 580.0)
-        .min_inner_size(460.0, 480.0)
-        .transparent(true)
-        .effects(mica_effects())
+        .title("solstone")
+        .inner_size(1180.0, 760.0)
+        .min_inner_size(360.0, 480.0)
         .visible(true)
         .build()?;
+    bind_caption(&window);
 
     let teardown_app = app.clone();
     window.on_window_event(move |event| {
@@ -141,14 +215,23 @@ fn open_settings_internal(app: &tauri::AppHandle, sources: bool) -> tauri::Resul
     Ok(())
 }
 
-/// Open (or focus) the Settings window.
+/// Open (or focus) the Settings window on the deck, with status in the pane.
 pub fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
-    open_settings_internal(app, false)
+    open_settings_internal(app, "sources")
 }
 
-/// Open (or focus) the Settings window on the sources pane.
+/// Open (or focus) the Settings window on the deck. Same destination as [`open_settings`].
 pub fn open_settings_sources(app: &tauri::AppHandle) -> tauri::Result<()> {
-    open_settings_internal(app, true)
+    open_settings_internal(app, "sources")
+}
+
+/// Open (or focus) the Settings window on one source's page.
+pub fn open_settings_source(app: &tauri::AppHandle, source: &str) -> tauri::Result<()> {
+    let destination = match source {
+        "audio" | "screen" | "browsers" | "obsidian" => source,
+        _ => "sources",
+    };
+    open_settings_internal(app, destination)
 }
 
 /// Dispatch opening journal based on pairing phase.
@@ -844,17 +927,18 @@ pub fn open_about(app: &tauri::AppHandle) -> tauri::Result<()> {
         return Ok(());
     }
 
-    shared_webview_environment(WebviewWindowBuilder::new(
+    // Same caption as settings: native buttons, no caption text, color from the
+    // sun-arc ground. Opaque, so that ground is the page and not Mica.
+    let window = shared_webview_environment(WebviewWindowBuilder::new(
         app,
         "about",
         WebviewUrl::App("index.html".into()),
     ))
     .title("about solstone")
     .inner_size(360.0, 480.0)
-    .transparent(true)
-    .effects(mica_effects())
     .visible(true)
     .build()?;
+    bind_caption(&window);
     tracing::info!(
         target: "window",
         label = "about",

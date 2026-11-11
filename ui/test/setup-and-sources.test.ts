@@ -1568,24 +1568,22 @@ describe("setup recovery and proof lifetimes", () => {
       expect(wizardPauseButton()).toBeNull();
     });
 
-    it("keeps the home card disabled for idle and starting, and resumes from error", async () => {
+    it("keeps pause off the deck, and resumes from the deck only while paused", async () => {
       const done = { ...enabledSetup, wizard: "done" as const };
-      for (const appState of ["idle", "starting"] as const) {
+      for (const appState of ["idle", "starting", "error"] as const) {
         resetRoot();
         invokeMock.mockClear();
         renderPhase(appState, null, done);
-        const button = homePauseButton();
-        expect(button).not.toBeNull();
-        expect(button!.disabled).toBe(true);
-        button!.click();
+        expect(document.querySelector(".desk-resume")).toBeNull();
+        expect(homePauseButton()).toBeNull();
         expect(invokeMock).not.toHaveBeenCalledWith("pause", expect.anything());
       }
       resetRoot();
       invokeMock.mockClear();
-      renderPhase("error", null, done);
-      const button = homePauseButton();
-      expect(button!.disabled).toBe(false);
-      button!.click();
+      renderPhase("paused", { reason: "operator", seconds_remaining: null }, done);
+      const resume = document.querySelector<HTMLButtonElement>(".desk-resume");
+      expect(resume).not.toBeNull();
+      resume!.click();
       await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith("resume"));
       expect(invokeMock).not.toHaveBeenCalledWith("pause", expect.anything());
     });
@@ -1853,12 +1851,17 @@ describe("setup recovery and proof lifetimes", () => {
       app.__test__.setRoute("home");
       app.__test__.renderSettings(damagedDump);
 
-      const homeFailure = document.querySelector(".settings-home > .save-failure");
+      const homeFailure = document.querySelector(".desk-deck .save-failure");
       expect(homeFailure).not.toBeNull();
       expect(homeFailure?.textContent?.length).toBeGreaterThan(0);
+      expect(document.querySelector(".desk-deck .wizard-start-at-login")).toBeNull();
 
-      const homeLoginControl = document.querySelector(".settings-home .wizard-start-at-login");
-      expect(homeLoginControl).not.toBeNull();
+      const thisPc = [...document.querySelectorAll(".settings-nav-item")].find((button) =>
+        button.textContent?.includes("this PC"),
+      );
+      expect(thisPc).toBeInstanceOf(HTMLButtonElement);
+      (thisPc as HTMLButtonElement).click();
+      expect(document.querySelector(".wizard-start-at-login")).not.toBeNull();
 
       resetRoot();
       invokeMock.mockClear();
@@ -2088,7 +2091,7 @@ describe("setup recovery and proof lifetimes", () => {
       );
       app.__test__.renderSettings(continuation({}));
       await vi.waitFor(() => {
-        expect(app.__test__.getRoute()).toBe("journal");
+        expect(app.__test__.getRoute()).toBe("home");
         expect((byId(ids["settings.pairing.input"]) as HTMLInputElement).value).toBe(link);
       });
     });
@@ -2104,7 +2107,7 @@ describe("setup recovery and proof lifetimes", () => {
       link = "https://go.solstone.app/p#arrived";
       app.__test__.refreshPairingPrefillOnFocus();
       await vi.waitFor(() => {
-        expect(app.__test__.getRoute()).toBe("journal");
+        expect(app.__test__.getRoute()).toBe("home");
         expect((byId(ids["settings.pairing.input"]) as HTMLInputElement).value).toBe(link);
       });
       app.__test__.setRoute("home");
@@ -2641,8 +2644,8 @@ describe("setup frame design and lifecycle", () => {
     expect(document.getElementById("setup-sun")).toBe(ground);
 
     app.__test__.renderSettings({ ...dump, setup: { ...dump.setup, wizard: "done" as const } });
-    expect(live).toBe(0);
-    expect(ground.hidden).toBe(true);
+    expect(live).toBe(1);
+    expect(ground.hidden).toBe(false);
 
     app.__test__.renderSettings(dump);
     expect(live).toBe(1);
@@ -3035,7 +3038,7 @@ describe("setup frame design and lifecycle", () => {
     });
   });
 
-  it("synchronizes window title with error tolerance and preserves non-setup home pause", async () => {
+  it("leaves the window title alone and opens the deck once setup is done", async () => {
     const getCurrentWindowMock = vi.mocked(getCurrentWindow);
     const setTitle = vi.fn().mockResolvedValue(undefined);
     getCurrentWindowMock.mockReturnValue({ label: "settings", setTitle } as unknown as ReturnType<typeof getCurrentWindow>);
@@ -3072,47 +3075,35 @@ describe("setup frame design and lifecycle", () => {
       setTitle.mockClear();
       app.__test__.renderSettings(doneDump);
       expect(setTitle).toHaveBeenCalledTimes(0);
+      expect(document.querySelector("[data-automation-id='settings.deck']")).not.toBeNull();
+      expect(document.querySelector(".desk-resume")).toBeNull();
+      expect(homePauseButton()).toBeNull();
 
       app.__test__.renderSettings(micDump);
-      expect(setTitle).toHaveBeenCalledTimes(1);
-      expect(setTitle).toHaveBeenCalledWith("set up solstone");
-
-      app.__test__.renderSettings(micDump);
-      expect(setTitle).toHaveBeenCalledTimes(1);
-
-      app.__test__.renderSettings(doneDump);
-      expect(setTitle).toHaveBeenCalledTimes(2);
-      expect(setTitle).toHaveBeenLastCalledWith("solstone settings");
-
-      app.__test__.renderSettings(doneDump);
-      expect(setTitle).toHaveBeenCalledTimes(2);
-
-      app.__test__.reset();
-      setTitle.mockReset();
-      setTitle.mockRejectedValue(new Error("window closed"));
-      app.__test__.renderSettings(micDump);
-      await Promise.resolve();
+      expect(setTitle).toHaveBeenCalledTimes(0);
       expect(document.querySelector(".setup-frame")).not.toBeNull();
+      expect(document.querySelector(".wizard-step-title")).not.toBeNull();
 
-      app.__test__.reset();
-      setTitle.mockReset();
       setTitle.mockImplementation(() => {
         throw new Error("sync failure");
       });
       expect(() => app.__test__.renderSettings(micDump)).not.toThrow();
-      expect(document.querySelector(".setup-frame")).not.toBeNull();
-      expect(setTitle).toHaveBeenCalledTimes(1);
-      app.__test__.renderSettings(micDump);
-      expect(setTitle).toHaveBeenCalledTimes(1);
-
-      setTitle.mockClear();
-      app.__test__.renderAbout(doneDump);
       expect(setTitle).toHaveBeenCalledTimes(0);
 
-      app.__test__.renderSettings(doneDump);
-      const homePause = homePauseButton();
-      expect(homePause).not.toBeNull();
-      expect(homePause?.id).not.toBe("setup-pause");
+      app.__test__.renderAbout(doneDump);
+      expect(setTitle).toHaveBeenCalledTimes(0);
+      expect(document.querySelector("#app")?.classList.contains("desk-about")).toBe(true);
+
+      app.__test__.renderSettings({
+        ...doneDump,
+        app_state: "paused",
+        pause: { reason: "operator", seconds_remaining: 61 },
+      });
+      expect(document.querySelector(".desk-resume")).not.toBeNull();
+      expect(document.querySelector(".desk-paused")?.textContent).not.toBe(
+        document.querySelector(".desk-greeting")?.textContent,
+      );
+      expect(document.querySelector(".desk-paused")?.textContent).toMatch(/\d/);
     } finally {
       getCurrentWindowMock.mockReturnValue({ label: "settings" } as unknown as ReturnType<typeof getCurrentWindow>);
     }
@@ -3253,6 +3244,11 @@ describe("setup frame design and lifecycle", () => {
       },
     };
     app.__test__.renderSettings(pairedPlainDump);
+    const journal = [...document.querySelectorAll(".settings-nav-item")].find((button) =>
+      button.textContent?.includes("your journal"),
+    );
+    expect(journal).toBeInstanceOf(HTMLButtonElement);
+    (journal as HTMLButtonElement).click();
     expect(document.querySelector(".settings-route-content")?.textContent).toContain("catatonic");
     expect(document.querySelector(".setup-frame")).toBeNull();
 
@@ -3382,5 +3378,81 @@ describe("setup frame design and lifecycle", () => {
     } finally {
       styleEl.remove();
     }
+  });
+});
+
+describe("audio page recovery", () => {
+  beforeEach(() => {
+    resetRoot();
+    app.__test__.setLabel("settings");
+    app.__test__.setRoute("home");
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(undefined as never);
+  });
+
+  function deskDump(mic: { kind: "mic"; status: string; device: null; reason?: string; detail?: string }) {
+    return {
+      ...observingDump(),
+      setup: {
+        sequence_enabled: true,
+        mic: true,
+        system_audio: true,
+        screen: true,
+        start_at_login: false,
+        wizard: "done" as const,
+        notice_dismissed: true,
+        system_audio_wanted: true,
+      },
+      sources: [
+        { kind: "screen" as const, status: "active" as const, device: "Display 1" },
+        { kind: "system_audio" as const, status: "inactive" as const, device: "Speakers" },
+        mic,
+      ],
+    };
+  }
+
+  function openAudio(): void {
+    const open = document.querySelector<HTMLButtonElement>('[data-tile="audio"] .desk-tile-open');
+    expect(open).not.toBeNull();
+    open!.click();
+  }
+
+  it("states a missing microphone with a short tile line and a sound settings button", () => {
+    app.__test__.renderSettings(deskDump({ kind: "mic", status: "no_input_device", device: null }) as never);
+    openAudio();
+    expect(document.body.textContent).toContain("no microphone found.");
+    expect(document.body.textContent).toContain("add the solstone extension.");
+    expect(document.querySelector(".desk-reason")).not.toBeNull();
+    expect(document.body.textContent).not.toContain("open windows settings");
+    const button = [...document.querySelectorAll("button")].find((el) => el.textContent === "open sound settings");
+    expect(button).toBeInstanceOf(HTMLButtonElement);
+    (button as HTMLButtonElement).click();
+    expect(invokeMock).toHaveBeenCalledWith("open_sound_settings");
+  });
+
+  it("names private windows on one line, with the browser note under it", () => {
+    app.__test__.setExclusions({ excluded_exes: [], title_patterns: [], exclude_private_browsing: true });
+    app.__test__.renderSettings(deskDump({ kind: "mic", status: "inactive", device: null }) as never);
+    const open = document.querySelector<HTMLButtonElement>('[data-tile="screen"] .desk-tile-open');
+    expect(open).not.toBeNull();
+    open!.click();
+    expect(document.body.textContent).toContain("private windows");
+    expect(document.body.textContent).toContain("Edge and Firefox set to English");
+    expect(document.body.textContent).not.toContain("keep private windows out of your journal");
+  });
+
+  it("opens microphone privacy settings when access was denied", () => {
+    app.__test__.renderSettings(deskDump({
+      kind: "mic",
+      status: "faulted",
+      reason: "access_denied",
+      detail: "",
+      device: null,
+    }) as never);
+    openAudio();
+    const button = [...document.querySelectorAll("button")].find((el) => el.textContent === "open windows settings");
+    expect(button).toBeInstanceOf(HTMLButtonElement);
+    (button as HTMLButtonElement).click();
+    expect(invokeMock).toHaveBeenCalledWith("open_microphone_privacy_settings");
   });
 });

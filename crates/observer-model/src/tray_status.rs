@@ -2,8 +2,9 @@
 // Copyright (c) 2026 sol pbc
 
 use crate::{
-    AppPhase, ErrorReason, JournalLink, PairingPhase, PauseSnapshot, SourceKind, SourceReport,
-    SourceState, StorageHealth, SyncSnapshot,
+    AppPhase, ErrorReason, HealthDump, JournalLink, MarkColor, MarkIconSpec, MarkRenderSpec,
+    PairingPhase, PauseSnapshot, SourceKind, SourceReport, SourceState, StorageHealth,
+    SyncSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +32,185 @@ pub fn resume_enabled(phase: AppPhase) -> bool {
 
 pub fn restart_enabled(phase: AppPhase) -> bool {
     matches!(phase, AppPhase::Error)
+}
+
+/// The one menu attention row, in tile order. A fault on a source the owner
+/// turned on counts, including a refused permission. Activity is the screen row.
+pub fn attention_source(
+    sources: &[SourceReport],
+    is_enabled: impl Fn(SourceKind) -> bool,
+    browsers_need_attention: bool,
+    obsidian_needs_attention: bool,
+    paused: bool,
+) -> Option<&'static str> {
+    let faulted = |kind: SourceKind| {
+        is_enabled(kind)
+            && sources.iter().any(|source| {
+                source.kind == kind && matches!(source.state, SourceState::Faulted { .. })
+            })
+    };
+    if faulted(SourceKind::Mic) || faulted(SourceKind::SystemAudio) {
+        return Some("audio");
+    }
+    // No microphone, computer sound wanted, and nothing taking in. That is steady,
+    // so the menu names it. A pause still reads as paused. NoInputDevice stays
+    // its own state: this is not a capture fault.
+    let state_of = |kind: SourceKind| {
+        sources
+            .iter()
+            .find(|source| source.kind == kind)
+            .map(|source| &source.state)
+    };
+    let active = |kind: SourceKind| matches!(state_of(kind), Some(SourceState::Active));
+    let mic_missing = matches!(state_of(SourceKind::Mic), Some(SourceState::NoInputDevice));
+    if !paused
+        && is_enabled(SourceKind::SystemAudio)
+        && mic_missing
+        && !active(SourceKind::Mic)
+        && !active(SourceKind::SystemAudio)
+    {
+        return Some("audio");
+    }
+    if faulted(SourceKind::Screen) || faulted(SourceKind::DesktopActivity) {
+        return Some("screen");
+    }
+    if browsers_need_attention {
+        return Some("browsers");
+    }
+    if obsidian_needs_attention {
+        return Some("Obsidian");
+    }
+    None
+}
+
+/// How the disabled menu status line reads while paused. `{n}` is whole minutes, rounded up.
+pub enum PausedMenuStatus {
+    UntilResume,
+    LessThanAMinute,
+    Minutes(u64),
+}
+
+pub fn paused_menu_status(seconds_left: Option<u64>) -> PausedMenuStatus {
+    match seconds_left {
+        None => PausedMenuStatus::UntilResume,
+        Some(secs) if secs < 60 => PausedMenuStatus::LessThanAMinute,
+        Some(secs) => PausedMenuStatus::Minutes(secs.div_ceil(60)),
+    }
+}
+
+/// The disabled menu row. While paused it is the time left. Otherwise it is the
+/// journal pill. A failed pairing reads as not paired: the dump does not say
+/// whether the mark was refused or the link needs replacing.
+pub fn menu_status_line(dump: &crate::HealthDump) -> String {
+    if dump.app_state == AppPhase::Paused {
+        let seconds = dump
+            .pause
+            .as_ref()
+            .and_then(|pause| pause.seconds_remaining);
+        return match paused_menu_status(seconds) {
+            PausedMenuStatus::UntilResume => "paused until you resume".to_string(),
+            PausedMenuStatus::LessThanAMinute => "paused, less than a minute left".to_string(),
+            PausedMenuStatus::Minutes(mins) => format!("paused, {mins} min left"),
+        };
+    }
+    let waiting = dump.sync.upload.pending_segments;
+    let count = if waiting == 0 {
+        String::new()
+    } else {
+        format!(" · {waiting} waiting")
+    };
+    match dump.sync.pairing.phase {
+        PairingPhase::NotPaired | PairingPhase::Failed => "not paired".to_string(),
+        PairingPhase::Pairing => "connecting…".to_string(),
+        PairingPhase::AwaitingConfirmation => {
+            if waiting == 0 {
+                "confirm the mark".to_string()
+            } else {
+                format!("confirm the mark{count}")
+            }
+        }
+        PairingPhase::Paired => match dump.sync.journal_link {
+            Some(crate::JournalLink::Offline) => format!("offline{count}"),
+            Some(crate::JournalLink::Connected) => "connected".to_string(),
+            Some(crate::JournalLink::Connecting) | None => "connecting…".to_string(),
+        },
+    }
+}
+
+const FRAME_REACHED_AGO_MS: u64 = 40 * 60 * 1000;
+
+/// A shot can show a paired journal this PC has not reached.
+/// Both gates have to be set. A normal launch leaves the live reading alone.
+/// The rendered dump changes. Nothing here dials a journal or writes a pair.
+pub fn apply_frame_journal(
+    dump: &mut HealthDump,
+    frame_png: Option<&str>,
+    journal: Option<&str>,
+    now_ms: u64,
+) {
+    let Some(frame) = frame_png else {
+        return;
+    };
+    if frame.is_empty() {
+        return;
+    }
+    let Some(raw) = journal else {
+        return;
+    };
+    match raw {
+        "connected" => paint_frame(dump, JournalLink::Connected, 0, now_ms),
+        "offline" => paint_frame(
+            dump,
+            JournalLink::Offline,
+            0,
+            now_ms.saturating_sub(FRAME_REACHED_AGO_MS),
+        ),
+        other => {
+            let Some(count) = other.strip_prefix("offline:") else {
+                return;
+            };
+            let Ok(count) = count.parse::<u64>() else {
+                return;
+            };
+            if count == 0 {
+                return;
+            }
+            paint_frame(
+                dump,
+                JournalLink::Offline,
+                count,
+                now_ms.saturating_sub(FRAME_REACHED_AGO_MS),
+            );
+        }
+    }
+}
+
+fn paint_frame(dump: &mut HealthDump, link: JournalLink, waiting: u64, reached_ms: u64) {
+    dump.sync.pairing.phase = PairingPhase::Paired;
+    dump.sync.pairing.mark = Some(frame_mark());
+    dump.sync.journal_link = Some(link);
+    dump.sync.upload.pending_segments = waiting;
+    dump.sync.upload.last_successful_sync = Some(reached_ms);
+}
+
+fn frame_mark() -> MarkRenderSpec {
+    MarkRenderSpec {
+        icon1: frame_chip("amber", "#E07A3D"),
+        icon2: frame_chip("clay", "#C4554A"),
+        words: ["bright".into(), "harbor".into()],
+    }
+}
+
+fn frame_chip(name: &str, hex: &str) -> MarkIconSpec {
+    MarkIconSpec {
+        name: name.into(),
+        svg: r#"<circle cx="12" cy="12" r="4"/>"#.into(),
+        color: MarkColor {
+            name: name.into(),
+            hex: hex.into(),
+        },
+        rot: 0,
+    }
 }
 
 const STORAGE_FAULT_FOR_OWNER: &str = "can't save on this PC";
@@ -647,5 +827,256 @@ mod tests {
         // All disabled -> returns None
         let detail_none = owner_fault_detail(&sources, None, |_| false);
         assert_eq!(detail_none, None);
+    }
+
+    fn denied(kind: SourceKind) -> SourceReport {
+        SourceReport {
+            kind,
+            state: SourceState::Faulted {
+                reason: ErrorReason::AccessDenied,
+                detail: "denied".into(),
+            },
+            device: None,
+        }
+    }
+
+    #[test]
+    fn attention_names_the_first_source_and_skips_one_that_is_off() {
+        let mic = [
+            denied(SourceKind::Mic),
+            faulted_source(SourceKind::Screen, "x"),
+        ];
+        assert_eq!(
+            attention_source(&mic, |_| true, true, true, false),
+            Some("audio")
+        );
+        let screen = [faulted_source(SourceKind::DesktopActivity, "x")];
+        assert_eq!(
+            attention_source(&screen, |_| true, false, false, false),
+            Some("screen")
+        );
+        assert_eq!(
+            attention_source(&[], |_| true, true, true, false),
+            Some("browsers")
+        );
+        assert_eq!(
+            attention_source(&[], |_| true, false, true, false),
+            Some("Obsidian")
+        );
+        assert_eq!(attention_source(&[], |_| true, false, false, false), None);
+        let off = [denied(SourceKind::Mic)];
+        assert_eq!(attention_source(&off, |_| false, false, false, false), None);
+    }
+
+    #[test]
+    fn a_missing_microphone_with_computer_sound_wanted_and_nothing_taking_in_is_audio() {
+        let sources = [
+            SourceReport {
+                kind: SourceKind::Mic,
+                state: SourceState::NoInputDevice,
+                device: None,
+            },
+            SourceReport {
+                kind: SourceKind::SystemAudio,
+                state: SourceState::Inactive,
+                device: None,
+            },
+        ];
+        let enabled = |kind: SourceKind| kind == SourceKind::SystemAudio;
+        assert_eq!(
+            attention_source(&sources, enabled, false, false, false),
+            Some("audio")
+        );
+        assert_eq!(
+            attention_source(&sources, enabled, false, false, true),
+            None
+        );
+        assert_eq!(
+            attention_source(&sources, |_| false, false, false, false),
+            None
+        );
+    }
+
+    fn dump_with(
+        phase: PairingPhase,
+        link: Option<crate::JournalLink>,
+        pending: u64,
+    ) -> crate::HealthDump {
+        crate::HealthDump {
+            app_state: AppPhase::Observing,
+            sources: Vec::new(),
+            frame_rate: None,
+            segment_dir: None,
+            segment_seconds_remaining: None,
+            engine_ready: true,
+            version: "test".into(),
+            sync: SyncSnapshot {
+                pairing: PairingState {
+                    phase,
+                    ..Default::default()
+                },
+                upload: UploadStatus {
+                    pending_segments: pending,
+                    ..Default::default()
+                },
+                journal_link: link,
+                ..Default::default()
+            },
+            screen_encoder: None,
+            exclusions: None,
+            storage: None,
+            pause: None,
+            views: Default::default(),
+            pump_degraded: false,
+            listener_faults: Default::default(),
+            setup: Default::default(),
+        }
+    }
+
+    #[test]
+    fn menu_status_uses_the_pill_and_rounds_a_pause() {
+        let connected = dump_with(PairingPhase::Paired, Some(crate::JournalLink::Connected), 0);
+        let offline = dump_with(PairingPhase::Paired, Some(crate::JournalLink::Offline), 3);
+        assert_ne!(menu_status_line(&connected), menu_status_line(&offline));
+        assert!(menu_status_line(&offline).contains('3'));
+        assert_eq!(
+            menu_status_line(&dump_with(PairingPhase::NotPaired, None, 0)),
+            menu_status_line(&dump_with(PairingPhase::Failed, None, 4))
+        );
+
+        let mut paused = dump_with(PairingPhase::Paired, Some(crate::JournalLink::Connected), 0);
+        paused.app_state = AppPhase::Paused;
+        paused.pause = Some(PauseSnapshot {
+            reason: PauseReason::Operator,
+            seconds_remaining: Some(61),
+        });
+        let one_minute = {
+            let mut dump = paused.clone();
+            dump.pause = Some(PauseSnapshot {
+                reason: PauseReason::Operator,
+                seconds_remaining: Some(60),
+            });
+            menu_status_line(&dump)
+        };
+        let two_minutes = menu_status_line(&paused);
+        assert!(two_minutes.contains('2'));
+        assert_ne!(two_minutes, one_minute);
+        paused.pause = Some(PauseSnapshot {
+            reason: PauseReason::Operator,
+            seconds_remaining: None,
+        });
+        assert_ne!(menu_status_line(&paused), two_minutes);
+    }
+
+    #[test]
+    fn menu_status_line_is_never_blank() {
+        let phases = [
+            PairingPhase::NotPaired,
+            PairingPhase::Failed,
+            PairingPhase::Pairing,
+            PairingPhase::AwaitingConfirmation,
+            PairingPhase::Paired,
+        ];
+        for phase in phases {
+            for link in [
+                None,
+                Some(crate::JournalLink::Connected),
+                Some(crate::JournalLink::Connecting),
+                Some(crate::JournalLink::Offline),
+            ] {
+                for pending in [0, 4] {
+                    let line = menu_status_line(&dump_with(phase, link, pending));
+                    assert!(!line.trim().is_empty());
+                }
+            }
+        }
+        let quiet = menu_status_line(&dump_with(
+            PairingPhase::Paired,
+            Some(crate::JournalLink::Offline),
+            0,
+        ));
+        let counted = menu_status_line(&dump_with(
+            PairingPhase::Paired,
+            Some(crate::JournalLink::Offline),
+            4,
+        ));
+        assert_ne!(quiet, counted);
+        assert!(counted.contains('4'));
+        assert!(!quiet.chars().any(|ch| ch.is_ascii_digit()));
+        assert!(quiet.contains("offline"));
+    }
+
+    #[test]
+    fn frame_journal_stays_off_without_both_gates() {
+        let mut dump = dump_with(PairingPhase::NotPaired, None, 0);
+        let before = dump.clone();
+        apply_frame_journal(&mut dump, None, Some("connected"), 1_000);
+        assert_eq!(dump, before);
+        apply_frame_journal(&mut dump, Some(""), Some("connected"), 1_000);
+        assert_eq!(dump, before);
+        apply_frame_journal(&mut dump, Some("frame"), None, 1_000);
+        assert_eq!(dump, before);
+        apply_frame_journal(&mut dump, Some("frame"), Some("nope"), 1_000);
+        assert_eq!(dump, before);
+        apply_frame_journal(&mut dump, Some("frame"), Some("offline:0"), 1_000);
+        assert_eq!(dump, before);
+        apply_frame_journal(&mut dump, Some("frame"), Some("offline:no"), 1_000);
+        assert_eq!(dump, before);
+    }
+
+    #[test]
+    fn frame_journal_connected_and_offline_are_a_paired_reading() {
+        let now = 1_700_000_000_000_u64;
+        let mut connected = dump_with(PairingPhase::NotPaired, None, 4);
+        apply_frame_journal(&mut connected, Some("frame"), Some("connected"), now);
+        assert_eq!(connected.sync.pairing.phase, PairingPhase::Paired);
+        assert_eq!(connected.sync.journal_link, Some(JournalLink::Connected));
+        assert_eq!(connected.sync.upload.pending_segments, 0);
+        assert_eq!(connected.sync.upload.last_successful_sync, Some(now));
+        assert_eq!(
+            connected
+                .sync
+                .pairing
+                .mark
+                .as_ref()
+                .map(|mark| mark.words.clone()),
+            Some(["bright".into(), "harbor".into()])
+        );
+        assert_eq!(menu_status_line(&connected), "connected");
+
+        let mut offline = dump_with(PairingPhase::NotPaired, None, 0);
+        apply_frame_journal(&mut offline, Some("frame"), Some("offline:12"), now);
+        assert_eq!(offline.sync.journal_link, Some(JournalLink::Offline));
+        assert_eq!(offline.sync.upload.pending_segments, 12);
+        assert_eq!(
+            offline.sync.upload.last_successful_sync,
+            Some(now - 40 * 60 * 1000)
+        );
+        assert_eq!(menu_status_line(&offline), "offline · 12 waiting");
+
+        let mut quiet = dump_with(PairingPhase::NotPaired, None, 9);
+        apply_frame_journal(&mut quiet, Some("frame"), Some("offline"), now);
+        assert_eq!(quiet.sync.upload.pending_segments, 0);
+        assert_eq!(menu_status_line(&quiet), "offline");
+    }
+
+    #[test]
+    fn paused_menu_status_rounds_up_and_keeps_indefinite_apart() {
+        assert!(matches!(
+            paused_menu_status(None),
+            PausedMenuStatus::UntilResume
+        ));
+        assert!(matches!(
+            paused_menu_status(Some(59)),
+            PausedMenuStatus::LessThanAMinute
+        ));
+        assert!(matches!(
+            paused_menu_status(Some(60)),
+            PausedMenuStatus::Minutes(1)
+        ));
+        assert!(matches!(
+            paused_menu_status(Some(61)),
+            PausedMenuStatus::Minutes(2)
+        ));
     }
 }

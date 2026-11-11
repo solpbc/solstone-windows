@@ -14,14 +14,17 @@
 //! macOS parity. A bounded pause auto-resumes when it elapses (the engine owns
 //! the timer); the tray tooltip shows the live time remaining while paused.
 
+use std::sync::{Arc, Mutex};
+
 use capture_engine::EngineCommand;
 use observer_model::{
-    classify_tray, owner_fault_detail, pause_enabled, permission_blocked, restart_enabled,
-    resume_enabled, AppPhase, HealthDump, PauseReason, SourceKind, SyncSnapshot, TrayVisual,
+    attention_source, classify_tray, menu_status_line, owner_fault_detail, permission_blocked,
+    AppPhase, HealthDump, JournalLink, PairingPhase, PauseReason, SourceKind, SyncSnapshot,
+    TrayVisual,
 };
 use tauri::image::Image;
 use tauri::menu::{
-    MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem, Submenu, SubmenuBuilder,
+    IsMenuItem, Menu, MenuBuilder, MenuItem, MenuItemBuilder, Submenu, SubmenuBuilder,
 };
 use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{App, Wry};
@@ -39,136 +42,77 @@ fn pause_for(duration_secs: Option<u64>) -> EngineCommand {
     }
 }
 
-#[cfg(feature = "browser-host")]
-fn browsers_menu_text(status: Option<&browser_host::hub::BrowserStatus>) -> String {
-    let Some(status) = status else {
-        return "browsers \u{00B7} none connected now".to_string();
-    };
-    let connected_brands: Vec<&str> = status.connected.iter().map(|c| c.brand.as_str()).collect();
-    match browser_host::stores::browsers_tray(
-        status.capture,
-        status.custody.full,
-        &connected_brands,
-    ) {
-        browser_host::stores::BrowsersTray::Names(names) => {
-            let display_names: Vec<&str> = names
-                .iter()
-                .map(|b| match b.as_str() {
-                    "chrome" => "Chrome",
-                    "edge" => "Edge",
-                    "firefox" => "Firefox",
-                    other => other,
-                })
-                .collect();
-            format!("browsers \u{00B7} {}", display_names.join(", "))
-        }
-        browser_host::stores::BrowsersTray::Paused => "browsers \u{00B7} paused".to_string(),
-        browser_host::stores::BrowsersTray::Held => {
-            "browsers \u{00B7} not taking in new pages".to_string()
-        }
-        browser_host::stores::BrowsersTray::Full => {
-            "browsers \u{00B7} no room for more right now".to_string()
-        }
-        browser_host::stores::BrowsersTray::None => {
-            "browsers \u{00B7} none connected now".to_string()
-        }
-    }
+pub struct TrayMenu {
+    tray: TrayIcon,
+    menu: Menu<Wry>,
+    attention: MenuItem<Wry>,
+    status: MenuItem<Wry>,
+    pause: Submenu<Wry>,
+    resume: MenuItem<Wry>,
+    journal: MenuItem<Wry>,
+    attention_target: Arc<Mutex<String>>,
+    attention_shown: bool,
+    pause_shown: bool,
+    resume_shown: bool,
+    journal_shown: bool,
 }
 
-type TrayHandles = (
-    TrayIcon,
-    Submenu<Wry>,
-    MenuItem<Wry>,
-    MenuItem<Wry>,
-    Option<MenuItem<Wry>>,
-);
-
-/// Install the tray icon + menu. Returns the handles `apply_state` re-renders:
-/// the Pause submenu (enabled/disabled as a whole), Resume, Restart intake, and Browsers.
+/// Install the tray icon and its native menu.
 pub fn init(
     app: &mut App,
     cmd_tx: mpsc::UnboundedSender<EngineCommand>,
-) -> tauri::Result<TrayHandles> {
+) -> tauri::Result<TrayMenu> {
     let mi_pause_15 =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_PAUSE_15M, "For 15 minutes")
+        MenuItemBuilder::with_id(observer_contract::tray::MENU_PAUSE_15M, "15 minutes")
             .build(app)?;
     let mi_pause_30 =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_PAUSE_30M, "For 30 minutes")
+        MenuItemBuilder::with_id(observer_contract::tray::MENU_PAUSE_30M, "30 minutes")
             .build(app)?;
     let mi_pause_1h =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_PAUSE_1H, "For 1 hour")
-            .build(app)?;
+        MenuItemBuilder::with_id(observer_contract::tray::MENU_PAUSE_1H, "1 hour").build(app)?;
     let mi_pause_indef = MenuItemBuilder::with_id(
         observer_contract::tray::MENU_PAUSE_INDEFINITE,
-        "Until I resume",
+        "until I resume",
     )
     .build(app)?;
 
-    let pause_submenu = SubmenuBuilder::with_id(app, observer_contract::tray::MENU_PAUSE, "Pause")
+    let pause = SubmenuBuilder::with_id(app, observer_contract::tray::MENU_PAUSE, "pause")
         .item(&mi_pause_15)
         .item(&mi_pause_30)
         .item(&mi_pause_1h)
         .item(&mi_pause_indef)
         .build()?;
 
-    let mi_resume = MenuItemBuilder::with_id(observer_contract::tray::MENU_RESUME, "Resume")
+    let resume =
+        MenuItemBuilder::with_id(observer_contract::tray::MENU_RESUME, "resume").build(app)?;
+    let attention =
+        MenuItemBuilder::with_id(observer_contract::tray::MENU_ATTENTION, "needs attention")
+            .build(app)?;
+    let status = MenuItemBuilder::with_id(observer_contract::tray::MENU_STATUS, "connecting…")
         .enabled(false)
         .build(app)?;
-    let mi_restart = MenuItemBuilder::with_id(
-        observer_contract::tray::MENU_RESTART_OBSERVING,
-        "Restart intake",
-    )
-    .enabled(false)
-    .build(app)?;
-    #[cfg(feature = "browser-host")]
-    let mi_browsers = Some(
-        MenuItemBuilder::with_id(
-            observer_contract::tray::MENU_BROWSERS,
-            browsers_menu_text(crate::browser::status().as_ref()),
-        )
-        .build(app)?,
-    );
-    #[cfg(not(feature = "browser-host"))]
-    let mi_browsers: Option<MenuItem<Wry>> = None;
-    let mi_open_journal =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_OPEN_JOURNAL, "Open Journal")
+    let journal =
+        MenuItemBuilder::with_id(observer_contract::tray::MENU_OPEN_JOURNAL, "open journal")
             .build(app)?;
-    let mi_open_settings =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_OPEN_SETTINGS, "Open Settings")
+    let open_settings =
+        MenuItemBuilder::with_id(observer_contract::tray::MENU_OPEN_SETTINGS, "open settings")
             .build(app)?;
-    let mi_get_help =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_GET_HELP, "get help").build(app)?;
-    let mi_report_problem = MenuItemBuilder::with_id(
-        observer_contract::tray::MENU_REPORT_PROBLEM,
-        "report a problem",
-    )
-    .build(app)?;
-    let mi_about =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_ABOUT, "About").build(app)?;
-    let mi_quit =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_QUIT, "Quit").build(app)?;
-    let sep_one = PredefinedMenuItem::separator(app)?;
-    let sep_two = PredefinedMenuItem::separator(app)?;
+    let about = MenuItemBuilder::with_id(observer_contract::tray::MENU_ABOUT, "about solstone")
+        .build(app)?;
+    let quit =
+        MenuItemBuilder::with_id(observer_contract::tray::MENU_QUIT, "quit solstone").build(app)?;
 
-    let mut menu_builder = MenuBuilder::new(app)
-        .item(&pause_submenu)
-        .item(&mi_resume)
-        .item(&mi_restart)
-        .item(&sep_one)
-        .item(&mi_open_journal);
-    if let Some(ref mi_b) = mi_browsers {
-        menu_builder = menu_builder.item(mi_b);
-    }
-    let menu = menu_builder
-        .item(&mi_open_settings)
-        .item(&mi_get_help)
-        .item(&mi_report_problem)
-        .item(&mi_about)
-        .item(&sep_two)
-        .item(&mi_quit)
+    // Status, pause, settings, about, quit. Attention, resume, and the journal
+    // are inserted when the state calls for them. Pause and resume are never both here.
+    let menu = MenuBuilder::new(app)
+        .item(&status)
+        .item(&pause)
+        .item(&open_settings)
+        .item(&about)
+        .item(&quit)
         .build()?;
 
-    let (visual, tooltip) = classify_tray(
+    let (visual, _starting) = classify_tray(
         AppPhase::Starting,
         &SyncSnapshot::default(),
         None,
@@ -177,11 +121,26 @@ pub fn init(
         false,
     );
 
+    let attention_target = Arc::new(Mutex::new(String::new()));
+    let attention_for_event = Arc::clone(&attention_target);
     let tray = TrayIconBuilder::with_id(observer_contract::tray::ROOT)
         .menu(&menu)
         .icon(icon_for(visual))
-        .tooltip(tooltip)
+        // Windows keeps the first tooltip as the icon's name in the taskbar and
+        // its settings, ahead of every later one, so it is the app's name.
+        .tooltip("solstone")
+        .show_menu_on_left_click(true)
         .on_menu_event(move |app, event| match event.id().as_ref() {
+            observer_contract::tray::MENU_ATTENTION => {
+                let source = attention_for_event
+                    .lock()
+                    .map(|slot| slot.clone())
+                    .unwrap_or_default();
+                let app = app.clone();
+                std::thread::spawn(move || {
+                    let _ = crate::windows::open_settings_source(&app, &source);
+                });
+            }
             observer_contract::tray::MENU_PAUSE_15M => {
                 let _ = cmd_tx.send(pause_for(Some(PAUSE_15M_SECS)));
             }
@@ -247,19 +206,46 @@ pub fn init(
         })
         .build(app)?;
 
-    Ok((tray, pause_submenu, mi_resume, mi_restart, mi_browsers))
+    Ok(TrayMenu {
+        tray,
+        menu,
+        attention,
+        status,
+        pause,
+        resume,
+        journal,
+        attention_target,
+        attention_shown: false,
+        pause_shown: true,
+        resume_shown: false,
+        journal_shown: false,
+    })
+}
+
+/// The attention row is named for the owner. The page route is the source id.
+fn attention_route(name: &str) -> &str {
+    match name {
+        "Obsidian" => "obsidian",
+        other => other,
+    }
+}
+
+fn place(menu: &Menu<Wry>, item: &impl IsMenuItem<Wry>, shown: &mut bool, want: bool, at: usize) {
+    if *shown == want {
+        return;
+    }
+    let result = if want {
+        menu.insert(item, at)
+    } else {
+        menu.remove(item)
+    };
+    if result.is_ok() {
+        *shown = want;
+    }
 }
 
 /// Re-render the tray from `dump`; returns what it shows, for the notifier.
-pub fn apply_state(
-    tray: &TrayIcon,
-    pause_submenu: &Submenu<Wry>,
-    mi_resume: &MenuItem<Wry>,
-    mi_restart: &MenuItem<Wry>,
-    browsers: Option<&MenuItem<Wry>>,
-    dump: &HealthDump,
-    obsidian_on: bool,
-) -> (TrayVisual, Option<SourceKind>) {
+pub fn apply_state(menu: &mut TrayMenu, dump: &HealthDump) -> (TrayVisual, Option<SourceKind>) {
     let fault_detail = owner_fault_detail(&dump.sources, dump.storage.as_ref(), |kind| {
         dump.setup.is_enabled(kind)
     });
@@ -273,18 +259,81 @@ pub fn apply_state(
         blocked,
         deliberate_off,
     );
-    let _ = tray.set_icon(Some(icon_for(visual)));
-    let _ = tray.set_tooltip(Some(tooltip));
-    let _ = pause_submenu.set_enabled(pause_enabled(dump.app_state, obsidian_on));
-    let _ = mi_resume.set_enabled(resume_enabled(dump.app_state));
-    let _ = mi_restart.set_enabled(restart_enabled(dump.app_state));
+    let _ = menu.tray.set_icon(Some(icon_for(visual)));
+    let _ = menu.tray.set_tooltip(Some(tooltip));
+    let _ = menu.status.set_text(menu_status_line(dump));
+
     #[cfg(feature = "browser-host")]
-    if let Some(item) = browsers {
-        let _ = item.set_text(browsers_menu_text(crate::browser::status().as_ref()));
-    }
+    let browsers = crate::browser::needs_attention();
     #[cfg(not(feature = "browser-host"))]
-    {
-        let _ = browsers;
+    let browsers = false;
+    let source = attention_source(
+        &dump.sources,
+        |kind| dump.setup.is_enabled(kind),
+        browsers,
+        crate::obsidian::needs_attention(),
+        dump.app_state == AppPhase::Paused,
+    );
+    if let Some(name) = source {
+        let _ = menu.attention.set_text(format!("{name} needs attention"));
+        if let Ok(mut slot) = menu.attention_target.lock() {
+            *slot = attention_route(name).to_string();
+        }
+    }
+    place(
+        &menu.menu,
+        &menu.attention,
+        &mut menu.attention_shown,
+        source.is_some(),
+        0,
+    );
+
+    let paused = dump.app_state == AppPhase::Paused;
+    let pause_at = usize::from(menu.attention_shown) + 1;
+    if paused {
+        place(
+            &menu.menu,
+            &menu.pause,
+            &mut menu.pause_shown,
+            false,
+            pause_at,
+        );
+        place(
+            &menu.menu,
+            &menu.resume,
+            &mut menu.resume_shown,
+            true,
+            pause_at,
+        );
+    } else {
+        place(
+            &menu.menu,
+            &menu.resume,
+            &mut menu.resume_shown,
+            false,
+            pause_at,
+        );
+        place(
+            &menu.menu,
+            &menu.pause,
+            &mut menu.pause_shown,
+            true,
+            pause_at,
+        );
+    }
+
+    let paired = dump.sync.pairing.phase == PairingPhase::Paired;
+    let journal_at = usize::from(menu.attention_shown) + 3;
+    place(
+        &menu.menu,
+        &menu.journal,
+        &mut menu.journal_shown,
+        paired,
+        journal_at,
+    );
+    if paired {
+        let reachable = matches!(dump.sync.journal_link, Some(JournalLink::Connected));
+        let _ = menu.journal.set_enabled(reachable);
     }
     (visual, blocked)
 }
