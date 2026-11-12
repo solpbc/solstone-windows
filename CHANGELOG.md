@@ -8,7 +8,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Added
 
-- import, a new tile beside your sources, adds PDFs, audio, images and text to your journal. choose files on its page, or drop them on the settings window. each one waits on this PC until your journal has it, and the import page lists the ones still waiting. if your journal needs an update before it can take them, they wait for that, and the import page says so.
+- import, a new tile beside your sources, adds PDFs, audio, images and text to your journal. choose files on its page, or drop them on the settings window. each one waits on this PC until your journal has it, and the import page lists the ones still waiting. if your journal needs an update before it can take them, they wait for that, and the import page says so. a journal on a windows PC can't take imports yet: your files stay on this PC, and the import page shows what your journal said.
 
 ### Changed
 
