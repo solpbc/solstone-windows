@@ -567,3 +567,91 @@ async fn the_vault_is_byte_identical_after_a_full_run() {
     assert_eq!(f.journal.delivered_count(), 2);
     assert_eq!(dump_tree(&f.vault), before);
 }
+
+#[tokio::test]
+async fn a_restart_sends_the_vault_again_after_the_same_name_check() {
+    let mut f = fixture();
+    write_note(&f.vault, "a.md", "aaa", T0 - 7_200_000);
+    turn_on(&mut f).await;
+    steps_until_quiet(&mut f).await;
+    assert_eq!(f.journal.delivered_count(), 1);
+    let asks = *f.journal.capability_calls.lock().unwrap();
+
+    *f.journal.vaults.lock().unwrap() = Some(VaultList::Listed(vec![ListedVault {
+        vault: "Notes".into(),
+        device: Some("studio".into()),
+        last_synced_at: None,
+    }]));
+    f.handle.restart_send();
+    f.worker.restart_if_asked().await;
+    let doc = state(&f);
+    assert_eq!(doc.status.state, State::Checking);
+    assert_eq!(doc.status.vault.as_deref(), Some("Notes"), "the same vault");
+    steps_until_quiet(&mut f).await;
+    assert!(
+        *f.journal.capability_calls.lock().unwrap() > asks,
+        "the journal is asked again"
+    );
+    assert_eq!(state(&f).status.state, State::Confirm);
+    assert_eq!(
+        f.journal.delivered_count(),
+        1,
+        "not before the owner continues"
+    );
+
+    let (reply, _answer) = oneshot::channel();
+    f.worker.handle(Command::Continue(reply)).await;
+    f.worker.step().await;
+    steps_until_quiet(&mut f).await;
+    let delivered = f.journal.delivered.lock().unwrap().clone();
+    assert_eq!(delivered.len(), 2, "the note went again");
+    assert_eq!(delivered[1].1.first_sight, 1);
+    let doc = state(&f);
+    assert_eq!(doc.status.state, State::On);
+    assert_eq!(doc.status.first_sync, None, "and the first send finished");
+}
+
+#[tokio::test]
+async fn a_changed_pairing_alone_sends_nothing_again() {
+    let mut f = fixture();
+    write_note(&f.vault, "a.md", "aaa", T0 - 7_200_000);
+    turn_on(&mut f).await;
+    steps_until_quiet(&mut f).await;
+    assert_eq!(f.journal.delivered_count(), 1);
+
+    // A reconnect or a relaunch: asked again, but no restart.
+    f.journal.pairing_changed.store(true, Ordering::Release);
+    f.worker.restart_if_asked().await;
+    f.worker.next_scan = Instant::now();
+    f.worker.step().await;
+    steps_until_quiet(&mut f).await;
+    assert_eq!(f.journal.delivered_count(), 1);
+    assert_eq!(state(&f).status.state, State::On);
+}
+
+#[tokio::test]
+async fn the_running_source_takes_a_restart_without_a_command() {
+    let mut f = fixture();
+    write_note(&f.vault, "a.md", "aaa", T0 - 7_200_000);
+    turn_on(&mut f).await;
+    steps_until_quiet(&mut f).await;
+    assert_eq!(f.journal.delivered_count(), 1);
+
+    let Fixture {
+        worker,
+        handle,
+        journal,
+        temp: _temp,
+        ..
+    } = f;
+    let task = tokio::spawn(worker.run());
+    handle.restart_send();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while journal.delivered_count() < 2 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the note went again");
+    task.abort();
+}

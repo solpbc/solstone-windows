@@ -116,6 +116,8 @@ struct HandleInner {
     cancel: Arc<AtomicBool>,
     cancel_notify: Arc<Notify>,
     on: watch::Receiver<bool>,
+    restart: Arc<AtomicBool>,
+    restart_notify: Arc<Notify>,
 }
 
 impl ObsidianHandle {
@@ -178,6 +180,17 @@ impl ObsidianHandle {
     pub async fn cancel_warning(&self) -> ObsidianDocument {
         self.call(Command::Cancel).await
     }
+
+    /// The owner paired a journal: the vault's current notes go to it once, as
+    /// their first send. Returns at once; the source does it with its own work,
+    /// before it scans again.
+    pub fn restart_send(&self) {
+        let Some(inner) = &self.inner else { return };
+        // A scan under way stops early, so the restart isn't kept waiting.
+        inner.cancel.store(true, Ordering::Release);
+        inner.restart.store(true, Ordering::Release);
+        inner.restart_notify.notify_one();
+    }
 }
 
 /// The source's task state.
@@ -190,6 +203,8 @@ pub(crate) struct Worker<J: Journal> {
     cancel: Arc<AtomicBool>,
     cancel_notify: Arc<Notify>,
     on: watch::Sender<bool>,
+    restart: Arc<AtomicBool>,
+    restart_notify: Arc<Notify>,
     next_scan: Instant,
     next_vault_check: Instant,
     capability: Option<bool>,
@@ -210,6 +225,8 @@ impl<J: Journal> Worker<J> {
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_notify = Arc::new(Notify::new());
         let (on, on_rx) = watch::channel(false);
+        let restart = Arc::new(AtomicBool::new(false));
+        let restart_notify = Arc::new(Notify::new());
         let handle = ObsidianHandle {
             inner: Some(Arc::new(HandleInner {
                 commands,
@@ -217,6 +234,8 @@ impl<J: Journal> Worker<J> {
                 cancel: Arc::clone(&cancel),
                 cancel_notify: Arc::clone(&cancel_notify),
                 on: on_rx,
+                restart: Arc::clone(&restart),
+                restart_notify: Arc::clone(&restart_notify),
             })),
         };
         let worker = Self {
@@ -228,6 +247,8 @@ impl<J: Journal> Worker<J> {
             cancel,
             cancel_notify,
             on,
+            restart,
+            restart_notify,
             next_scan: Instant::now(),
             next_vault_check: Instant::now(),
             capability: None,
@@ -272,6 +293,7 @@ impl<J: Journal> Worker<J> {
             if self.engine.is_none() {
                 break;
             }
+            self.restart_if_asked().await;
             while let Ok(command) = self.commands.try_recv() {
                 self.handle(command).await;
             }
@@ -282,6 +304,7 @@ impl<J: Journal> Worker<J> {
             }
             let wait = if busy { Duration::ZERO } else { TICK };
             tokio::select! {
+                () = self.restart_notify.notified() => {}
                 command = self.commands.recv() => {
                     let Some(command) = command else { break };
                     self.handle(command).await;
@@ -360,6 +383,21 @@ impl<J: Journal> Worker<J> {
                 let _ = reply.send(self.document(None));
             }
         }
+    }
+
+    async fn restart_if_asked(&mut self) {
+        if !self.restart.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        self.cancel.store(false, Ordering::Release);
+        if let Some(Err(error)) = self.with_engine(Engine::restart_send).await {
+            tracing::warn!(target: "obsidian", %error, "Couldn't start the Obsidian first send again");
+        }
+        self.next_scan = Instant::now();
+        self.next_vault_check = Instant::now();
+        self.capability = None;
+        self.capability_checked = None;
+        self.publish();
     }
 
     /// One turn of the source. Returns whether there's more to do right away.

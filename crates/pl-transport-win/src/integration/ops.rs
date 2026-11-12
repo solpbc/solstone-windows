@@ -690,6 +690,7 @@ pub async fn fetch(
         segments_root: environment.segments_root.clone(),
         local_offset: Arc::new(FixedOffset(0)),
         journal_version: jv,
+        on_new_confirmation: Arc::new(|| {}),
         facts_fn: Arc::new(RawDeviceFacts::default),
         confirmation: Arc::new(Mutex::new(confirmed)),
         tombstone: Arc::new(Mutex::new(None)),

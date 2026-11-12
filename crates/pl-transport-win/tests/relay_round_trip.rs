@@ -206,6 +206,7 @@ async fn start_test_bridge(
         state_path,
         local_offset: Arc::new(TestOffset),
         journal_version,
+        on_new_confirmation: Arc::new(|| {}),
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: Arc::new(Mutex::new(binding)),
         tombstone: Arc::new(Mutex::new(None)),

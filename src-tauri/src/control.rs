@@ -224,6 +224,7 @@ mod tests {
             journal_version: Arc::new(pl_transport_win::JournalVersionController::new(
                 journal_version_path,
             )),
+            on_new_confirmation: Arc::new(|| {}),
             facts_fn: Arc::new(|| pl_transport_win::RawDeviceFacts {
                 name: Some("test-device".to_string()),
                 platform: Some("windows".to_string()),

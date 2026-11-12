@@ -218,6 +218,14 @@ pub fn start(app: tauri::AppHandle, counters: Option<source_counters::SharedCoun
     tauri::async_runtime::spawn(work);
 }
 
+/// The owner confirmed a newly paired journal: the source sends the vault's
+/// current notes to it once. Returns at once.
+pub fn restart_send() {
+    if let Some(handle) = handle() {
+        handle.restart_send();
+    }
+}
+
 /// Whether the source is on, and when that changes.
 pub fn on_changes() -> Option<tokio::sync::watch::Receiver<bool>> {
     handle().map(ObsidianHandle::on_changes)

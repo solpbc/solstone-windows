@@ -104,6 +104,7 @@ async fn replacement_during_send(same_journal: bool, old_outcome: UploadOutcome)
         journal_version: Arc::new(JournalVersionController::new(
             dir.path().join("version.json"),
         )),
+        on_new_confirmation: Arc::new(|| {}),
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: confirmation.clone(),
         tombstone: Arc::new(Mutex::new(None)),

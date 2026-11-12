@@ -49,6 +49,10 @@ pub struct SyncConfig {
     pub journal_version: Arc<JournalVersionController>,
     /// Device facts resampler for post-connect publication.
     pub facts_fn: Arc<dyn Fn() -> RawDeviceFacts + Send + Sync>,
+    /// Called when the owner confirms a journal's mark for a pairing not
+    /// confirmed before, so each source starts its first setup again for it.
+    /// Never for a repeat confirmation or a relaunch. It must not block.
+    pub on_new_confirmation: Arc<dyn Fn() + Send + Sync>,
     /// Process-local confirmation digest cache.
     pub confirmation: Arc<Mutex<String>>,
     /// Tombstone digest of the most recently rejected/cancelled pairing.
@@ -803,6 +807,7 @@ mod tests {
             segments_root: dir.join("segments"),
             local_offset: Arc::new(FixedOffset(0)),
             journal_version: Arc::new(JournalVersionController::new(dir.join("jv.json"))),
+            on_new_confirmation: Arc::new(|| {}),
             facts_fn: Arc::new(|| RawDeviceFacts {
                 name: Some("test".into()),
                 platform: Some("windows".into()),
@@ -912,6 +917,7 @@ mod tests {
             segments_root: dir.join("segments"),
             local_offset: Arc::new(FixedOffset(0)),
             journal_version: Arc::new(JournalVersionController::new(dir.join("jv.json"))),
+            on_new_confirmation: Arc::new(|| {}),
             facts_fn: Arc::new(|| RawDeviceFacts {
                 name: Some("test".into()),
                 platform: Some("windows".into()),
@@ -947,6 +953,7 @@ mod tests {
             segments_root: dir.join("segments"),
             local_offset: Arc::new(FixedOffset(0)),
             journal_version: Arc::new(JournalVersionController::new(dir.join("jv.json"))),
+            on_new_confirmation: Arc::new(|| {}),
             facts_fn: Arc::new(|| RawDeviceFacts {
                 name: Some("test".into()),
                 platform: Some("windows".into()),

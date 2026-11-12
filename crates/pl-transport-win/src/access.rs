@@ -204,6 +204,7 @@ mod tests {
             journal_version: Arc::new(JournalVersionController::new(
                 dir.join("journal-version.json"),
             )),
+            on_new_confirmation: Arc::new(|| {}),
             facts_fn: Arc::new(|| RawDeviceFacts {
                 name: None,
                 platform: None,

@@ -453,6 +453,7 @@ fn build_sync_config() -> SyncConfig {
         journal_version: Arc::new(pl_transport_win::JournalVersionController::new(
             journal_version_path,
         )),
+        on_new_confirmation: Arc::new(crate::obsidian::restart_send),
         facts_fn: Arc::new(current_raw_facts),
         confirmation: Arc::new(Mutex::new(String::new())),
         tombstone: Arc::new(Mutex::new(None)),

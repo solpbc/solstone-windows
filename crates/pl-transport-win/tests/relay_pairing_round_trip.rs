@@ -345,6 +345,7 @@ fn service_config(state_path: PathBuf) -> SyncConfig {
         state_path,
         local_offset: Arc::new(TestOffset),
         journal_version: Arc::new(pl_transport_win::JournalVersionController::new(jv_path)),
+        on_new_confirmation: Arc::new(|| {}),
         facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
         confirmation: Arc::new(std::sync::Mutex::new(String::new())),
         tombstone: Arc::new(std::sync::Mutex::new(None)),

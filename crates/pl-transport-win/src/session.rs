@@ -176,10 +176,14 @@ fn confirm_current(
     let mut answer_state =
         crate::answer::read_answer_or_reset_with_owner_lock(&answer_path(&cfg.state_path))?
             .unwrap_or_default();
+    let new_confirmation = answer_state.confirmed != binding;
     answer_state.confirmed = binding.to_string();
     crate::answer::note_unverified_pairing(&cfg.state_path, credential, binding)?;
     crate::answer::write_answer_with_owner_lock(&answer_path(&cfg.state_path), &answer_state)?;
     *cfg.confirmation.lock().unwrap() = binding.to_string();
+    if new_confirmation {
+        (cfg.on_new_confirmation)();
+    }
     client.open_gate();
     slot.kick();
     publish_pairing(
@@ -1249,6 +1253,7 @@ mod pure_session_tests {
             journal_version: Arc::new(JournalVersionController::new(
                 root.join("journal-version.json"),
             )),
+            on_new_confirmation: Arc::new(|| {}),
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
@@ -1724,6 +1729,7 @@ mod pure_session_tests {
             journal_version: Arc::new(JournalVersionController::new(
                 dir.join("journal-version.json"),
             )),
+            on_new_confirmation: Arc::new(|| {}),
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
@@ -1801,6 +1807,7 @@ mod pure_session_tests {
             journal_version: Arc::new(JournalVersionController::new(
                 dir.join("journal-version.json"),
             )),
+            on_new_confirmation: Arc::new(|| {}),
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
@@ -1887,6 +1894,7 @@ mod pure_session_tests {
             journal_version: Arc::new(JournalVersionController::new(
                 dir.join("journal-version.json"),
             )),
+            on_new_confirmation: Arc::new(|| {}),
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
@@ -1974,6 +1982,7 @@ mod pure_session_tests {
             journal_version: Arc::new(JournalVersionController::new(
                 dir.join("journal-version.json"),
             )),
+            on_new_confirmation: Arc::new(|| {}),
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
@@ -2065,6 +2074,7 @@ mod pure_session_tests {
             journal_version: Arc::new(JournalVersionController::new(
                 dir.join("journal-version.json"),
             )),
+            on_new_confirmation: Arc::new(|| {}),
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
@@ -2377,6 +2387,40 @@ mod pure_session_tests {
         assert_eq!(narrowed.endpoints.len(), 2);
         assert_eq!(narrowed.endpoints[0].host, "127.0.0.1");
         assert_eq!(narrowed.endpoints[1].host, "127.0.0.2");
+    }
+
+    #[tokio::test]
+    async fn only_a_new_confirmation_starts_the_sources_again() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let mut harness = setup_test_harness(REAL_JID);
+        let count = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&count);
+        harness.cfg.on_new_confirmation = Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+        let confirm = |harness: &TestHarness| {
+            confirm_current(
+                &harness.binding,
+                &harness.cfg,
+                &harness.sync,
+                Some(&harness.access),
+                &harness.slot,
+            )
+            .unwrap()
+        };
+        assert_eq!(confirm(&harness), AnswerEffect::Confirmed);
+        assert_eq!(count.load(Ordering::SeqCst), 1, "a new confirmation");
+
+        assert_eq!(confirm(&harness), AnswerEffect::Confirmed);
+        assert_eq!(count.load(Ordering::SeqCst), 1, "the same one again");
+
+        // A relaunch finds the confirmed pairing and binds it again.
+        let relaunched = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let mut slot = UploaderSlot::new();
+        let access = crate::service::launch_resume(&harness.cfg, &relaunched, &mut slot).await;
+        assert!(access.is_some(), "bound again");
+        slot.stop().await;
+        assert_eq!(count.load(Ordering::SeqCst), 1, "a relaunch");
     }
 
     #[tokio::test]
@@ -3153,6 +3197,7 @@ mod tests {
             journal_version: Arc::new(JournalVersionController::new(
                 dir.join("journal-version.json"),
             )),
+            on_new_confirmation: Arc::new(|| {}),
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: tombstone.clone(),
@@ -3522,6 +3567,7 @@ mod tests {
             journal_version: Arc::new(JournalVersionController::new(
                 dir.join("journal-version.json"),
             )),
+            on_new_confirmation: Arc::new(|| {}),
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
@@ -3797,6 +3843,7 @@ mod tests {
                 journal_version: Arc::new(JournalVersionController::new(
                     dir.join("journal-version.json"),
                 )),
+                on_new_confirmation: Arc::new(|| {}),
                 facts_fn: Arc::new(RawDeviceFacts::default),
                 confirmation: Arc::new(Mutex::new(String::new())),
                 tombstone: Arc::new(Mutex::new(None)),
@@ -4318,6 +4365,7 @@ mod tests {
             journal_version: Arc::new(JournalVersionController::new(
                 dir.join("journal-version.json"),
             )),
+            on_new_confirmation: Arc::new(|| {}),
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
@@ -4456,6 +4504,7 @@ mod tests {
             journal_version: Arc::new(JournalVersionController::new(
                 dir.join("journal-version.json"),
             )),
+            on_new_confirmation: Arc::new(|| {}),
             facts_fn: Arc::new(RawDeviceFacts::default),
             confirmation: Arc::new(Mutex::new(String::new())),
             tombstone: Arc::new(Mutex::new(None)),
