@@ -383,7 +383,11 @@ async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Res
                 Some(Ok(ImportReply::Refused {
                     sentence,
                     retryable,
+                    clear_saved,
                 })) => {
+                    if clear_saved {
+                        item.saved = None;
+                    }
                     item.refusal = Some(Refusal {
                         journal: journal.clone(),
                         version: version.clone(),

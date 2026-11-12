@@ -28,7 +28,11 @@ pub enum ImportReply {
     Delivered,
     Retry,
     AuthStop,
-    Refused { sentence: String, retryable: bool },
+    Refused {
+        sentence: String,
+        retryable: bool,
+        clear_saved: bool,
+    },
 }
 
 /// Held file and its original display metadata. Only bounded framing is held
@@ -162,7 +166,8 @@ pub(crate) fn classify(
         } else {
             ImportReply::Refused {
                 sentence: "your journal couldn't accept this.".into(),
-                retryable: true,
+                retryable: false,
+                clear_saved: false,
             }
         };
     };
@@ -197,18 +202,25 @@ pub(crate) fn classify(
     if (200..300).contains(&response.status) {
         return ImportReply::Retry;
     }
-    let sentence =
-        nonempty(&value, "error").unwrap_or_else(|| "your journal couldn't accept this.".into());
-    let retryable = !matches!(
-        value["reason_code"].as_str(),
-        Some("multipart_part_too_large" | "ingest_no_files")
-    ) && !matches!(
-        value["kind"].as_str(),
-        Some("client_item_conflict" | "nothing_to_import")
-    );
+    let Some((sentence, reason)) = nonempty(&value, "error").zip(nonempty(&value, "reason_code"))
+    else {
+        return ImportReply::Refused {
+            sentence: "your journal couldn't accept this.".into(),
+            retryable: false,
+            clear_saved: false,
+        };
+    };
+    let retryable = matches!(
+        reason.as_str(),
+        "import_queue_unreachable"
+            | "import_metadata_failed"
+            | "import_not_found"
+            | "import_preview_required"
+    ) && value["kind"] != "client_item_conflict";
     ImportReply::Refused {
         sentence,
         retryable,
+        clear_saved: retryable && reason == "import_not_found",
     }
 }
 
@@ -272,6 +284,40 @@ mod tests {
                     None
                 ),
                 ImportReply::Refused { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn retry_is_limited_to_known_transient_refusals() {
+        for reason in [
+            "import_queue_unreachable",
+            "import_metadata_failed",
+            "import_not_found",
+            "import_preview_required",
+        ] {
+            let body = serde_json::json!({"error":"held", "reason_code":reason}).to_string();
+            assert_eq!(
+                classify(&answer(400, &body), true, None),
+                ImportReply::Refused {
+                    sentence: "held".into(),
+                    retryable: true,
+                    clear_saved: reason == "import_not_found"
+                }
+            );
+        }
+        for body in [
+            "not json",
+            r#"{"error":"held"}"#,
+            r#"{"error":"held","reason_code":"unknown"}"#,
+            r#"{"error":"held","reason_code":"import_not_found","kind":"client_item_conflict"}"#,
+        ] {
+            assert!(matches!(
+                classify(&answer(400, body), true, None),
+                ImportReply::Refused {
+                    retryable: false,
+                    ..
+                }
             ));
         }
     }

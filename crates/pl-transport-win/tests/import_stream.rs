@@ -294,7 +294,8 @@ async fn an_early_http_refusal_stops_a_large_body_and_preserves_the_copy() {
         reply,
         ImportReply::Refused {
             sentence: "your journal couldn't accept this.".into(),
-            retryable: true
+            retryable: false,
+            clear_saved: false
         }
     );
     server.await.unwrap();
