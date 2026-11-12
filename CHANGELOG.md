@@ -15,6 +15,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 - settings now opens on your sources. each one has a tile with its state, and audio, screen and Obsidian have their switch right on the tile. beside the tiles, status shows how much each source has taken in for your journal so far, and when it last took something in. a tile opens that source's page in place of status. on the left are home, your journal, this PC, updates and help, and what you leave out is now on screen's page, under left out.
 - the tray icon's menu is now shorter. it names a source only when that source needs attention, and each source's state is on its tile in the window.
 
+### Fixed
+
+- when you pair a new journal, or your journal again, your Obsidian notes go into it, as when you first turned Obsidian on. before, only notes you changed afterwards reached it.
+
 ## [2.0.47] - 2026-11-10
 
 ### Changed
