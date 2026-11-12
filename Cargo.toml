@@ -107,7 +107,7 @@ browser-host = { path = "crates/browser-host" }
 obsidian-source = { path = "crates/obsidian-source" }
 source-counters = { path = "crates/source-counters" }
 # The Obsidian vault engine, shared with the Linux desktop app. This copy comes
-# from solstone-linux crates/solstone-vault at 1c34a89.
+# from solstone-linux crates/solstone-vault at f76df62.
 solstone-vault = { path = "vendor/solstone-vault" }
 journal-window = { path = "crates/journal-window" }
 # Shared native-browser contract crate, vendored byte-for-byte from
