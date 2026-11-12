@@ -30,6 +30,8 @@ pub(crate) enum OrdinaryRequest {
     LocalEndpointsGet,
     LinkIdentityGet,
     ObsidianVaultsGet,
+    ImportSavePost,
+    ImportStartPost,
 }
 
 /// One route's transport authority.
@@ -44,7 +46,7 @@ pub(crate) struct OrdinaryRequestSpec {
 }
 
 impl OrdinaryRequest {
-    pub(crate) const ALL: [Self; 16] = [
+    pub(crate) const ALL: [Self; 18] = [
         Self::ClientsListGet,
         Self::ClientsSelfGet,
         Self::ClientsSelfPut,
@@ -61,6 +63,8 @@ impl OrdinaryRequest {
         Self::LocalEndpointsGet,
         Self::LinkIdentityGet,
         Self::ObsidianVaultsGet,
+        Self::ImportSavePost,
+        Self::ImportStartPost,
     ];
 
     pub(crate) const fn spec(self) -> OrdinaryRequestSpec {
@@ -169,6 +173,17 @@ impl OrdinaryRequest {
                 replay: ReplayPolicy::ReplaySafe,
                 response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
                 gated: false,
+            },
+            Self::ImportSavePost | Self::ImportStartPost => OrdinaryRequestSpec {
+                method: "POST",
+                path_pattern: if matches!(self, Self::ImportSavePost) {
+                    "/app/import/api/save"
+                } else {
+                    "/app/import/api/start"
+                },
+                replay: ReplayPolicy::ReplaySafe,
+                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: true,
             },
             Self::ObsidianVaultsGet => OrdinaryRequestSpec {
                 method: "GET",
@@ -360,6 +375,22 @@ mod tests {
                 OrdinaryRequest::ObsidianVaultsGet,
                 "GET",
                 "/app/devices/ingest/obsidian/vaults",
+                ReplayPolicy::ReplaySafe,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                true,
+            ),
+            (
+                OrdinaryRequest::ImportSavePost,
+                "POST",
+                "/app/import/api/save",
+                ReplayPolicy::ReplaySafe,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                true,
+            ),
+            (
+                OrdinaryRequest::ImportStartPost,
+                "POST",
+                "/app/import/api/start",
                 ReplayPolicy::ReplaySafe,
                 MAX_POST_CONNECT_RESPONSE_BYTES,
                 true,

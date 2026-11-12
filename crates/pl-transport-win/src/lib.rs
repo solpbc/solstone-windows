@@ -30,6 +30,7 @@ pub mod credential;
 pub mod device_metadata;
 pub mod draft;
 pub mod handoff;
+pub mod import_client;
 pub mod integration;
 pub mod journal_bridge;
 pub mod journal_version;
@@ -48,6 +49,7 @@ pub mod service;
 pub mod session;
 pub mod slot;
 pub mod source_upload;
+mod streamed_request;
 pub mod unknown_journals;
 
 #[cfg(any(test, feature = "transport-tests"))]

@@ -22,7 +22,7 @@ base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["net", "io-util", "rt", "macros", "time", "sync"] }
+tokio = { workspace = true, features = ["net", "io-util", "fs", "rt", "macros", "time", "sync"] }
 rustls.workspace = true
 tokio-rustls.workspace = true
 rcgen.workspace = true
@@ -94,4 +94,8 @@ required-features = ["transport-tests"]
 
 [[test]]
 name = "upload_lifecycle_log"
+required-features = ["transport-tests"]
+
+[[test]]
+name = "import_stream"
 required-features = ["transport-tests"]

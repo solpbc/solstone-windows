@@ -105,6 +105,32 @@ mod tests {
         .unwrap();
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn separate_file_requests_share_the_pairings_refusal_bound() {
+        use spl_transport::handshake::{REFUSAL_LIMIT, REFUSAL_SPACING};
+        use spl_transport::journal_bridge::JournalBridgeStatus;
+        let client =
+            ObserverClient::new(relay_credential(), Arc::new(AtomicBool::new(true))).unwrap();
+        for attempt in 1..=REFUSAL_LIMIT {
+            let status = JournalBridgeStatus {
+                listener_active: true,
+                contacted: true,
+                carrier_live: false,
+                terminal_reason: None,
+                last_failure: Some(HandshakeFailure::TlsRefused),
+                refusals: 1,
+                active_requests: 0,
+            };
+            let stop = client.note_streamed_attempt(&status, false);
+            assert_eq!(stop.is_some(), attempt == REFUSAL_LIMIT);
+            tokio::time::advance(REFUSAL_SPACING).await;
+        }
+        assert_eq!(
+            client.refusal_stop(),
+            Some(HandshakeStop::RefusalsExhausted)
+        );
+    }
+
     #[test]
     fn carrier_kind_maps_to_transport_path() {
         assert_eq!(
@@ -948,6 +974,20 @@ impl ObserverClient {
         }
     }
 
+    pub(crate) fn note_streamed_attempt(
+        &self,
+        status: &spl_transport::journal_bridge::JournalBridgeStatus,
+        answered: bool,
+    ) -> Option<HandshakeStop> {
+        let mut refusals = self.refusals.lock().unwrap();
+        if let Some(failure) = status.last_failure {
+            refusals.failed(failure);
+        } else if answered {
+            refusals.accepted();
+        }
+        refusals.stop()
+    }
+
     /// Access the underlying credential.
     pub fn credential(&self) -> &Credential {
         &self.credential
@@ -1512,14 +1552,14 @@ impl ObserverClient {
         }
     }
 
-    async fn ordinary_request(
+    pub(crate) async fn ordinary_request(
         &self,
         route: OrdinaryRequest,
         target: Option<&str>,
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<(HttpResponse, SendMetadata), RouteError> {
-        debug_assert_eq!(OrdinaryRequest::ALL.len(), 16);
+        debug_assert_eq!(OrdinaryRequest::ALL.len(), 18);
         let spec = route.spec();
         if spec.gated && !self.gate_open() {
             return Err(RouteError::AwaitingConfirmation);
