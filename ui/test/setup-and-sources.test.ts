@@ -688,7 +688,7 @@ describe("setup and source transitions", () => {
       expect(withheldProof.textContent).toBe("");
     });
 
-    it("renders unavailable/error token plus detail, leaves not-now enabled, and retry inside proof invokes set_source_enabled", async () => {
+    it("renders a missing device as its sentence alone, with no retry, and leaves not-now enabled", () => {
       const dump = {
         ...observingDump(),
         setup: {
@@ -713,8 +713,42 @@ describe("setup and source transitions", () => {
       app.__test__.renderSettings(dump);
 
       const micProof = present(ids["settings.setup.mic.proof"]);
-      expect(micProof.textContent).toContain("unavailable");
+      expect(micProof.textContent).not.toContain("unavailable");
       expect(micProof.textContent).toContain("no microphone is available");
+      expect(micProof.querySelector("button")).toBeNull();
+
+      const notNowBtn = present(ids["settings.setup.notNow"]) as HTMLButtonElement;
+      expect(notNowBtn.disabled).toBe(false);
+    });
+
+    it("renders denied access with its sentence and a retry that invokes set_source_enabled", async () => {
+      const dump = {
+        ...observingDump(),
+        setup: {
+          sequence_enabled: true,
+          mic: true,
+          system_audio: true,
+          screen: true,
+          start_at_login: false,
+          wizard: "mic" as const,
+          notice_dismissed: false,
+        },
+        sources: [
+          {
+            kind: "mic" as const,
+            status: "faulted" as const,
+            reason: "access_denied",
+            detail: "mic denied",
+            device: null,
+          },
+        ],
+      };
+      app.__test__.setRoute("home");
+      app.__test__.renderSettings(dump);
+
+      const micProof = present(ids["settings.setup.mic.proof"]);
+      expect(micProof.textContent).not.toContain("error:");
+      expect(micProof.textContent).toContain("access was denied");
 
       const notNowBtn = present(ids["settings.setup.notNow"]) as HTMLButtonElement;
       expect(notNowBtn.disabled).toBe(false);
@@ -2844,10 +2878,9 @@ describe("setup frame design and lifecycle", () => {
     };
     app.__test__.renderSettings(unavailableDump);
     const proofUnavailable = document.querySelector(".wizard-proof")!;
-    expect(proofUnavailable.textContent).toContain("unavailable");
+    expect(proofUnavailable.textContent).not.toContain("unavailable");
     expect(proofUnavailable.textContent).toContain("no microphone is available");
-    const retryBtn = document.getElementById("setup-proof-retry");
-    expect(retryBtn).not.toBeNull();
+    expect(document.getElementById("setup-proof-retry")).toBeNull();
     const continueBtn2 = byId(ids["settings.setup.next"])!;
     expect(continueBtn2.textContent).toBe("continue");
   });

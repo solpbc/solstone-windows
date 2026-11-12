@@ -50,6 +50,7 @@ const quietScreen: ScreenTileInput = {
   failed: false,
   activityFailed: false,
   activityOn: false,
+  activityRunning: false,
   appPaused: false,
   running: false,
   permissionAsked: true,
@@ -163,7 +164,7 @@ describe("audio", () => {
 
 describe("screen", () => {
   it("stays off when activity is kept on, and carries that fact", () => {
-    const tile = screenTile({ ...quietScreen, activityOn: true });
+    const tile = screenTile({ ...quietScreen, activityOn: true, activityRunning: true });
     expect(tile.word).toBe("off");
     expect(tile.activityKept).toBe(true);
     expect(tile.activityAlongside).toBe(false);
@@ -186,9 +187,22 @@ describe("screen", () => {
   });
 
   it("stays paused when activity is still going, and carries that fact", () => {
-    const tile = screenTile({ ...quietScreen, enabled: true, appPaused: true, activityOn: true });
+    const tile = screenTile({
+      ...quietScreen,
+      enabled: true,
+      appPaused: true,
+      activityOn: true,
+      activityRunning: true,
+    });
     expect(tile.word).toBe("paused");
     expect(tile.activityKept).toBe(true);
+  });
+
+  it("does not claim activity is still on when the pause stopped it", () => {
+    const tile = screenTile({ ...quietScreen, enabled: true, appPaused: true, activityOn: true });
+    expect(tile.word).toBe("paused");
+    expect(tile.activityKept).toBe(false);
+    expect(tile.activityAlongside).toBe(true);
   });
 
   it("is needs attention when access is denied", () => {

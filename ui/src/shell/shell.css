@@ -640,8 +640,15 @@ html:has(.desk-shell) #app {
   margin: 0 0 12px;
 }
 
-.desk-reason + .desk-connect {
+.desk-reason + .desk-connect,
+.desk-actions {
   margin-bottom: 16px;
+}
+
+.desk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .desk-switch-row {

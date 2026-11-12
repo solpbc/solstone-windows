@@ -4691,9 +4691,14 @@ function fillProofNode(node: HTMLElement, kind: SourceKind, preview: PreviewSnap
       : report?.reason === "access_denied" || report?.reason === "AccessDenied"
         ? ACCESS_DENIED_LINE
         : undefined;
-    const label = reason ? `${status}: ${reason}` : status;
-    const textEl = text("span", label);
+    const noDevice = reason === NO_MICROPHONE_LINE || reason === NO_OUTPUT_LINE;
+    const textEl = text("span", reason ?? status);
     textEl.classList.add("proof-status");
+    // A missing device is picked up on its own, so there is nothing to retry.
+    if (noDevice) {
+      node.replaceChildren(textEl);
+      return;
+    }
     const retryBtn = actionButton("retry", undefined, true, () => {
       void invoke("set_source_enabled", { kind, enabled: true }).then(() => retryHealth());
     }, false, "standard");
@@ -5717,6 +5722,7 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
     failed: Boolean(screen && screen.status === "faulted" && !isAccessDenied(screen)),
     activityFailed: Boolean(activity && activity.status === "faulted" && !isAccessDenied(activity) && setup?.desktop_activity === true),
     activityOn: setup?.desktop_activity === true,
+    activityRunning: activity?.status === "active",
     appPaused: paused,
     running: screen?.status === "active",
     permissionAsked: true,
@@ -6152,14 +6158,17 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
     const capture = latestBrowser?.capture;
     if (capture === "not_paired" || capture === "unavailable" || !latestBrowser) {
       body.append(deskReason(BROWSER_COPY.setup));
-      if (latestBrowser) {
+      if (latestBrowser && latestBrowser.stores.length > 0) {
+        const stores = document.createElement("div");
+        stores.className = "desk-actions";
         for (const brand of latestBrowser.stores) {
-          body.append(
+          stores.append(
             deskAction(`add to ${BROWSER_NAMES[brand] ?? brand}`, () => {
               void openBrowserStore(brand);
             }),
           );
         }
+        body.append(stores);
       }
     } else if (capture === "intake_off" || latestBrowser.delivery === "failed") {
       body.append(deskReason(capture === "intake_off" ? BROWSER_COPY.held : BROWSER_COPY.failed));
