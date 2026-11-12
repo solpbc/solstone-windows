@@ -3881,6 +3881,35 @@ function obsidianProgressText(sync: NonNullable<ObsidianStatus["first_sync"]>): 
   return `${sync.sent} of ${sync.found} notes in your journal`;
 }
 
+/** The tile line while Obsidian sets up: what it is waiting on, never a generic one. */
+function obsidianSettingUpLine(status: ObsidianStatus | null): string | undefined {
+  if (status?.state === "confirm" && status.warning) return OBSIDIAN_COPY.warningHeading;
+  if (status?.state === "waiting_for_journal_update") return OBSIDIAN_COPY.waitingUpdate;
+  return undefined;
+}
+
+/** What the Obsidian page shows once a vault is chosen: progress, what waits, and what stays out. */
+function obsidianDeskStatus(status: ObsidianStatus): HTMLElement | null {
+  if (status.state === "off" || status.state === "confirm") return null;
+  const block = document.createElement("div");
+  block.className = "desk-facts";
+  const fact = (label: string, value: string): void => {
+    const row = document.createElement("div");
+    row.className = "desk-fact";
+    const name = text("span", label);
+    name.className = "desk-fact-label";
+    const shown = text("span", value);
+    shown.className = "desk-fact-value";
+    row.append(name, shown);
+    block.append(row);
+  };
+  if (status.vault) fact(OBSIDIAN_COPY.vault, status.vault);
+  fact(OBSIDIAN_COPY.lastChecked, lastSyncedLabel(status.last_checked_ms, nowSecs()));
+  if (status.not_on_device > 0) fact(OBSIDIAN_COPY.notOnDevice, String(status.not_on_device));
+  if (status.too_large > 0) fact(OBSIDIAN_COPY.tooLarge, String(status.too_large));
+  return block;
+}
+
 function obsidianStateText(state: ObsidianStateName): string {
   switch (state) {
     case "checking":
@@ -5834,6 +5863,7 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
       companion,
       setup: setupLine,
       attention,
+      settingUp: id === "obsidian" ? obsidianSettingUpLine(latestObsidian) : undefined,
     });
     return {
       id,
@@ -6333,7 +6363,27 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
     const status = latestObsidian;
     const ready = status?.state === "off" && obsidianWantsFolder && !status.vault;
     if (status?.state === "needs_attention" && status.attention) {
-      body.append(deskReason(obsidianAttentionText(status.attention)));
+      body.append(automation(deskReason(obsidianAttentionText(status.attention)), ids["settings.sources.obsidian.attention"]));
+    }
+    if (status?.state === "confirm" && status.warning) {
+      body.append(automation(deskReason(obsidianWarningText(status.warning)), ids["settings.sources.obsidian.warning"]));
+      const answer = document.createElement("div");
+      answer.className = "desk-actions";
+      const go = deskAction(OBSIDIAN_COPY.continue, () => {
+        void applyObsidianDocument(invoke<ObsidianDocument | null>("obsidian_continue_warning"));
+      }, ids["settings.sources.obsidian.continue"]);
+      const stop = deskAction(OBSIDIAN_COPY.cancel, () => {
+        void applyObsidianDocument(invoke<ObsidianDocument | null>("obsidian_cancel_warning"));
+      }, ids["settings.sources.obsidian.cancel"]);
+      go.disabled = obsidianBusy;
+      stop.disabled = obsidianBusy;
+      answer.append(go, stop);
+      body.append(answer);
+    }
+    if (status?.state === "waiting_for_journal_update") body.append(deskReason(OBSIDIAN_COPY.waitingUpdateDetail));
+    if (status?.first_sync) body.append(deskReason(obsidianProgressText(status.first_sync)));
+    if (status && status.waiting > 0 && status.state !== "off" && status.state !== "confirm") {
+      body.append(deskReason(`${status.waiting} waiting to sync`));
     }
     if (ready) {
       if (obsidianFound.length === 0) body.append(deskReason(OBSIDIAN_COPY.noneFound));
@@ -6352,6 +6402,8 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
     body.append(breath(OBSIDIAN_COPY.explain));
     const facts = deskFactBlock("obsidian");
     if (facts) body.append(facts);
+    const vaultFacts = status ? obsidianDeskStatus(status) : null;
+    if (vaultFacts) body.append(vaultFacts);
     if (ready && obsidianFound.length > 0) {
       body.append(deskSection("vaults"));
       for (const vault of obsidianFound) {
@@ -7731,6 +7783,7 @@ export const __test__ = {
   getRoute(): Route {
     return activeRoute;
   },
+  openDeskSource,
   getDesk() {
     return { row: deskRow, pane: deskPane };
   },

@@ -262,12 +262,15 @@ export function sourceSubline(input: {
   companion: string;
   setup: string;
   attention: string;
+  /** What this source is waiting on while it sets up, when it knows. */
+  settingUp?: string;
 }): string {
   if (input.word === "needs attention") return input.attention;
   if (input.word === "off") {
     return "turn it on any time.";
   }
   if (input.word === "setting up") {
+    if (input.settingUp) return input.settingUp;
     return input.paired ? "getting ready. connecting to your journal." : "getting ready…";
   }
   if (input.word === "ready to set up") return input.setup;

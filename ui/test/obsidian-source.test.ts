@@ -209,6 +209,63 @@ describe("Obsidian source rows", () => {
     expect(renderHome(null, "idle")?.disabled).toBe(true);
   });
 
+  function renderDesk(value: Status): void {
+    const base = observingDump();
+    const dump = {
+      ...base,
+      setup: {
+        sequence_enabled: true,
+        mic: false,
+        system_audio: false,
+        screen: false,
+        start_at_login: false,
+        wizard: "done",
+        notice_dismissed: true,
+        desktop_activity: false,
+        desktop_activity_allowed: true,
+        desktop_activity_through_pause: false,
+        desktop_activity_window_titles: true,
+        desktop_activity_page_addresses: true,
+      },
+    } as typeof base;
+    app.__test__.setRoute("home");
+    app.__test__.setHealth(dump);
+    app.__test__.setObsidian(value);
+    app.__test__.openDeskSource("obsidian");
+    app.__test__.renderSettings(dump);
+  }
+
+  const pane = (): HTMLElement => document.querySelector(".desk-pane") as HTMLElement;
+  const reasons = (): number => pane().querySelectorAll(".desk-reason").length;
+  const facts = (): number => pane().querySelectorAll(".desk-fact").length;
+
+  it("asks on the desk before the first send, and continue and cancel answer it", () => {
+    invokeMock.mockResolvedValue(null);
+    renderDesk(status({ state: "confirm", vault: null, warning: { vault: "Notes", device: "studio", last_synced_at: null } }));
+    expect(document.querySelector(".desk-shell")).not.toBeNull();
+    expect(pane().contains(byId(ids["settings.sources.obsidian.warning"]))).toBe(true);
+    byId(ids["settings.sources.obsidian.continue"])?.click();
+    expect(invokeMock).toHaveBeenCalledWith("obsidian_continue_warning");
+    renderDesk(status({ state: "confirm", vault: null, warning: { vault: "Notes", device: null, last_synced_at: null } }));
+    byId(ids["settings.sources.obsidian.cancel"])?.click();
+    expect(invokeMock).toHaveBeenCalledWith("obsidian_cancel_warning");
+  });
+
+  it("shows the first send, what waits and what stays out on the desk", () => {
+    renderDesk(status({ state: "on" }));
+    const quiet = { reasons: reasons(), facts: facts() };
+    renderDesk(status({ state: "on", waiting: 12, first_sync: { found: 40, sent: 3 }, not_on_device: 2, too_large: 1 }));
+    expect(reasons()).toBe(quiet.reasons + 2);
+    expect(facts()).toBe(quiet.facts + 2);
+  });
+
+  it("gives the journal update its reason on the desk", () => {
+    renderDesk(status({ state: "on" }));
+    const quiet = reasons();
+    renderDesk(status({ state: "waiting_for_journal_update" }));
+    expect(reasons()).toBe(quiet + 1);
+  });
+
   it("uses no forbidden owner words", () => {
     render(status({ state: "on", waiting: 1, first_sync: { found: 2, sent: 1 }, not_on_device: 1, too_large: 1 }));
     const text = bodyText().toLowerCase();

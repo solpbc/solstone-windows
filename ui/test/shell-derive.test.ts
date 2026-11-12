@@ -251,6 +251,15 @@ describe("obsidian", () => {
   });
 });
 
+describe("setting-up line", () => {
+  it("names what a source waits on when it knows, and falls back when it doesn't", () => {
+    const base = { word: "setting up" as const, paired: true, companion: "", setup: "", attention: "" };
+    expect(sourceSubline({ ...base, settingUp: "waiting on the owner" })).toBe("waiting on the owner");
+    expect(sourceSubline(base)).toBe(sourceSubline({ ...base, settingUp: undefined }));
+    expect(sourceSubline({ ...base, word: "on", companion: "c", settingUp: "x" })).toBe("c");
+  });
+});
+
 describe("journal pill and pause header", () => {
   it("ignores a source fault and does not become a source state word", () => {
     const calm = journalPill(caughtUp);
