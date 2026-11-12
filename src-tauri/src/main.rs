@@ -18,6 +18,7 @@ mod control;
 mod exclusions;
 mod health;
 mod hotkey;
+mod import;
 mod integration;
 mod ipc;
 mod lifecycle;

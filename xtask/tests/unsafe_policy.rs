@@ -126,6 +126,13 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         name: "folder_picker",
         owner: None,
     },
+    // The native file dialog behind choosing files for import.
+    ApprovedNode {
+        path: "crates/platform-win/src/lib.rs",
+        kind: ApprovedKind::ModDecl,
+        name: "file_picker",
+        owner: None,
+    },
     // The logon-session read, parent-process lookup and handle-inheritance clear
     // behind restarting the app after a silent Setup.
     ApprovedNode {

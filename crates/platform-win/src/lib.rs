@@ -40,6 +40,8 @@ pub mod caption_color;
 /// Directory file ids for the Obsidian source (one enumeration per directory).
 #[allow(unsafe_code)]
 pub mod dir_file_ids;
+#[allow(unsafe_code)]
+pub mod file_picker;
 /// The native folder picker.
 #[allow(unsafe_code)]
 pub mod folder_picker;

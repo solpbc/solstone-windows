@@ -754,3 +754,10 @@ html:has(.desk-shell[data-width="phone"]) #setup-sun .sunarc-glow,
 html:has(.desk-shell[data-width="phone"]) #setup-sun .sunarc-twilight {
   transform: translate(12vw, 18vh);
 }
+
+.desk-import-item { padding: 14px 0; border-bottom: 1px solid var(--desk-hairline); overflow-wrap: anywhere; }
+.desk-import-item strong { display: block; font-weight: 500; }
+.desk-import-confirm { box-sizing: border-box; max-width: min(440px, calc(100vw - 40px)); border: 1px solid var(--desk-hairline); border-radius: 18px; padding: 24px; background: var(--desk-card); color: var(--desk-ink); font: inherit; }
+.desk-import-confirm h2 { font-size: 1.1rem; overflow-wrap: anywhere; }
+.desk-import-confirm p { line-height: 1.5; }
+.desk-import-confirm::backdrop { background: #0006; }

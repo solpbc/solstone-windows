@@ -31,6 +31,7 @@ pub mod device_metadata;
 pub mod draft;
 pub mod handoff;
 pub mod import_client;
+pub mod import_store;
 pub mod integration;
 pub mod journal_bridge;
 pub mod journal_version;

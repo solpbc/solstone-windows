@@ -682,6 +682,10 @@ pub struct UnknownJournalSighting {
 /// the engine. `Default` is the honest not-paired, nothing-uploaded state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncSnapshot {
+    #[serde(default)]
+    pub imports_waiting: u64,
+    #[serde(default)]
+    pub imports_need_owner: bool,
     pub pairing: PairingState,
     pub upload: UploadStatus,
     #[serde(default)]
@@ -716,6 +720,8 @@ impl Default for SyncSnapshot {
     fn default() -> Self {
         let unknown = about::unknown_journal_line();
         Self {
+            imports_waiting: 0,
+            imports_need_owner: false,
             pairing: PairingState::default(),
             upload: UploadStatus::default(),
             journal_version: None,

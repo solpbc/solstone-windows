@@ -199,6 +199,15 @@ fn open_settings_internal(app: &tauri::AppHandle, destination: &str) -> tauri::R
 
     let teardown_app = app.clone();
     window.on_window_event(move |event| {
+        if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+            crate::import::add_paths(teardown_app.clone(), paths.clone());
+            if let Some(window) = teardown_app.get_webview_window("settings") {
+                let _ = window.emit("settings://navigate", "import");
+            }
+        }
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            crate::import::cancel_remove(None);
+        }
         if matches!(event, tauri::WindowEvent::Destroyed)
             || (matches!(event, tauri::WindowEvent::Focused(false))
                 && !settings_proof_eligible(&teardown_app))

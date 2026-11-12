@@ -113,7 +113,11 @@ pub fn menu_status_line(dump: &crate::HealthDump) -> String {
             PausedMenuStatus::Minutes(mins) => format!("paused, {mins} min left"),
         };
     }
-    let waiting = dump.sync.upload.pending_segments;
+    let waiting = dump
+        .sync
+        .upload
+        .pending_segments
+        .saturating_add(dump.sync.imports_waiting);
     let count = if waiting == 0 {
         String::new()
     } else {

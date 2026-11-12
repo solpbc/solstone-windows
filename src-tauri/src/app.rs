@@ -628,6 +628,13 @@ pub fn run(
             crate::ipc::quit,
             crate::ipc::get_health,
             crate::ipc::get_source_counters,
+            crate::ipc::import_status,
+            crate::ipc::import_choose_files,
+            crate::ipc::import_remove,
+            crate::ipc::import_prepare_remove,
+            crate::ipc::import_cancel_remove,
+            crate::ipc::import_retry,
+            crate::ipc::import_dismiss_interrupted,
             crate::logs::read_recent_logs,
             crate::logs::save_recent_logs,
             crate::ipc::open_settings,
@@ -938,6 +945,7 @@ pub fn run(
 
             // The Obsidian vault source: scan, hold, deliver when asked.
             crate::obsidian::start(app.handle().clone(), source_counters);
+            crate::import::start(app.handle().clone());
 
             // In-app updater: construct the Velopack-backed controller (honest
             // state earned from the feed, persisted next to pairing.json),
@@ -1077,8 +1085,13 @@ pub fn run(
                     // Obsidian turning on or off changes the attention row without a new
                     // health dump.
                     let mut obsidian_on = crate::obsidian::on_changes();
+                    let mut import_changes = crate::import::on_changes();
                     loop {
                         let mut dump = rx.borrow_and_update().clone();
+                        if let Ok(sync) = shared_sync.lock() {
+                            dump.sync.imports_waiting = sync.imports_waiting;
+                            dump.sync.imports_need_owner = sync.imports_need_owner;
+                        }
                         // One presented link for the tray, its notices and Settings.
                         let link = present_journal_link(
                             &mut presenter,
@@ -1133,6 +1146,12 @@ pub fn run(
                                 match next_change {
                                     Some(at) => tokio::time::sleep_until(at).await,
                                     None => std::future::pending().await,
+                                }
+                            } => {}
+                            _ = async {
+                                match import_changes.as_mut() {
+                                    Some(changes) => { let _ = changes.changed().await; }
+                                    None => std::future::pending::<()>().await,
                                 }
                             } => {}
                             _ = async {

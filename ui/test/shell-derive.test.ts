@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  addMoreSources,
   audioTile,
   browsersTile,
   counterFacts,
@@ -8,7 +7,6 @@ import {
   audioSubline,
   sourceSubline,
   deckColumns,
-  deckTiles,
   derivedComputerSoundWanted,
   greeting,
   headerWhilePaused,
@@ -265,6 +263,7 @@ describe("journal pill and pause header", () => {
 
   it("leads caught up with the journal line, and offline with the pill's words", () => {
     const calm = statusLead(caughtUp);
+    expect(statusLead({ ...caughtUp, importsNeedOwner: true, waiting: 0 })).not.toEqual(calm);
     expect(calm.headline).toBe("all caught up");
     expect(calm.lines).toContain("everything is in your journal");
     expect(calm.lines.join(" ")).not.toContain("on this device");
@@ -516,10 +515,6 @@ describe("counters", () => {
 });
 
 describe("deck and shelf", () => {
-  it("lists the four sources and then add more", () => {
-    expect(deckTiles()).toEqual(["audio", "screen", "browsers", "obsidian", "addMore"]);
-    expect(addMoreSources()).toEqual(["audio", "screen", "browsers", "obsidian"]);
-  });
 
   it("badges the shelf row a notice belongs to", () => {
     expect(

@@ -252,6 +252,8 @@ interface UnknownJournalSighting {
 interface SyncSnapshot {
   pairing: PairingState;
   upload: UploadStatus;
+  imports_waiting?: number;
+  imports_need_owner?: boolean;
   journal_version?: string | null;
   journal_version_fresh?: boolean;
   journal_display_line?: string;
@@ -964,6 +966,28 @@ type ObsidianStatus = {
 type ObsidianDocument = { v: number; status: ObsidianStatus; refusal?: ObsidianRefusal | null };
 type ObsidianVault = { name: string; path: string };
 let latestObsidian: ObsidianStatus | null = null;
+
+interface ImportRow {
+  id: string;
+  name: string;
+  state: "waiting" | "sending" | "refused";
+  reason: string | null;
+  retryable: boolean;
+  may_have_reached: boolean;
+  missing_copy: boolean;
+}
+interface ImportDocument {
+  recent: string;
+  rows: ImportRow[];
+  intake: { copying: boolean; done: number; total: number; accepted: number; refused: { name: string; reason: string }[] } | null;
+  interrupted: boolean;
+  waiting: number;
+  needs_owner: boolean;
+  available: boolean;
+}
+let latestImport: ImportDocument | null = null;
+let importActionError: string | null = null;
+
 let obsidianFound: ObsidianVault[] = [];
 let obsidianRefusal: ObsidianRefusal | null = null;
 let obsidianBusy = false;
@@ -4046,7 +4070,7 @@ function renderSourceControl(
     kind === "mic"
       ? "microphone"
       : kind === "system_audio"
-        ? "system audio"
+        ? "computer sound"
         : kind === "desktop_activity"
           ? "desktop activity"
           : "screen";
@@ -4169,7 +4193,7 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
     }
     for (const [kind, label, id] of [
       ["screen", "screen", ids["settings.sources.screen.state"]],
-      ["system_audio", "system audio", ids["settings.sources.systemAudio.state"]],
+      ["system_audio", "computer sound", ids["settings.sources.systemAudio.state"]],
       ["mic", "microphone", ids["settings.sources.mic.state"]],
       ["desktop_activity", "desktop activity", ids["settings.sources.desktopActivity.state"]],
     ] as const) {
@@ -4196,7 +4220,7 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
       renderSourceControl("screen", screen, ids["settings.sources.screen.state"], ids["settings.sources.screen.enabled"], dump),
     ),
     valueRow(
-      "system audio",
+      "computer sound",
       renderSourceControl("system_audio", systemAudio, ids["settings.sources.systemAudio.state"], ids["settings.sources.systemAudio.enabled"], dump),
     ),
     valueRow(
@@ -4303,7 +4327,7 @@ function sourcesGlance(dump: HealthDump): string {
   if (screen === "on" && systemAudio === "on" && mic === "on" && activity === "on") {
     return "all sources on";
   }
-  return `screen: ${screen} · system audio: ${systemAudio} · mic: ${mic} · desktop activity: ${activity}`;
+  return `screen: ${screen} · computer sound: ${systemAudio} · mic: ${mic} · desktop activity: ${activity}`;
 }
 
 function statusLabelNode(labelText: string): HTMLElement {
@@ -4720,7 +4744,7 @@ function fillProofNode(node: HTMLElement, kind: SourceKind, preview: PreviewSnap
     if (typeof level === "number" && Number.isFinite(level)) {
       const meter = document.createElement("meter");
       meter.setAttribute("role", "meter");
-      meter.setAttribute("aria-label", kind === "mic" ? "microphone level" : "system audio level");
+      meter.setAttribute("aria-label", kind === "mic" ? "microphone level" : "computer sound level");
       meter.min = 0;
       meter.max = 1;
       meter.value = level;
@@ -4816,7 +4840,7 @@ function renderWizardSourceControl(
   const failure = dump.setup?.failed_sources?.find((f) => f.kind === kind);
 
   const accessibleName =
-    kind === "mic" ? "microphone" : kind === "system_audio" ? "system audio" : "screen";
+    kind === "mic" ? "microphone" : kind === "system_audio" ? "computer sound" : "screen";
 
   const toggle = toggleRow(enabled ? accessibleName : `turn on ${accessibleName}`, automationId, enabled, async (on) => {
     try {
@@ -5626,7 +5650,7 @@ function deskPausedLine(dump: HealthDump): string | null {
 
 function deskJournalInput(dump: HealthDump): JournalPillInput {
   const phase = dump.sync.pairing.phase;
-  const waiting = dump.sync.upload.pending_segments ?? 0;
+  const waiting = (dump.sync.upload.pending_segments ?? 0) + (latestImport?.waiting ?? dump.sync.imports_waiting ?? 0);
   const link = dump.sync.journal_link;
   const paired = phase === "paired" || phase === "awaiting_confirmation" || phase === "pairing";
   return {
@@ -5640,6 +5664,7 @@ function deskJournalInput(dump: HealthDump): JournalPillInput {
     waitingToSync: phase === "paired" && waiting > 0 && link !== "offline" && link !== "connecting",
     waiting,
     sourceNeedsAttention: false,
+    importsNeedOwner: latestImport?.needs_owner ?? dump.sync.imports_need_owner ?? false,
   };
 }
 
@@ -5743,6 +5768,9 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
     ? [...new Set(latestBrowser.connected.map((item) => BROWSER_NAMES[item.brand] ?? item.brand))]
     : [];
   return deckTiles().map((id) => {
+    if (id === "import") {
+      return { id, name: "import", word: "", sub: "files", switchOn: null, switchId: null, switchLabel: "", selected: deskPane === "import" };
+    }
     if (id === "addMore") {
       return {
         id,
@@ -5819,7 +5847,7 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
 
 function deskStatusRows(): DeskStatusRow[] {
   const now = nowSecs();
-  return (["audio", "screen", "browsers", "obsidian"] as const).map((id) => {
+  const rows: DeskStatusRow[] = (["audio", "screen", "browsers", "obsidian"] as const).map((id) => {
     const fact = factFor(id);
     if (!fact) return { id, name: deskSourceName(id), nothingYet: false, total: "", relative: "", hasFacts: false };
     return {
@@ -5831,6 +5859,8 @@ function deskStatusRows(): DeskStatusRow[] {
       hasFacts: true,
     };
   });
+  rows.push({ id: "import", name: "import", nothingYet: false, total: latestImport?.recent ?? "", relative: "", hasFacts: latestImport !== null });
+  return rows;
 }
 
 function deskSection(title: string): HTMLElement {
@@ -5908,6 +5938,7 @@ function deskTitleGlyph(): GlyphName | null {
     deskPane === "screen" ||
     deskPane === "browsers" ||
     deskPane === "obsidian" ||
+    deskPane === "import" ||
     deskPane === "addMore"
   ) {
     return glyphForTile(deskPane);
@@ -6057,11 +6088,124 @@ function deskBrowserChildren(status: BrowserStatus): HTMLElement | null {
   return block;
 }
 
+
+async function refreshImportStatus(): Promise<void> {
+  if (label !== "settings") return;
+  const next = await invoke<ImportDocument | null>("import_status").catch(() => null);
+  if (JSON.stringify(next) !== JSON.stringify(latestImport)) {
+    latestImport = next;
+    requestRerender();
+  }
+}
+
+async function importAction(command: string, args?: Record<string, unknown>): Promise<void> {
+  importActionError = null;
+  try { await invoke(command, args); } catch { importActionError = "this step couldn't finish. try again."; }
+  await refreshImportStatus();
+  requestRerender();
+}
+
+async function askRemoveImport(row: ImportRow): Promise<void> {
+  const prompt = await invoke<{ name: string; may_have_reached: boolean; missing_copy: boolean } | null>("import_prepare_remove", { id: row.id }).catch(() => null);
+  if (!prompt) { await refreshImportStatus(); return; }
+  const dialog = document.createElement("dialog");
+  dialog.className = "desk-import-confirm";
+  const shell = document.querySelector(".desk-shell");
+  if (shell) {
+    const tokens = getComputedStyle(shell);
+    for (const name of ["--desk-ink", "--desk-card", "--desk-hairline"]) dialog.style.setProperty(name, tokens.getPropertyValue(name));
+  }
+  const title = text("h2", `remove ${prompt.name}?`);
+  title.id = "import-remove-title";
+  dialog.setAttribute("aria-labelledby", title.id);
+  const reason = text("p", prompt.missing_copy
+    ? "the copy is already gone, so this only clears it from here."
+    : prompt.may_have_reached
+    ? "this removes the copy on this device. your journal may still bring in the copy it already has."
+    : "this removes the copy on this device, so it won't reach your journal.");
+  const actions = document.createElement("div");
+  actions.className = "desk-actions";
+  const cancel = deskAction("cancel", () => dialog.close());
+  const remove = deskAction("remove", () => {
+    void invoke("import_remove", { id: row.id }).then(() => {
+      dialog.close();
+      void refreshImportStatus();
+    }).catch(() => {
+      reason.textContent = "couldn't remove this. try again.";
+    });
+  });
+  actions.append(cancel, remove);
+  dialog.append(title, reason, actions);
+  dialog.addEventListener("close", () => {
+    void invoke("import_cancel_remove", { id: row.id }).catch(() => undefined);
+    dialog.remove();
+  }, { once: true });
+  document.body.append(dialog);
+  dialog.showModal();
+  cancel.focus();
+}
+
+function renderImportPage(): HTMLElement {
+  const body = document.createElement("div");
+  body.className = "desk-import-page";
+  body.append(breath("adds PDFs, audio, images and text you choose here or drop on this window."));
+  const choose = deskAction("choose files…", () => { void importAction("import_choose_files"); }, ids["settings.import.choose"]);
+  choose.disabled = latestImport?.available === false;
+  body.append(choose);
+  const intake = latestImport?.intake;
+  if (intake) {
+    const line = intake.copying
+      ? `saving on this device: ${Math.min(intake.done + 1, intake.total)} of ${intake.total}`
+      : intake.accepted === 0 ? "nothing was saved on this device." : `saved on this device: ${intake.accepted}`;
+    const result = deskReason(line);
+    result.setAttribute("aria-live", "polite");
+    body.append(result);
+    for (const refused of intake.refused) body.append(deskReason(`${refused.name}: ${refused.reason}`));
+  }
+  if (importActionError) body.append(deskReason(importActionError));
+  if (latestImport?.interrupted) {
+    body.append(deskReason("something you were adding didn't finish saving. add it again."));
+    body.append(deskAction("ok", () => { void importAction("import_dismiss_interrupted"); }));
+  }
+  body.append(deskSection("recent"));
+  if (latestImport) {
+    const recent = deskReason(latestImport.recent);
+    recent.setAttribute("aria-live", "polite");
+    body.append(recent);
+  }
+  if (latestImport?.rows.length) {
+    body.append(deskSection("on this device"));
+    for (const row of latestImport.rows) {
+      const item = document.createElement("div");
+      item.className = "desk-import-item";
+      item.dataset.importId = row.id;
+      item.append(text("strong", row.name));
+      item.append(deskReason(row.state === "refused" ? row.reason ?? "your journal couldn't accept this." : row.state));
+      if (row.state !== "sending") {
+        const actions = document.createElement("div");
+        actions.className = "desk-actions";
+        if (row.state === "refused" && row.retryable) {
+          const retry = deskAction("try now", () => { void importAction("import_retry", { id: row.id }); });
+          retry.setAttribute("aria-label", `try now, ${row.name}`);
+          actions.append(retry);
+        }
+        const remove = deskAction("remove", () => { void askRemoveImport(row); });
+        remove.setAttribute("aria-label", `remove ${row.name}`);
+        actions.append(remove);
+        item.append(actions);
+      }
+      body.append(item);
+    }
+  }
+  return body;
+}
+
 function deskPaneExtra(dump: HealthDump): HTMLElement | null {
   if (deskRow !== "home") return null;
   if (homeShowsPairing(dump) && deskPane === "status") return renderRouteContent("journal", dump);
   if (deskPane === "status") return null;
   const body = document.createElement("div");
+  if (deskPane === "import") return renderImportPage();
   if (deskPane === "technical") {
     body.append(renderStatusStrip(dump));
     const restart = deskRestart(dump, "technicalDetails");
@@ -7368,6 +7512,7 @@ async function boot(): Promise<void> {
   migrationRefreshAt = Date.now();
   await refreshBrowserStatus();
   await refreshObsidianStatus();
+  await refreshImportStatus();
   rerender();
 }
 
@@ -7521,7 +7666,12 @@ export function start(): void {
     setLatestHealth(event.payload);
     void refreshBrowserStatus();
     void refreshObsidianStatus();
+    void refreshImportStatus();
     void refreshMigrationState();
+    requestRerender();
+  });
+  void listen<ImportDocument>("import://changed", (event) => {
+    latestImport = event.payload;
     requestRerender();
   });
   void listen<UpdateView>("update://changed", (event) => {

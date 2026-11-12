@@ -21,6 +21,7 @@ export type Pane =
   | "screen"
   | "browsers"
   | "obsidian"
+  | "import"
   | "screenLeftOut";
 
 const SOURCE_ORDER: readonly SourceId[] = ["audio", "screen", "browsers", "obsidian"];
@@ -192,11 +193,11 @@ export function obsidianTile(input: {
   };
 }
 
-export type DeckTileId = SourceId | "addMore";
+export type DeckTileId = SourceId | "import" | "addMore";
 
-/** Source tiles, then `addMore`. No terminal, import, or screenshots. */
+/** Sources, the file-import destination, then add more. */
 export function deckTiles(): readonly DeckTileId[] {
-  return [...SOURCE_ORDER, "addMore"];
+  return [...SOURCE_ORDER, "import", "addMore"];
 }
 
 /** The add-more page lists the sources already on the deck, in that order, as one section. */
@@ -238,6 +239,7 @@ export type JournalPillInput = {
   waitingToSync: boolean;
   waiting: number;
   sourceNeedsAttention: boolean;
+  importsNeedOwner?: boolean;
 };
 
 /** Audio's companion line. Computer sound wins over a microphone name, on or paused. */
@@ -311,7 +313,8 @@ export function statusLead(input: JournalPillInput): StatusLead {
     !input.held &&
     !input.offline &&
     !input.connecting &&
-    !input.waitingToSync;
+    !input.waitingToSync &&
+    !input.importsNeedOwner;
   if (caughtUp) {
     return { headline: "all caught up", lines: ["everything is in your journal"] };
   }
@@ -428,6 +431,7 @@ export function settingsNavigate(payload: string): { row: ShelfRow; pane: Pane }
     case "screen":
     case "browsers":
     case "obsidian":
+    case "import":
       return { row: "home", pane: payload };
     case "sources":
     case "home":

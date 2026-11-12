@@ -1790,3 +1790,76 @@ pub(crate) fn recover_setup_browser_completion(state: &crate::app::AppState) {
         sync.pairing.setup_browser_ready = failed;
     }
 }
+
+#[tauri::command]
+pub fn import_status(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<Option<crate::import::Document>, String> {
+    crate::logs::require_settings(&window)?;
+    Ok(crate::import::status(&app))
+}
+
+#[tauri::command]
+pub async fn import_choose_files(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    crate::logs::require_settings(&window)?;
+    let owner = window.hwnd().map_err(|_| "import_window_unavailable")?.0 as isize;
+    let paths = tauri::async_runtime::spawn_blocking(move || {
+        platform_win::file_picker::choose_files(owner)
+    })
+    .await
+    .map_err(|_| "import_dialog_failed")?
+    .map_err(|_| "import_dialog_failed")?;
+    if !paths.is_empty() {
+        crate::import::add_paths(app, paths);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn import_remove(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<(), String> {
+    crate::logs::require_settings(&window)?;
+    crate::import::remove(&app, &id).map_err(|_| "import_remove_failed".into())
+}
+
+#[tauri::command]
+pub fn import_retry(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<(), String> {
+    crate::logs::require_settings(&window)?;
+    crate::import::retry(&app, &id).map_err(|_| "import_retry_failed".into())
+}
+
+#[tauri::command]
+pub fn import_dismiss_interrupted(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    crate::logs::require_settings(&window)?;
+    crate::import::dismiss_interrupted(&app).map_err(|_| "import_dismiss_failed".into())
+}
+
+#[tauri::command]
+pub fn import_prepare_remove(
+    window: tauri::WebviewWindow,
+    id: String,
+) -> Result<Option<crate::import::RemovePrompt>, String> {
+    crate::logs::require_settings(&window)?;
+    Ok(crate::import::prepare_remove(&id))
+}
+
+#[tauri::command]
+pub fn import_cancel_remove(window: tauri::WebviewWindow, id: String) -> Result<(), String> {
+    crate::logs::require_settings(&window)?;
+    crate::import::cancel_remove(Some(&id));
+    Ok(())
+}

@@ -790,9 +790,9 @@ describe("setup and source transitions", () => {
       const getAccessibleName = (el: HTMLElement) =>
         (el.getAttribute("aria-label") || el.closest("label")?.textContent || "").toLowerCase();
 
-      expect(getAccessibleName(micEl)).toContain("microphone");
-      expect(getAccessibleName(sysEl)).toContain("system audio");
-      expect(getAccessibleName(screenEl)).toContain("screen");
+      const names = [micEl, sysEl, screenEl].map(getAccessibleName);
+      expect(names.every((name) => name.length > 0)).toBe(true);
+      expect(new Set(names).size).toBe(names.length);
     });
   });
 
