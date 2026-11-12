@@ -140,6 +140,38 @@ async fn response<R: AsyncRead + Unpin>(
     Ok(parsed)
 }
 
+async fn exchange_request<R: AsyncRead + Unpin>(
+    mut stream: tokio::net::TcpStream,
+    head: &[u8],
+    body: R,
+    length: u64,
+) -> Result<HttpResponse, TransportError> {
+    progress(stream.write_all(head)).await?;
+    let (read, mut write) = stream.into_split();
+    let (activity, progress_rx) = tokio::sync::watch::channel(());
+    // Keep the TCP writer alive while a credit-bound bridge drains queued bytes.
+    let send = upload(&mut write, body, length, activity);
+    let receive = response(read, progress_rx);
+    tokio::pin!(send, receive);
+    tokio::select! {
+        biased;
+        answer = &mut receive => answer,
+        sent = &mut send => {
+            // An early journal refusal can close the local writer first.
+            // Read its bounded answer before judging a broken pipe.
+            if let Err(error) = &sent {
+                if !matches!(error.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset) {
+                    return Err(io::Error::new(error.kind(), "file upload failed").into());
+                }
+            }
+            match receive.await {
+                Ok(answer) => Ok(answer),
+                Err(error) => { sent?; Err(error) }
+            }
+        }
+    }
+}
+
 pub(crate) async fn post<R: AsyncRead + Unpin>(
     client: Arc<ObserverClient>,
     route: OrdinaryRequest,
@@ -206,30 +238,8 @@ pub(crate) async fn post<R: AsyncRead + Unpin>(
     );
     let mut guard = BridgeGuard(Some(bridge));
     let exchange = async {
-        let mut stream = progress(tokio::net::TcpStream::connect(("127.0.0.1", port))).await?;
-        progress(stream.write_all(&head)).await?;
-        let (read, write) = stream.into_split();
-        let (activity, progress_rx) = tokio::sync::watch::channel(());
-        let send = upload(write, body, length, activity);
-        let receive = response(read, progress_rx);
-        tokio::pin!(send, receive);
-        tokio::select! {
-            biased;
-            answer = &mut receive => answer,
-            sent = &mut send => {
-                // An early journal refusal can close the local writer first.
-                // Read its bounded answer before judging a broken pipe.
-                if let Err(error) = &sent {
-                    if !matches!(error.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset) {
-                        return Err(io::Error::new(error.kind(), "file upload failed").into());
-                    }
-                }
-                match receive.await {
-                    Ok(answer) => Ok(answer),
-                    Err(error) => { sent?; Err(error) }
-                }
-            }
-        }
+        let stream = progress(tokio::net::TcpStream::connect(("127.0.0.1", port))).await?;
+        exchange_request(stream, &head, body, length).await
     }
     .await;
     let bridge = guard.0.take().expect("bridge alive");
@@ -249,6 +259,36 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::{Context, Poll};
     use tokio::io::ReadBuf;
+
+    #[tokio::test]
+    async fn request_writer_stays_open_until_the_response_finishes() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let head = b"POST /app/import/api/save HTTP/1.1\r\nContent-Length: 4\r\n\r\n";
+        let server = tokio::spawn(async move {
+            let (mut peer, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; head.len() + 4];
+            peer.read_exact(&mut request).await.unwrap();
+            assert_eq!(&request[head.len()..], b"held");
+            let mut extra = [0];
+            let kept_open = tokio::time::timeout(Duration::from_millis(100), peer.read(&mut extra))
+                .await
+                .is_err();
+            peer.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                .await
+                .unwrap();
+            kept_open
+        });
+        let stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        let answer = exchange_request(stream, head, b"held".as_slice(), 4)
+            .await
+            .unwrap();
+        assert_eq!(answer.status, 200);
+        assert!(
+            server.await.unwrap(),
+            "request writer closed before the delayed response"
+        );
+    }
 
     struct PatternReader {
         left: usize,
