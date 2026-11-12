@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.47
+PackageVersion: 2.0.48
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -22,11 +22,11 @@ Tags:
   - self-determination
   - solstone
 ReleaseNotes: |-
+  Added
+  - import, a new tile beside your sources, adds PDFs, audio, images and text to your journal. choose files on its page, or drop them on the settings window. each one waits on this PC until your journal has it, and the import page lists the ones still waiting. if your journal needs an update before it can take them, they wait for that, and the import page says so.
   Changed
-  - the solstone app now checks for updates daily and downloads them in the background when your network is unmetered. a downloaded update installs the next time the solstone app starts, including when you sign in to windows. this update resets your automatic update settings once, even if you'd changed them. you can change them in settings, where you can also check now or download on demand.
-  Fixed
-  - when there's no room for more browser pages, the tray and sources page say so, and the solstone extension stops asking you to turn browser pages back on.
-  - on a PC where only Obsidian notes go into your journal, "journal last reached" on the home pane now shows when this PC last reached your journal, instead of "not yet".
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.47
+  - settings now opens on your sources. each one has a tile with its state, and audio, screen and Obsidian have their switch right on the tile. beside the tiles, status shows how much each source has taken in for your journal so far, and when it last took something in. a tile opens that source's page in place of status. on the left are home, your journal, this PC, updates and help, and what you leave out is now on screen's page, under left out.
+  - the tray icon's menu is now shorter. it names a source only when that source needs attention, and each source's state is on its tile in the window.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.48
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0

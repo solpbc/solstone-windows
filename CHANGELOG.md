@@ -4,11 +4,16 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.48] - 2026-11-11
 
 ### Added
 
-- choose files or drop them on the window to bring PDFs, audio, images and text into your journal.
+- import, a new tile beside your sources, adds PDFs, audio, images and text to your journal. choose files on its page, or drop them on the settings window. each one waits on this PC until your journal has it, and the import page lists the ones still waiting. if your journal needs an update before it can take them, they wait for that, and the import page says so.
+
+### Changed
+
+- settings now opens on your sources. each one has a tile with its state, and audio, screen and Obsidian have their switch right on the tile. beside the tiles, status shows how much each source has taken in for your journal so far, and when it last took something in. a tile opens that source's page in place of status. on the left are home, your journal, this PC, updates and help, and what you leave out is now on screen's page, under left out.
+- the tray icon's menu is now shorter. it names a source only when that source needs attention, and each source's state is on its tile in the window.
 
 ## [2.0.47] - 2026-11-10
 
