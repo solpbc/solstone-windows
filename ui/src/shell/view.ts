@@ -120,7 +120,7 @@ export function renderDesk(view: DeskView, parts: DeskParts, actions: DeskAction
   if (view.shelfPage && parts.shelfBody) {
     const page = el("div", "desk-deck");
     page.setAttribute("data-automation-id", "settings.deck");
-    if (view.width === "phone") page.append(backHome(actions));
+    if (view.width !== "full") page.append(backHome(actions));
     page.append(parts.shelfBody);
     shell.append(page);
     return shell;

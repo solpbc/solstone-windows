@@ -520,7 +520,10 @@ let latestCounters: CounterDocument | null | undefined;
 let countersFor: HealthDump | null = null;
 let captionWatch: MutationObserver | null = null;
 let deskKeysBound = false;
-let openedFromSourcesQuery = false;
+// Where the window was asked to open (`?route=` at creation, or a navigation that
+// arrived before the first health). It is applied once setup is known: setup that is
+// not done shows setup, and a finished setup opens the deck or that source's page.
+let startupDestination: string | null = null;
 let renderBeaconFired = false;
 let focusPaneTitleOnRender = false;
 type ProofConsumerState = "mic" | "system_audio" | "screen" | "closed";
@@ -6615,15 +6618,14 @@ function renderSettings(dump: HealthDump): void {
   root.style.padding = "0";
   root.style.overflow = "hidden";
   root.style.boxSizing = "border-box";
-  if (
-    openedFromSourcesQuery &&
-    activeRoute === "sources" &&
-    dump.setup?.sequence_enabled === true &&
-    dump.setup.wizard === "done"
-  ) {
-    activeRoute = "home";
-    deskRow = "home";
-    deskPane = "status";
+  if (startupDestination && dump.setup?.sequence_enabled === true) {
+    if (dump.setup.wizard === "done") {
+      const next = settingsNavigate(startupDestination);
+      deskRow = next.row;
+      deskPane = next.pane;
+      deskPhonePane = next.row !== "home" || next.pane !== "status";
+    }
+    startupDestination = null;
   }
   const showFrame = settingsShowsSetupFrame(dump);
   const showDesk = showsDesktopShell(dump);
@@ -7538,9 +7540,9 @@ export function start(): void {
   }
   root = queriedRoot;
 
-  if (new URLSearchParams(window.location.search).get("route") === "sources") {
-    openedFromSourcesQuery = true;
-    activeRoute = "sources";
+  const queriedRoute = new URLSearchParams(window.location.search).get("route");
+  if (queriedRoute && ["sources", "audio", "screen", "browsers", "obsidian"].includes(queriedRoute)) {
+    startupDestination = queriedRoute;
     focusPaneTitleOnRender = true;
   }
 
@@ -7658,9 +7660,9 @@ export function start(): void {
       rerender();
       return;
     }
-    if (event.payload === "sources") {
-      navigateTo("sources");
-    }
+    // Before the first health the destination waits for it. Otherwise this is setup,
+    // and focusing the window was the whole of opening it.
+    if (!latestHealth) startupDestination = event.payload;
   });
   void listen<HealthDump>("health://changed", (event) => {
     setLatestHealth(event.payload);
@@ -7728,6 +7730,9 @@ export const __test__ = {
   },
   getRoute(): Route {
     return activeRoute;
+  },
+  getDesk() {
+    return { row: deskRow, pane: deskPane };
   },
   setHealth(dump: HealthDump | null, receivedAt?: number | null) {
     latestHealth = dump;
@@ -7882,7 +7887,7 @@ export const __test__ = {
     deskPhonePane = false;
     latestCounters = undefined;
     countersFor = null;
-    openedFromSourcesQuery = false;
+    startupDestination = null;
   },
 };
 
