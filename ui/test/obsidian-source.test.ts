@@ -152,7 +152,7 @@ describe("Obsidian source rows", () => {
     expect(body).toContain("3 of 40 notes in your journal");
     expect(body).toContain("12 waiting to sync");
     expect(body).not.toContain("waiting12 waiting");
-    expect(body).toContain("not on this device");
+    expect(body).toContain("not on this computer");
     expect(body).toContain("too large to bring in");
     expect(byId(ids["settings.sources.obsidian.state"])?.textContent).toBe("on");
     expect(body).toContain(

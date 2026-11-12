@@ -3852,7 +3852,7 @@ const OBSIDIAN_COPY = {
   needsAttention: "needs attention",
   vault: "vault",
   lastChecked: "last checked",
-  notOnDevice: "not on this device",
+  notOnDevice: "not on this computer",
   tooLarge: "too large to bring in",
   attentionVault:
     "the solstone app can't read this vault. check that its folder is there and that the drive it's on is connected. nothing changes in your journal while it's out of reach.",
@@ -3860,6 +3860,7 @@ const OBSIDIAN_COPY = {
   attentionFile: "some notes couldn't go into your journal. the solstone app tries them again the next time it starts.",
   attentionStorage: "the solstone app couldn't save its place for this vault. check that this computer has free space.",
   warningHeading: "a vault with this name is already in your journal",
+  waitingAnswer: "waiting for your answer",
   continue: "continue",
   cancel: "cancel",
   turnOff: "turn off",
@@ -3883,7 +3884,7 @@ function obsidianProgressText(sync: NonNullable<ObsidianStatus["first_sync"]>): 
 
 /** The tile line while Obsidian sets up: what it is waiting on, never a generic one. */
 function obsidianSettingUpLine(status: ObsidianStatus | null): string | undefined {
-  if (status?.state === "confirm" && status.warning) return OBSIDIAN_COPY.warningHeading;
+  if (status?.state === "confirm" && status.warning) return OBSIDIAN_COPY.waitingAnswer;
   if (status?.state === "waiting_for_journal_update") return OBSIDIAN_COPY.waitingUpdate;
   return undefined;
 }
