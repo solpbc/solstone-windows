@@ -1484,7 +1484,7 @@ function isInteractiveControlActive(): boolean {
   const active = document.activeElement;
   return (
     active instanceof HTMLSelectElement ||
-    (active instanceof HTMLInputElement && active.type !== "checkbox") ||
+    (active instanceof HTMLInputElement && active.type !== "checkbox" && active.type !== "radio") ||
     active instanceof HTMLTextAreaElement ||
     hotkeyCapturing
   );

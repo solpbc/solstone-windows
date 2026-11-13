@@ -206,6 +206,8 @@ describe("the screenshots page and tile", () => {
     renderDesk(status({ state: "choosing", counts: { thirty_days: 12, six_months: 40, year: 41, all: 99, nothing: 0 } }));
     expect(confirmButton().disabled).toBe(false);
     expect(confirmButton().textContent).toContain("12");
+    // A mouse click leaves focus on the radio; the count still follows it.
+    radios()[3].focus();
     radios()[3].click();
     expect(confirmButton().textContent).toContain("99");
     confirmButton().click();

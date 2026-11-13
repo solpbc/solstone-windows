@@ -508,12 +508,15 @@ html:has(.desk-shell) #app {
 }
 
 .desk-fact-label {
+  flex-shrink: 0;
   color: var(--desk-subtle);
 }
 
 .desk-fact-value {
+  min-width: 0;
   margin-left: auto;
   text-align: right;
+  overflow-wrap: anywhere;
 }
 
 .desk-fact-line {
