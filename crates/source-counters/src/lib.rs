@@ -1723,7 +1723,11 @@ mod tests {
         let object = value.as_object_mut().unwrap();
         object.remove("screenshots");
         object.remove("screenshot_hashes");
-        fs::write(dir.path().join(FILE_NAME), serde_json::to_vec(&value).unwrap()).unwrap();
+        fs::write(
+            dir.path().join(FILE_NAME),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
         let payload = window_payload(&read_window_counters(dir.path()).unwrap()).unwrap();
         assert_eq!(payload.screenshots.total, 0);
         let mut reopened = Counters::open(dir.path(), "2026-11-13").unwrap();

@@ -26,6 +26,7 @@ mod logs;
 mod mic;
 mod notify;
 mod obsidian;
+mod screenshots;
 mod support;
 mod tray;
 mod update;

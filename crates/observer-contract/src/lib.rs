@@ -26,8 +26,8 @@ use std::collections::BTreeMap;
 
 pub use observer_model::setup::SETUP_SEQUENCE_ENABLED;
 use observer_model::{
-    AppPhase, ErrorReason, JournalLink, PairingPhase, PauseReason, SourceKind, ViewRenderState,
-    RELOAD_SETUP_VERB, SETUP_HANDOFF_ARG,
+    AppPhase, ErrorReason, JournalLink, PairingPhase, PauseReason, ScreenshotsState, SourceKind,
+    ViewRenderState, RELOAD_SETUP_VERB, SETUP_HANDOFF_ARG,
 };
 
 use serde::Serialize;
@@ -115,6 +115,14 @@ pub mod settings {
     pub const SOURCES_OBSIDIAN_CANCEL: &str = "settings.sources.obsidian.cancel";
     pub const SOURCES_OBSIDIAN_ATTENTION: &str = "settings.sources.obsidian.attention";
     pub const SOURCES_OBSIDIAN_TURN_OFF: &str = "settings.sources.obsidian.turnOff";
+    pub const SOURCES_SCREENSHOTS_STATE: &str = "settings.sources.screenshots.state";
+    pub const SOURCES_SCREENSHOTS_ENABLED: &str = "settings.sources.screenshots.enabled";
+    pub const SOURCES_SCREENSHOTS_REASON: &str = "settings.sources.screenshots.reason";
+    pub const SOURCES_SCREENSHOTS_CHOOSE_FOLDER: &str = "settings.sources.screenshots.chooseFolder";
+    pub const SOURCES_SCREENSHOTS_SPAN: &str = "settings.sources.screenshots.span";
+    pub const SOURCES_SCREENSHOTS_CONFIRM: &str = "settings.sources.screenshots.confirm";
+    pub const SOURCES_SCREENSHOTS_TRY_AGAIN: &str = "settings.sources.screenshots.tryAgain";
+    pub const SOURCES_SCREENSHOTS_FOLDER: &str = "settings.sources.screenshots.folder";
 
     pub const SETUP_STEP: &str = "settings.setup.step";
     pub const SETUP_NEXT: &str = "settings.setup.next";
@@ -375,6 +383,38 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
             "settings.sources.obsidian.turnOff",
             settings::SOURCES_OBSIDIAN_TURN_OFF,
         ),
+        (
+            "settings.sources.screenshots.state",
+            settings::SOURCES_SCREENSHOTS_STATE,
+        ),
+        (
+            "settings.sources.screenshots.enabled",
+            settings::SOURCES_SCREENSHOTS_ENABLED,
+        ),
+        (
+            "settings.sources.screenshots.reason",
+            settings::SOURCES_SCREENSHOTS_REASON,
+        ),
+        (
+            "settings.sources.screenshots.chooseFolder",
+            settings::SOURCES_SCREENSHOTS_CHOOSE_FOLDER,
+        ),
+        (
+            "settings.sources.screenshots.span",
+            settings::SOURCES_SCREENSHOTS_SPAN,
+        ),
+        (
+            "settings.sources.screenshots.confirm",
+            settings::SOURCES_SCREENSHOTS_CONFIRM,
+        ),
+        (
+            "settings.sources.screenshots.tryAgain",
+            settings::SOURCES_SCREENSHOTS_TRY_AGAIN,
+        ),
+        (
+            "settings.sources.screenshots.folder",
+            settings::SOURCES_SCREENSHOTS_FOLDER,
+        ),
         ("settings.pairing.state", settings::PAIRING_STATE),
         ("settings.pairing.input", settings::PAIRING_INPUT),
         ("settings.pairing.submit", settings::PAIRING_SUBMIT),
@@ -514,6 +554,7 @@ fn state_tokens() -> BTreeMap<&'static str, Vec<String>> {
         ("pairing_phase", enum_tokens::<PairingPhase>()),
         ("journal_link", enum_tokens::<JournalLink>()),
         ("view_render_state", enum_tokens::<ViewRenderState>()),
+        ("screenshots_state", enum_tokens::<ScreenshotsState>()),
     ])
 }
 

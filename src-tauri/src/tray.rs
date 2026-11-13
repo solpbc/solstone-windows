@@ -226,6 +226,7 @@ pub fn init(
 fn attention_route(name: &str) -> &str {
     match name {
         "Obsidian" => "obsidian",
+        "screenshots" => "screenshots",
         other => other,
     }
 }
@@ -272,6 +273,7 @@ pub fn apply_state(menu: &mut TrayMenu, dump: &HealthDump) -> (TrayVisual, Optio
         |kind| dump.setup.is_enabled(kind),
         browsers,
         crate::obsidian::needs_attention(),
+        crate::screenshots::needs_attention(),
         dump.app_state == AppPhase::Paused,
     );
     if let Some(name) = source {

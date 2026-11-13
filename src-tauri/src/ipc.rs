@@ -861,6 +861,41 @@ pub fn browser_discard_waiting() -> Option<serde_json::Value> {
     }
 }
 
+/// The screenshots source's current state for the Settings window.
+#[tauri::command]
+pub fn screenshots_status() -> Option<serde_json::Value> {
+    crate::screenshots::status()
+}
+
+#[tauri::command]
+pub async fn screenshots_turn_on() -> Option<serde_json::Value> {
+    crate::screenshots::turn_on().await
+}
+
+#[tauri::command]
+pub async fn screenshots_turn_off() -> Option<serde_json::Value> {
+    crate::screenshots::turn_off().await
+}
+
+#[tauri::command]
+pub async fn screenshots_choose_folder(
+    window: tauri::WebviewWindow,
+) -> Result<Option<serde_json::Value>, String> {
+    crate::screenshots::choose_folder(window).await
+}
+
+/// Bring in what was counted for the chosen span.
+#[tauri::command]
+pub async fn screenshots_confirm(span: screenshots_source::Span) -> Option<serde_json::Value> {
+    crate::screenshots::confirm(span).await
+}
+
+/// Read the folder again: a failed count, or screenshots that couldn't be read.
+#[tauri::command]
+pub async fn screenshots_try_again() -> Option<serde_json::Value> {
+    crate::screenshots::try_again().await
+}
+
 /// The Obsidian source's current state for the Settings window.
 #[tauri::command]
 pub fn obsidian_status() -> Option<serde_json::Value> {

@@ -42,8 +42,15 @@ fn the_listing_reads_the_top_level_without_opening_anything() {
     std::fs::create_dir(dir.path().join("inner")).unwrap();
     std::fs::write(dir.path().join("inner").join("deep.png"), b"png").unwrap();
     let listed = list_folder(dir.path()).unwrap();
-    assert_eq!(listed.len(), 2, "the file and the folder, not what's inside it");
-    let file = listed.iter().find(|e| e.name == "Screenshot (1).png").unwrap();
+    assert_eq!(
+        listed.len(),
+        2,
+        "the file and the folder, not what's inside it"
+    );
+    let file = listed
+        .iter()
+        .find(|e| e.name == "Screenshot (1).png")
+        .unwrap();
     assert!(file.regular && !file.hidden && !file.system && !file.cloud_only);
     assert_eq!(file.size, 3);
     assert!(file.created_ms.is_some(), "NTFS keeps a creation time");
@@ -61,7 +68,11 @@ fn a_bmp_becomes_a_png_of_the_same_size() {
     assert_eq!(&png[12..16], b"IHDR");
     assert_eq!(u32::from_be_bytes(png[16..20].try_into().unwrap()), 2);
     assert_eq!(u32::from_be_bytes(png[20..24].try_into().unwrap()), 1);
-    assert_eq!(to_png(&tiny_bmp()).unwrap(), png, "the same bytes every time");
+    assert_eq!(
+        to_png(&tiny_bmp()).unwrap(),
+        png,
+        "the same bytes every time"
+    );
 }
 
 #[test]

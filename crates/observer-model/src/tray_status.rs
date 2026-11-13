@@ -41,6 +41,7 @@ pub fn attention_source(
     is_enabled: impl Fn(SourceKind) -> bool,
     browsers_need_attention: bool,
     obsidian_needs_attention: bool,
+    screenshots_need_attention: bool,
     paused: bool,
 ) -> Option<&'static str> {
     let faulted = |kind: SourceKind| {
@@ -79,6 +80,9 @@ pub fn attention_source(
     }
     if obsidian_needs_attention {
         return Some("Obsidian");
+    }
+    if screenshots_need_attention {
+        return Some("screenshots");
     }
     None
 }
@@ -851,25 +855,40 @@ mod tests {
             faulted_source(SourceKind::Screen, "x"),
         ];
         assert_eq!(
-            attention_source(&mic, |_| true, true, true, false),
+            attention_source(&mic, |_| true, true, true, false, false),
             Some("audio")
         );
         let screen = [faulted_source(SourceKind::DesktopActivity, "x")];
         assert_eq!(
-            attention_source(&screen, |_| true, false, false, false),
+            attention_source(&screen, |_| true, false, false, false, false),
             Some("screen")
         );
         assert_eq!(
-            attention_source(&[], |_| true, true, true, false),
+            attention_source(&[], |_| true, true, true, false, false),
             Some("browsers")
         );
         assert_eq!(
-            attention_source(&[], |_| true, false, true, false),
+            attention_source(&[], |_| true, false, true, false, false),
             Some("Obsidian")
         );
-        assert_eq!(attention_source(&[], |_| true, false, false, false), None);
+        assert_eq!(
+            attention_source(&[], |_| true, false, false, true, false),
+            Some("screenshots")
+        );
+        assert_eq!(
+            attention_source(&[], |_| true, false, true, true, false),
+            Some("Obsidian"),
+            "in tile order"
+        );
+        assert_eq!(
+            attention_source(&[], |_| true, false, false, false, false),
+            None
+        );
         let off = [denied(SourceKind::Mic)];
-        assert_eq!(attention_source(&off, |_| false, false, false, false), None);
+        assert_eq!(
+            attention_source(&off, |_| false, false, false, false, false),
+            None
+        );
     }
 
     #[test]
@@ -888,15 +907,15 @@ mod tests {
         ];
         let enabled = |kind: SourceKind| kind == SourceKind::SystemAudio;
         assert_eq!(
-            attention_source(&sources, enabled, false, false, false),
+            attention_source(&sources, enabled, false, false, false, false),
             Some("audio")
         );
         assert_eq!(
-            attention_source(&sources, enabled, false, false, true),
+            attention_source(&sources, enabled, false, false, false, true),
             None
         );
         assert_eq!(
-            attention_source(&sources, |_| false, false, false, false),
+            attention_source(&sources, |_| false, false, false, false, false),
             None
         );
     }

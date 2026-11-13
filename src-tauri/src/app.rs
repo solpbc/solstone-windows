@@ -453,7 +453,10 @@ fn build_sync_config() -> SyncConfig {
         journal_version: Arc::new(pl_transport_win::JournalVersionController::new(
             journal_version_path,
         )),
-        on_new_confirmation: Arc::new(crate::obsidian::restart_send),
+        on_new_confirmation: Arc::new(|| {
+            crate::obsidian::restart_send();
+            crate::screenshots::restart_setup();
+        }),
         facts_fn: Arc::new(current_raw_facts),
         confirmation: Arc::new(Mutex::new(String::new())),
         tombstone: Arc::new(Mutex::new(None)),
@@ -680,6 +683,12 @@ pub fn run(
             crate::ipc::obsidian_turn_off,
             crate::ipc::obsidian_continue_warning,
             crate::ipc::obsidian_cancel_warning,
+            crate::ipc::screenshots_status,
+            crate::ipc::screenshots_turn_on,
+            crate::ipc::screenshots_turn_off,
+            crate::ipc::screenshots_choose_folder,
+            crate::ipc::screenshots_confirm,
+            crate::ipc::screenshots_try_again,
             crate::ipc::set_caption_color,
             crate::ipc::set_audio_tile,
             crate::ipc::set_computer_sound,
@@ -945,7 +954,9 @@ pub fn run(
             );
 
             // The Obsidian vault source: scan, hold, deliver when asked.
-            crate::obsidian::start(app.handle().clone(), source_counters);
+            crate::obsidian::start(app.handle().clone(), source_counters.clone());
+            // The screenshots source: the folder, the count, then each one as it's taken.
+            crate::screenshots::start(app.handle().clone(), source_counters);
             crate::import::start(app.handle().clone());
 
             // In-app updater: construct the Velopack-backed controller (honest
@@ -1086,6 +1097,8 @@ pub fn run(
                     // Obsidian turning on or off changes the attention row without a new
                     // health dump.
                     let mut obsidian_on = crate::obsidian::on_changes();
+                    // So does the screenshots folder going away.
+                    let mut screenshots_state = crate::screenshots::state_changes();
                     let mut import_changes = crate::import::on_changes();
                     loop {
                         let mut dump = rx.borrow_and_update().clone();
@@ -1152,6 +1165,16 @@ pub fn run(
                             _ = async {
                                 match import_changes.as_mut() {
                                     Some(changes) => { let _ = changes.changed().await; }
+                                    None => std::future::pending::<()>().await,
+                                }
+                            } => {}
+                            _ = async {
+                                match screenshots_state.as_mut() {
+                                    Some(state) => {
+                                        if state.changed().await.is_err() {
+                                            std::future::pending::<()>().await;
+                                        }
+                                    }
                                     None => std::future::pending::<()>().await,
                                 }
                             } => {}

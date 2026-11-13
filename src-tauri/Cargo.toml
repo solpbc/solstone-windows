@@ -44,6 +44,7 @@ journal-window.workspace = true
 browser-host = { workspace = true, optional = true }
 # The Obsidian vault source: the shared engine and the journal seam around it.
 obsidian-source.workspace = true
+screenshots-source.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true

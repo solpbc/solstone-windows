@@ -87,6 +87,14 @@ export const automationContract = {
     "settings.sources.saveRetry": "settings.sources.saveRetry",
     "settings.sources.screen.enabled": "settings.sources.screen.enabled",
     "settings.sources.screen.state": "settings.sources.screen.state",
+    "settings.sources.screenshots.chooseFolder": "settings.sources.screenshots.chooseFolder",
+    "settings.sources.screenshots.confirm": "settings.sources.screenshots.confirm",
+    "settings.sources.screenshots.enabled": "settings.sources.screenshots.enabled",
+    "settings.sources.screenshots.folder": "settings.sources.screenshots.folder",
+    "settings.sources.screenshots.reason": "settings.sources.screenshots.reason",
+    "settings.sources.screenshots.span": "settings.sources.screenshots.span",
+    "settings.sources.screenshots.state": "settings.sources.screenshots.state",
+    "settings.sources.screenshots.tryAgain": "settings.sources.screenshots.tryAgain",
     "settings.sources.systemAudio.enabled": "settings.sources.systemAudio.enabled",
     "settings.sources.systemAudio.state": "settings.sources.systemAudio.state",
     "settings.status.appState.state": "settings.status.appState.state",
@@ -172,6 +180,15 @@ export const automationContract = {
       "operator",
       "session_locked",
       "system_suspending"
+    ],
+    "screenshots_state": [
+      "bringing_in",
+      "choosing",
+      "folder_missing",
+      "no_folder",
+      "off",
+      "on",
+      "paused"
     ],
     "source_kind": [
       "desktop_activity",
