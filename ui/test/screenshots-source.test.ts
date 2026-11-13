@@ -23,7 +23,7 @@ const invokeMock = vi.mocked(invoke);
 
 type Status = NonNullable<Parameters<typeof app.__test__.setScreenshots>[0]>;
 
-const STATES: ScreenshotsStateName[] = ["off", "no_folder", "folder_missing", "choosing", "bringing_in", "on", "paused"];
+const STATES: ScreenshotsStateName[] = ["not_set_up", "off", "no_folder", "folder_missing", "choosing", "bringing_in", "on", "paused"];
 
 function status(overrides: Partial<Status> = {}): Status {
   return {
@@ -90,6 +90,7 @@ describe("screenshots decisions", () => {
   it("names each state with a locked word and a switch that says whether it is on", () => {
     expect(screenshotsTile(null)).toMatchObject({ word: "off", switchOn: false });
     expect(screenshotsTile("off")).toMatchObject({ word: "off", switchOn: false });
+    expect(screenshotsTile("not_set_up")).toMatchObject({ word: "ready to set up", switchOn: false });
     expect(screenshotsTile("no_folder")).toMatchObject({ word: "ready to set up", switchOn: false });
     expect(screenshotsTile("choosing")).toMatchObject({ word: "ready to set up", switchOn: true });
     expect(screenshotsTile("bringing_in")).toMatchObject({ word: "on", switchOn: true });
@@ -170,6 +171,20 @@ describe("the screenshots page and tile", () => {
     renderDesk(status({ state: "paused" }), false, "paused");
     expect(tile().querySelector(".desk-tile-word")?.textContent).toBe("paused");
     expect(tile().textContent).not.toContain("Pictures \u203A Screenshots");
+  });
+
+  it("reads a source never turned on as ready to set up, with nothing under it and nothing to do", () => {
+    renderDesk(status({ state: "not_set_up" }));
+    expect(tile().querySelector(".desk-tile-word")?.textContent).toBe("ready to set up");
+    expect(tile().querySelector(".desk-tile-sub")).toBeNull();
+    const input = tile().querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(input.checked).toBe(false);
+    expect(byId(ids["settings.sources.screenshots.reason"])).toBeNull();
+    expect(byId(ids["settings.sources.screenshots.tryAgain"])).toBeNull();
+    expect(radios()).toHaveLength(0);
+    input.checked = true;
+    input.dispatchEvent(new Event("change"));
+    expect(invokeMock).toHaveBeenCalledWith("screenshots_turn_on");
   });
 
   it("shows progress on the tile while bringing in", () => {

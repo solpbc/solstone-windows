@@ -363,7 +363,7 @@ async fn nothing_is_listed_until_the_owner_turns_it_on() {
     let mut f = fixture();
     shot(&f, "Screenshot (1).png", DAY);
     look(&mut f).await;
-    assert_eq!(status(&f).state, ScreenshotsState::Off);
+    assert_eq!(status(&f).state, ScreenshotsState::NotSetUp);
     assert_eq!(
         f.fs.reads_of("Screenshot (1).png"),
         0,
@@ -1124,7 +1124,7 @@ async fn a_ledger_that_does_not_read_is_set_aside() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join(crate::ledger::FILE_NAME), b"not json").unwrap();
     let f = fixture_in(temp, dir.clone(), None);
-    assert_eq!(status(&f).state, ScreenshotsState::Off);
+    assert_eq!(status(&f).state, ScreenshotsState::NotSetUp);
     assert!(dir.join("ledger.json.unreadable").exists());
 }
 
@@ -1190,4 +1190,19 @@ async fn a_cloud_file_already_in_is_not_sent_again() {
     call(&mut f, Command::TurnOff).await;
     let s = turn_on(&mut f).await;
     assert_eq!(count_for(&s, Span::ThirtyDays), 0, "it's in already");
+}
+
+#[tokio::test]
+async fn never_turned_on_is_ready_to_set_up_and_turned_off_is_off() {
+    let mut f = fixture();
+    assert_eq!(status(&f).state, ScreenshotsState::NotSetUp);
+    assert_eq!(turn_on(&mut f).await.state, ScreenshotsState::Choosing);
+    let s = call(&mut f, Command::TurnOff).await;
+    assert_eq!(s.state, ScreenshotsState::Off, "it was on, so now it's off");
+    let f = relaunch(f);
+    assert_eq!(
+        status(&f).state,
+        ScreenshotsState::Off,
+        "and stays off across a launch"
+    );
 }

@@ -195,6 +195,7 @@ export function obsidianTile(input: {
 }
 
 export type ScreenshotsStateName =
+  | "not_set_up"
   | "off"
   | "no_folder"
   | "folder_missing"
@@ -207,13 +208,13 @@ export type ScreenshotsStateName =
 export function screenshotsTile(state: ScreenshotsStateName | null): TileView {
   let word: StateWord;
   if (state === "folder_missing") word = "needs attention";
-  else if (state === "no_folder" || state === "choosing") word = "ready to set up";
+  else if (state === "not_set_up" || state === "no_folder" || state === "choosing") word = "ready to set up";
   else if (state === "paused") word = "paused";
   else if (state === "on" || state === "bringing_in") word = "on";
   else word = "off";
   return {
     word,
-    switchOn: state !== null && state !== "off" && state !== "no_folder",
+    switchOn: state !== null && state !== "off" && state !== "not_set_up" && state !== "no_folder",
     activityKept: false,
     activityAlongside: false,
     namesMicrophone: false,

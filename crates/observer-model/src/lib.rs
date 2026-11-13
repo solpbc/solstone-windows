@@ -485,7 +485,9 @@ pub enum ViewRenderState {
 #[serde(rename_all = "snake_case")]
 #[strum(serialize_all = "snake_case")]
 pub enum ScreenshotsState {
-    /// The switch is off.
+    /// Never turned on, with a folder to read: ready to set up.
+    NotSetUp,
+    /// Turned off after it was on.
     Off,
     /// No Screenshots folder resolves and none was chosen.
     NoFolder,

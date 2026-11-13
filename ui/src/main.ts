@@ -7667,7 +7667,12 @@ function pollScreenshotsStatus(): Promise<void> {
   if (label !== "settings" || document.visibilityState === "hidden" || screenshotsBusy) {
     return Promise.resolve();
   }
-  if (!latestScreenshots || latestScreenshots.state === "off" || latestScreenshots.state === "no_folder") {
+  if (
+    !latestScreenshots ||
+    latestScreenshots.state === "off" ||
+    latestScreenshots.state === "not_set_up" ||
+    latestScreenshots.state === "no_folder"
+  ) {
     return Promise.resolve();
   }
   return refreshScreenshotsStatus();

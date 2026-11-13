@@ -185,6 +185,7 @@ export const automationContract = {
       "choosing",
       "folder_missing",
       "no_folder",
+      "not_set_up",
       "off",
       "on",
       "paused"

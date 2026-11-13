@@ -837,6 +837,8 @@ impl Engine {
         });
         let state = if folder.is_none() {
             ScreenshotsState::NoFolder
+        } else if !ledger.consented {
+            ScreenshotsState::NotSetUp
         } else if !ledger.enabled {
             ScreenshotsState::Off
         } else if self.missing {
