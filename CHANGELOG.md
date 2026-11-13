@@ -4,16 +4,17 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.48] - 2026-11-12
 
 ### Added
 
-- import, a new tile beside your sources, adds PDFs, audio, images and text to your journal. choose files on its page, or drop them on the settings window. each one waits on this PC until your journal has it, and the import page lists the ones still waiting. if your journal needs an update before it can take them, they wait for that, and the import page says so. a journal on a windows PC can't take imports yet: your files stay on this PC, and the import page shows what your journal said.
+- import, a new tile beside your sources, adds PDFs, audio, images and text to your journal. choose files on its page, or drop them on the settings window. each one waits on this PC until your journal has it, and the import page lists the ones still waiting. if your journal needs an update before it can take them, they wait for that, and the import page says so. a journal on a windows PC takes them once it's up to date. until then, each file shows what your journal said and stays on this PC.
 
 ### Changed
 
-- settings now opens on your sources. each one has a tile with its state, and audio, screen and Obsidian have their switch right on the tile. beside the tiles, status shows how much each source has taken in for your journal so far, and when it last took something in. a tile opens that source's page in place of status. on the left are home, your journal, this PC, updates and help, and what you leave out is now on screen's page, under left out.
-- the tray icon's menu is now shorter. it names a source only when that source needs attention, and each source's state is on its tile in the window.
+- settings now opens on your sources. each one has a tile with its state, and audio, screen and Obsidian have their switch right on the tile. beside the tiles, status shows how much each source has taken in for your journal since it started counting, and when it last took something in. a tile opens that source's page in place of status. on the left are home, your journal, this PC, updates and help.
+- what you set under privacy is now on screen's page, under "left out", and shortcut and storage are under this PC.
+- the tray icon's menu is now shorter. it names a source only when that source needs attention, and each source's state is on its tile in settings.
 
 ### Fixed
 
