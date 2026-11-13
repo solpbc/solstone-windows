@@ -9,7 +9,7 @@ export type StateWord =
   | "checking…"
   | "needs attention";
 
-export type SourceId = "audio" | "screen" | "browsers" | "obsidian";
+export type SourceId = "audio" | "screen" | "browsers" | "obsidian" | "screenshots";
 
 export type WidthClass = "full" | "narrower" | "phone";
 
@@ -21,10 +21,11 @@ export type Pane =
   | "screen"
   | "browsers"
   | "obsidian"
+  | "screenshots"
   | "import"
   | "screenLeftOut";
 
-const SOURCE_ORDER: readonly SourceId[] = ["audio", "screen", "browsers", "obsidian"];
+const SOURCE_ORDER: readonly SourceId[] = ["audio", "screen", "browsers", "obsidian", "screenshots"];
 
 export function widthClass(innerWidth: number): WidthClass {
   if (innerWidth >= 1100) return "full";
@@ -193,6 +194,103 @@ export function obsidianTile(input: {
   };
 }
 
+export type ScreenshotsStateName =
+  | "off"
+  | "no_folder"
+  | "folder_missing"
+  | "choosing"
+  | "bringing_in"
+  | "on"
+  | "paused";
+
+/** The screenshots tile's word and switch. Not yet reported reads as off. */
+export function screenshotsTile(state: ScreenshotsStateName | null): TileView {
+  let word: StateWord;
+  if (state === "folder_missing") word = "needs attention";
+  else if (state === "no_folder" || state === "choosing") word = "ready to set up";
+  else if (state === "paused") word = "paused";
+  else if (state === "on" || state === "bringing_in") word = "on";
+  else word = "off";
+  return {
+    word,
+    switchOn: state !== null && state !== "off" && state !== "no_folder",
+    activityKept: false,
+    activityAlongside: false,
+    namesMicrophone: false,
+  };
+}
+
+export type ScreenshotsReason =
+  | "noFolder"
+  | "folderGone"
+  | "countFailed"
+  | "paused"
+  | "waitingForJournal"
+  | "bringingIn";
+
+export type ScreenshotsAction = "tryAgain" | "resume";
+
+export type ScreenshotsPageInput = {
+  state: ScreenshotsStateName;
+  countFailed: boolean;
+  waitingForJournal: boolean;
+  windowsFolder: boolean;
+  hasFolder: boolean;
+  confirmed: boolean;
+};
+
+export type ScreenshotsPage = {
+  reason: ScreenshotsReason | null;
+  /** The state's one action. Choosing a folder is never it: that sits by the folder fact. */
+  action: ScreenshotsAction | null;
+  chooser: boolean;
+  /** Other files stay where they are: a folder the owner chose. */
+  otherFilesStay: boolean;
+  /** Every picture comes in: Windows' own folder. Otherwise only what can be told is a screenshot. */
+  everyPicture: boolean;
+  /** The folder fact and its chooser, in every state. */
+  folderFact: true;
+  /** What can't come in is said once there is something confirmed. */
+  finalLine: boolean;
+};
+
+/** What the screenshots page shows, in the page order. */
+export function screenshotsPage(input: ScreenshotsPageInput): ScreenshotsPage {
+  let reason: ScreenshotsReason | null = null;
+  let action: ScreenshotsAction | null = null;
+  if (input.state === "no_folder") reason = "noFolder";
+  else if (input.state === "folder_missing") reason = "folderGone";
+  else if (input.state === "choosing" && input.countFailed) {
+    reason = "countFailed";
+    action = "tryAgain";
+  } else if (input.state === "paused") {
+    reason = "paused";
+    action = "resume";
+  } else if ((input.state === "on" || input.state === "bringing_in") && input.waitingForJournal) {
+    reason = "waitingForJournal";
+  } else if (input.state === "bringing_in") reason = "bringingIn";
+  return {
+    reason,
+    action,
+    chooser: input.state === "choosing",
+    otherFilesStay: input.hasFolder && !input.windowsFolder,
+    everyPicture: input.hasFolder && input.windowsFolder,
+    folderFact: true,
+    finalLine: input.confirmed,
+  };
+}
+
+/** What the confirm button carries: a count, today, or the wait for the count. */
+export function screenshotsConfirm(input: {
+  span: string;
+  count: number | null;
+  counting: boolean;
+}): { kind: "checking" } | { kind: "today" } | { kind: "count"; count: number } {
+  if (input.counting || input.count === null) return { kind: "checking" };
+  if (input.span === "nothing" || input.count === 0) return { kind: "today" };
+  return { kind: "count", count: input.count };
+}
+
 export type DeckTileId = SourceId | "import" | "addMore";
 
 /** Sources, the file-import destination, then add more. */
@@ -221,7 +319,7 @@ export function shelfBadges(input: {
   return rows;
 }
 
-/** Space toggles a switch. Browsers has none. Obsidian's on action opens the page. */
+/** Space toggles a switch. Browsers has none. Obsidian's on action opens the page. Screenshots' switch turns it on and opens the page. */
 export function spaceOnTile(source: SourceId, switchOn: boolean | null): "toggle" | "open" | "none" {
   if (source === "browsers" || switchOn === null) return "none";
   if (source === "obsidian") return switchOn ? "toggle" : "open";
@@ -434,6 +532,7 @@ export function settingsNavigate(payload: string): { row: ShelfRow; pane: Pane }
     case "screen":
     case "browsers":
     case "obsidian":
+    case "screenshots":
     case "import":
       return { row: "home", pane: payload };
     case "sources":
@@ -469,7 +568,7 @@ export function statusRowOpens(source: SourceId): Pane {
   return source;
 }
 
-export type CounterSourceName = "audio" | "screen" | "browsers" | "obsidian";
+export type CounterSourceName = "audio" | "screen" | "browsers" | "obsidian" | "screenshots";
 
 export type CounterDocument = {
   started: string;
@@ -477,6 +576,8 @@ export type CounterDocument = {
   screen: { seconds: number; last: number | null };
   browsers: { total: number; last: number | null };
   obsidian: { total: number; last: number | null };
+  /** Absent from a document written before screenshots were counted. */
+  screenshots?: { total: number; last: number | null };
 };
 
 export type SourceFacts = {
@@ -558,6 +659,7 @@ export function counterFacts(document: CounterDocument | null): SourceFacts[] | 
     ["screen", document.screen.seconds, document.screen.last],
     ["browsers", document.browsers.total, document.browsers.last],
     ["obsidian", document.obsidian.total, document.obsidian.last],
+    ["screenshots", document.screenshots?.total ?? 0, document.screenshots?.last ?? null],
   ];
   return rows.map(([source, total, last]) => {
     const nothingYet = total === 0 && last === null;

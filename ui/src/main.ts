@@ -50,7 +50,7 @@ import {
   type Pane,
   type ShelfRow,
   type SourceFacts,
-  type SourceId,
+  type SourceId, screenshotsTile, screenshotsPage, screenshotsConfirm, type ScreenshotsStateName,
 } from "./shell/derive";
 import { renderDesk, type DeskStatusRow, type DeskTile } from "./shell/view";
 
@@ -969,6 +969,30 @@ type ObsidianStatus = {
 type ObsidianDocument = { v: number; status: ObsidianStatus; refusal?: ObsidianRefusal | null };
 type ObsidianVault = { name: string; path: string };
 let latestObsidian: ObsidianStatus | null = null;
+type ScreenshotsSpan = "thirty_days" | "six_months" | "year" | "all" | "nothing";
+type ScreenshotsStatus = {
+  state: ScreenshotsStateName;
+  folder: string | null;
+  folder_line: string | null;
+  folder_name: string | null;
+  windows_folder: boolean;
+  counting: boolean;
+  count_failed: boolean;
+  counts: Partial<Record<ScreenshotsSpan, number>> | null;
+  span: ScreenshotsSpan;
+  turned_back_on: boolean;
+  backlog: { done: number; total: number } | null;
+  waiting_for_journal: boolean;
+  waiting: number;
+  cant_come_in: number;
+  unreadable: number;
+  last_checked_ms: number | null;
+};
+type ScreenshotsDocument = { v: number; status: ScreenshotsStatus };
+let latestScreenshots: ScreenshotsStatus | null = null;
+let screenshotsBusy = false;
+/** The span the owner picked in the chooser; the first choice is preselected. */
+let screenshotsSpan: ScreenshotsSpan = "thirty_days";
 
 interface ImportRow {
   id: string;
@@ -3868,6 +3892,55 @@ const OBSIDIAN_COPY = {
     "turning this off stops bringing in changes. what's already in your journal stays there, and what's waiting stays on this computer until you turn it on again.",
 } as const;
 
+/** Every screenshots string, by its id in the locked owner copy. */
+const SCREENSHOTS_COPY = {
+  S1: "screenshots",
+  S4: (folder: string) => `from ${folder}`,
+  S5: (done: number, total: number) => `${done} of ${total} in your journal`,
+  S6: (done: number, total: number) => `${done} of ${total} screenshots in your journal`,
+  S7: "from before today",
+  S8: {
+    thirty_days: "the last 30 days",
+    six_months: "the last 6 months",
+    year: "the last year",
+    all: "all of it",
+    nothing: "nothing from before today",
+  } as Record<ScreenshotsSpan, string>,
+  S9: "you'll see how many screenshots there are before any come in.",
+  S10: (count: number) => (count === 1 ? "bring in 1 screenshot" : `bring in ${count.toLocaleString("en-US")} screenshots`),
+  S10Today: "start from today",
+  checking: "checking\u2026",
+  S11: "choose how far back to start, then bring them in.",
+  S12: "couldn't count your screenshots.",
+  S12Action: "try again",
+  S14: "a screenshot already in your journal stays there if you delete it from the folder.",
+  S15: "what's already in your journal stays when you pause or turn this off.",
+  /** S16's second sentence: under the computer's whole pause it stands alone. */
+  S16ComputerPause: "screenshots you take while it's paused don't come in.",
+  S17: "screenshots already in your journal aren't brought in again.",
+  S18: "last checked",
+  S19: "waiting to go to your journal",
+  S20: (count: number) => countTotal(count, "screenshot", "screenshots"),
+  S21: "waiting for a journal update. your screenshots wait on this PC.",
+  S22: "folder",
+  S23: "only what the solstone app can tell is a screenshot comes in.",
+  D1: "while this is on, the solstone app takes in the screenshots you take on this PC, and your journal keeps each one at the minute you took it.",
+  D3: (folder: string) => `other files in ${folder} stay where they are.`,
+  D8: "couldn't find a Screenshots folder on this PC. choose the folder your screenshots save to.",
+  D9: (folder: string) => `the ${folder} folder isn't on this PC anymore.`,
+  D12: (count: number) =>
+    count === 1
+      ? "1 screenshot can't come in, so it stays in the folder."
+      : `${count} screenshots can't come in, so they stay in the folder.`,
+  D13: (count: number) => (count === 1 ? "couldn't read 1 screenshot." : `couldn't read ${count} screenshots.`),
+  D13Action: "try again",
+  D15: "more about this",
+  D16: (folder: string) => `every picture saved in ${folder} comes in, not only your screenshots.`,
+  D17: "a screenshot that's only copied to the clipboard isn't saved, so it doesn't come in.",
+  chooseFolder: "choose a folder\u2026",
+  resume: "resume",
+} as const;
+
 function obsidianWarningText(warning: NonNullable<ObsidianStatus["warning"]>): string {
   const from = warning.device ? `from ${warning.device}` : "from another device";
   let date = "";
@@ -4514,7 +4587,11 @@ function createPauseButton(dump: HealthDump): HTMLButtonElement {
   const phase = latestHealth?.app_state ?? dump.app_state;
   // The Obsidian source runs beside capture and leaves the phase idle.
   const obsidianOn = latestObsidian !== null && latestObsidian.state !== "off";
-  if (phase === "observing" || (phase === "idle" && obsidianOn)) {
+  // So does screenshots, once it is taking them in.
+  const screenshotsOn =
+    latestScreenshots !== null &&
+    (latestScreenshots.state === "on" || latestScreenshots.state === "bringing_in");
+  if (phase === "observing" || (phase === "idle" && (obsidianOn || screenshotsOn))) {
     return actionButton("pause", undefined, true, async () => {
       try {
         await invoke("pause", { reason: "operator", durationSecs: null });
@@ -5720,6 +5797,7 @@ function deskSourceName(id: string): string {
 function totalWords(source: SourceId, total: number): string {
   if (source === "audio" || source === "screen") return durationTotal(total);
   if (source === "browsers") return countTotal(total, "page", "pages");
+  if (source === "screenshots") return SCREENSHOTS_COPY.S20(total);
   return countTotal(total, "note", "notes");
 }
 
@@ -5743,6 +5821,16 @@ function onDeskSwitch(id: string, on: boolean): void {
   }
   if (id === "screen") {
     void invoke("set_source_enabled", { kind: "screen", enabled: on }).then(() => retryHealth());
+    return;
+  }
+  if (id === "screenshots") {
+    if (on) {
+      openDeskSource("screenshots");
+      // With no folder to read, the page asks for one; the switch does nothing more.
+      if (latestScreenshots?.state !== "no_folder") screenshotsCommand("screenshots_turn_on");
+    } else {
+      screenshotsCommand("screenshots_turn_off");
+    }
     return;
   }
   if (id === "obsidian") {
@@ -5797,6 +5885,8 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
     foundCount: obsidianFound.length,
     armed: obsidianWantsFolder,
   });
+  const screenshots = screenshotsTile(latestScreenshots?.state ?? null);
+  const screenshotsLines = screenshotsTileLine(latestScreenshots);
   const browserNames = latestBrowser
     ? [...new Set(latestBrowser.connected.map((item) => BROWSER_NAMES[item.brand] ?? item.brand))]
     : [];
@@ -5816,7 +5906,16 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
         selected: deskPane === "addMore",
       };
     }
-    const view = id === "audio" ? audio : id === "screen" ? screenView : id === "browsers" ? browsers : obsidian;
+    const view =
+      id === "audio"
+        ? audio
+        : id === "screen"
+          ? screenView
+          : id === "browsers"
+            ? browsers
+            : id === "screenshots"
+              ? screenshots
+              : obsidian;
     const paired = dump.sync.pairing.phase === "paired" || dump.sync.pairing.phase === "awaiting_confirmation";
     const companion =
       id === "audio"
@@ -5833,13 +5932,17 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
               : ""
           : id === "browsers"
             ? browserNames.join(", ")
-            : obsidian.word === "on" || obsidian.word === "paused"
+            : id === "screenshots"
+              ? screenshotsLines.companion
+              : obsidian.word === "on" || obsidian.word === "paused"
               ? latestObsidian?.vault ?? ""
               : "";
     const setupLine =
       id === "browsers"
         ? BROWSER_TILE_SETUP
-        : id === "obsidian"
+        : id === "screenshots"
+          ? screenshotsLines.setup
+          : id === "obsidian"
           ? obsidianFound.length === 0
             ? OBSIDIAN_TILE_SETUP
             : OBSIDIAN_COPY.foundLabel
@@ -5857,7 +5960,9 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
               : ""
             : id === "obsidian" && latestObsidian?.attention
               ? obsidianAttentionText(latestObsidian.attention)
-              : "";
+              : id === "screenshots"
+                ? screenshotsLines.attention
+                : "";
     const sub = sourceSubline({
       word: view.word,
       paired,
@@ -5872,7 +5977,12 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
       word: view.word,
       sub,
       switchOn: view.switchOn,
-      switchId: id === "screen" ? ids["settings.sources.screen.enabled"] : null,
+      switchId:
+        id === "screen"
+          ? ids["settings.sources.screen.enabled"]
+          : id === "screenshots"
+            ? ids["settings.sources.screenshots.enabled"]
+            : null,
       switchLabel: id === "obsidian" ? "Obsidian" : id,
       selected: deskPane === id,
     };
@@ -5881,7 +5991,7 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
 
 function deskStatusRows(): DeskStatusRow[] {
   const now = nowSecs();
-  const rows: DeskStatusRow[] = (["audio", "screen", "browsers", "obsidian"] as const).map((id) => {
+  const rows: DeskStatusRow[] = (["audio", "screen", "browsers", "obsidian", "screenshots"] as const).map((id) => {
     const fact = factFor(id);
     if (!fact) return { id, name: deskSourceName(id), nothingYet: false, total: "", relative: "", hasFacts: false };
     return {
@@ -5972,6 +6082,7 @@ function deskTitleGlyph(): GlyphName | null {
     deskPane === "screen" ||
     deskPane === "browsers" ||
     deskPane === "obsidian" ||
+    deskPane === "screenshots" ||
     deskPane === "import" ||
     deskPane === "addMore"
   ) {
@@ -6360,6 +6471,7 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
     }
     return body;
   }
+  if (deskPane === "screenshots") return renderScreenshotsPage(body);
   if (deskPane === "obsidian") {
     const status = latestObsidian;
     const ready = status?.state === "off" && obsidianWantsFolder && !status.vault;
@@ -6502,7 +6614,11 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
   const tiles = deskTilesFor(dump);
   const pageTile =
     deskRow === "home" &&
-    (deskPane === "audio" || deskPane === "screen" || deskPane === "browsers" || deskPane === "obsidian")
+    (deskPane === "audio" ||
+      deskPane === "screen" ||
+      deskPane === "browsers" ||
+      deskPane === "obsidian" ||
+      deskPane === "screenshots")
       ? tiles.find((tile) => tile.id === deskPane) ?? null
       : null;
   const statusOpen = deskRow === "home" && deskPane === "status" && !homeShowsPairing(dump);
@@ -7525,6 +7641,208 @@ async function refreshObsidianStatus(): Promise<void> {
   }
 }
 
+let screenshotsFetching = false;
+
+// The screenshots page: fetched with the heartbeat, and every couple of seconds
+// while the source is set up and Settings is on screen. A change also re-reads
+// the counters, so `so far` moves as screenshots come in.
+async function refreshScreenshotsStatus(): Promise<void> {
+  if (screenshotsFetching) return;
+  screenshotsFetching = true;
+  try {
+    const doc = await invoke<ScreenshotsDocument | null>("screenshots_status").catch(() => null);
+    const next = doc ? doc.status : null;
+    const changed = JSON.stringify(next) !== JSON.stringify(latestScreenshots);
+    latestScreenshots = next;
+    if (changed) {
+      countersFor = null;
+      requestRerender();
+    }
+  } finally {
+    screenshotsFetching = false;
+  }
+}
+
+function pollScreenshotsStatus(): Promise<void> {
+  if (label !== "settings" || document.visibilityState === "hidden" || screenshotsBusy) {
+    return Promise.resolve();
+  }
+  if (!latestScreenshots || latestScreenshots.state === "off" || latestScreenshots.state === "no_folder") {
+    return Promise.resolve();
+  }
+  return refreshScreenshotsStatus();
+}
+
+async function applyScreenshotsDocument(run: Promise<ScreenshotsDocument | null>): Promise<void> {
+  screenshotsBusy = true;
+  requestRerender();
+  try {
+    const document = await run;
+    if (document) {
+      latestScreenshots = document.status;
+      countersFor = null;
+    }
+  } catch {
+    // The page keeps what it showed; the next read says where things are.
+  }
+  screenshotsBusy = false;
+  requestRerender();
+}
+
+function screenshotsCommand(command: string, args?: Record<string, unknown>): void {
+  void applyScreenshotsDocument(
+    args ? invoke<ScreenshotsDocument | null>(command, args) : invoke<ScreenshotsDocument | null>(command),
+  );
+}
+
+/** The tile's line: the folder while on, progress while bringing in, the pause's own words. */
+function screenshotsTileLine(status: ScreenshotsStatus | null): { companion: string; setup: string; attention: string } {
+  const companion =
+    status?.state === "bringing_in" && status.backlog
+      ? SCREENSHOTS_COPY.S5(status.backlog.done, status.backlog.total)
+      : status?.state === "paused"
+        ? SCREENSHOTS_COPY.S16ComputerPause
+        : status?.state === "on" && status.folder_line
+          ? SCREENSHOTS_COPY.S4(status.folder_line)
+          : "";
+  return {
+    companion,
+    setup: status?.state === "choosing" ? SCREENSHOTS_COPY.S11 : "",
+    attention: status?.state === "folder_missing" ? SCREENSHOTS_COPY.D9(status.folder_name ?? "Screenshots") : "",
+  };
+}
+
+function screenshotsFact(labelText: string, value: HTMLElement | string, extra?: HTMLElement): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "desk-fact";
+  const label = text("span", labelText);
+  label.className = "desk-fact-label";
+  const mark = typeof value === "string" ? text("span", value) : value;
+  mark.classList.add("desk-fact-value");
+  row.append(label, mark);
+  if (extra) row.append(extra);
+  return row;
+}
+
+function screenshotsLine(sentence: string): HTMLElement {
+  const node = text("p", sentence);
+  node.className = "desk-fact-line";
+  return node;
+}
+
+/** The screenshots page, in the desktop shell's page order. */
+function renderScreenshotsPage(body: HTMLElement): HTMLElement {
+  const status = latestScreenshots;
+  if (!status) return body;
+  const copy = SCREENSHOTS_COPY;
+  const page = screenshotsPage({
+    state: status.state,
+    countFailed: status.count_failed,
+    waitingForJournal: status.waiting_for_journal,
+    windowsFolder: status.windows_folder,
+    hasFolder: status.folder !== null,
+    confirmed: status.state === "on" || status.state === "bringing_in" || status.state === "paused",
+  });
+  // The reason, and the state's one action.
+  if (page.reason) {
+    const folderName = status.folder_name ?? "Screenshots";
+    const sentence =
+      page.reason === "noFolder"
+        ? copy.D8
+        : page.reason === "folderGone"
+          ? copy.D9(folderName)
+          : page.reason === "countFailed"
+            ? copy.S12
+            : page.reason === "paused"
+              ? copy.S16ComputerPause
+              : page.reason === "waitingForJournal"
+                ? copy.S21
+                : copy.S6(status.backlog?.done ?? 0, status.backlog?.total ?? 0);
+    body.append(automation(deskReason(sentence), ids["settings.sources.screenshots.reason"]));
+  }
+  if (page.action === "tryAgain") {
+    const again = deskAction(copy.S12Action, () => screenshotsCommand("screenshots_try_again"), ids["settings.sources.screenshots.tryAgain"]);
+    again.disabled = screenshotsBusy;
+    body.append(again);
+  } else if (page.action === "resume") {
+    body.append(
+      deskAction(copy.resume, () => {
+        void invoke("resume").then(() => retryHealth());
+      }),
+    );
+  }
+  // What it takes in, and what stays where it is.
+  body.append(breath(copy.D1));
+  if (page.otherFilesStay && status.folder_name) body.append(breath(copy.D3(status.folder_name)));
+  // How far back.
+  if (page.chooser) {
+    const chooser = document.createElement("fieldset");
+    chooser.className = "desk-choices";
+    automation(chooser, ids["settings.sources.screenshots.span"]);
+    const legend = document.createElement("legend");
+    legend.textContent = copy.S7;
+    chooser.append(legend);
+    for (const span of ["thirty_days", "six_months", "year", "all", "nothing"] as const) {
+      const choice = document.createElement("label");
+      choice.className = "desk-choice";
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "screenshots-span";
+      input.value = span;
+      input.checked = screenshotsSpan === span;
+      input.onchange = () => {
+        screenshotsSpan = span;
+        requestRerender();
+      };
+      choice.append(input, text("span", copy.S8[span]));
+      chooser.append(choice);
+    }
+    body.append(chooser, breath(copy.S9));
+    if (status.turned_back_on) body.append(breath(copy.S17));
+    const confirm = screenshotsConfirm({
+      span: screenshotsSpan,
+      count: status.counts?.[screenshotsSpan] ?? null,
+      counting: status.counting || status.count_failed,
+    });
+    const labelText =
+      confirm.kind === "checking" ? copy.checking : confirm.kind === "today" ? copy.S10Today : copy.S10(confirm.count);
+    const button = deskAction(labelText, () => screenshotsCommand("screenshots_confirm", { span: screenshotsSpan }), ids["settings.sources.screenshots.confirm"]);
+    button.disabled = confirm.kind === "checking" || screenshotsBusy;
+    body.append(button);
+  }
+  // So far, last taken in, and the facts.
+  const totals = deskFactBlock("screenshots");
+  if (totals) body.append(totals);
+  const facts = document.createElement("div");
+  facts.className = "desk-facts";
+  facts.append(screenshotsLine(copy.S14), screenshotsLine(copy.S15));
+  facts.append(screenshotsLine(page.everyPicture ? copy.D16(status.folder_name ?? "Screenshots") : copy.S23));
+  const choose = deskAction(copy.chooseFolder, () => screenshotsCommand("screenshots_choose_folder"), ids["settings.sources.screenshots.chooseFolder"]);
+  choose.disabled = screenshotsBusy;
+  const folder = selectable(text("span", status.folder ?? ""));
+  facts.append(automation(screenshotsFact(copy.S22, folder, choose), ids["settings.sources.screenshots.folder"]));
+  if (status.last_checked_ms !== null) {
+    facts.append(screenshotsFact(copy.S18, lastSyncedLabel(status.last_checked_ms, nowSecs())));
+  }
+  if (status.waiting > 0) facts.append(screenshotsFact(copy.S19, String(status.waiting)));
+  body.append(facts);
+  // What can't come in, and what couldn't be read.
+  if (page.finalLine && status.cant_come_in > 0) body.append(deskReason(copy.D12(status.cant_come_in)));
+  if (status.unreadable > 0) {
+    body.append(deskReason(copy.D13(status.unreadable)));
+    const again = deskAction(copy.D13Action, () => screenshotsCommand("screenshots_try_again"));
+    again.disabled = screenshotsBusy;
+    body.append(again);
+  }
+  const more = document.createElement("details");
+  more.className = "desk-more";
+  const summary = document.createElement("summary");
+  summary.textContent = copy.D15;
+  more.append(summary, screenshotsLine(copy.D17));
+  body.append(more);
+  return body;
+}
+
 function pollObsidianStatus(): Promise<void> {
   if (label !== "settings" || document.visibilityState === "hidden" || obsidianBusy) {
     return Promise.resolve();
@@ -7567,6 +7885,7 @@ async function boot(): Promise<void> {
   migrationRefreshAt = Date.now();
   await refreshBrowserStatus();
   await refreshObsidianStatus();
+  await refreshScreenshotsStatus();
   await refreshImportStatus();
   rerender();
 }
@@ -7721,6 +8040,7 @@ export function start(): void {
     setLatestHealth(event.payload);
     void refreshBrowserStatus();
     void refreshObsidianStatus();
+    void refreshScreenshotsStatus();
     void refreshImportStatus();
     void refreshMigrationState();
     requestRerender();
@@ -7762,6 +8082,7 @@ export function start(): void {
   }, 1000);
   setInterval(() => {
     void pollObsidianStatus();
+    void pollScreenshotsStatus();
   }, 2500);
 }
 
@@ -7831,6 +8152,16 @@ export const __test__ = {
     latestBrowser = status;
   },
   pollObsidianStatus,
+  pollScreenshotsStatus,
+  setScreenshots(status: ScreenshotsStatus | null) {
+    latestScreenshots = status;
+    screenshotsBusy = false;
+    screenshotsSpan = "thirty_days";
+  },
+  setCounters(doc: CounterDocument | null) {
+    latestCounters = doc;
+    countersFor = latestHealth;
+  },
   setObsidian(status: ObsidianStatus | null, found: ObsidianVault[] = [], refusal: ObsidianRefusal | null = null) {
     latestObsidian = status;
     obsidianFound = found;
@@ -7893,6 +8224,9 @@ export const __test__ = {
     runningApps = [];
     latestBrowser = null;
     latestObsidian = null;
+    latestScreenshots = null;
+    screenshotsBusy = false;
+    screenshotsSpan = "thirty_days";
     obsidianFound = [];
     obsidianRefusal = null;
     obsidianBusy = false;

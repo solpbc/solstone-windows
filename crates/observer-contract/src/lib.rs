@@ -115,7 +115,6 @@ pub mod settings {
     pub const SOURCES_OBSIDIAN_CANCEL: &str = "settings.sources.obsidian.cancel";
     pub const SOURCES_OBSIDIAN_ATTENTION: &str = "settings.sources.obsidian.attention";
     pub const SOURCES_OBSIDIAN_TURN_OFF: &str = "settings.sources.obsidian.turnOff";
-    pub const SOURCES_SCREENSHOTS_STATE: &str = "settings.sources.screenshots.state";
     pub const SOURCES_SCREENSHOTS_ENABLED: &str = "settings.sources.screenshots.enabled";
     pub const SOURCES_SCREENSHOTS_REASON: &str = "settings.sources.screenshots.reason";
     pub const SOURCES_SCREENSHOTS_CHOOSE_FOLDER: &str = "settings.sources.screenshots.chooseFolder";
@@ -382,10 +381,6 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         (
             "settings.sources.obsidian.turnOff",
             settings::SOURCES_OBSIDIAN_TURN_OFF,
-        ),
-        (
-            "settings.sources.screenshots.state",
-            settings::SOURCES_SCREENSHOTS_STATE,
         ),
         (
             "settings.sources.screenshots.enabled",

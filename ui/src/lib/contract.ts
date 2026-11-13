@@ -93,7 +93,6 @@ export const automationContract = {
     "settings.sources.screenshots.folder": "settings.sources.screenshots.folder",
     "settings.sources.screenshots.reason": "settings.sources.screenshots.reason",
     "settings.sources.screenshots.span": "settings.sources.screenshots.span",
-    "settings.sources.screenshots.state": "settings.sources.screenshots.state",
     "settings.sources.screenshots.tryAgain": "settings.sources.screenshots.tryAgain",
     "settings.sources.systemAudio.enabled": "settings.sources.systemAudio.enabled",
     "settings.sources.systemAudio.state": "settings.sources.systemAudio.state",

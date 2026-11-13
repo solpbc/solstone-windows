@@ -516,6 +516,45 @@ html:has(.desk-shell) #app {
   text-align: right;
 }
 
+.desk-fact-line {
+  margin: 0;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--desk-hairline);
+}
+
+.desk-choices {
+  margin: 16px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.desk-choices legend {
+  padding: 0;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.desk-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.desk-choice input {
+  accent-color: var(--desk-accent);
+  margin: 0;
+}
+
+.desk-more {
+  margin-top: 14px;
+}
+
+.desk-more summary {
+  cursor: pointer;
+  color: var(--desk-subtle);
+}
+
 .desk-fact[data-stacked="true"] {
   flex-direction: column;
   align-items: flex-start;
