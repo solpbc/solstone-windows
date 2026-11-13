@@ -3637,6 +3637,7 @@ dependencies = [
  "observer-model",
  "observer-recovery",
  "observer-segment",
+ "screenshots-source",
  "serde_json",
  "solstone-vault",
  "source-counters",

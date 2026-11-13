@@ -1243,3 +1243,36 @@ fn a_browser_period_names_its_source_in_the_envelope() {
         .unwrap()
         .contains("filename=\"browser_pages.jsonl\"\r\nContent-Type: application/jsonl\r\n"));
 }
+
+/// The journal's golden screenshot envelopes, as the contract publishes them.
+const SCREENSHOTS_GOLDEN: [&str; 3] = [
+    r#"{"day":"20261103","files":[{"submitted":"screenshot_screen.png"}],"meta":{"screenshot":{"captured_at":"2026-11-03T14:32:07-07:00","taken_from":"platform","v":1}},"segment":"143207_1","source":"screenshots"}"#,
+    r#"{"day":"20261104","files":[{"submitted":"screenshot_screen.jpg"}],"meta":{"screenshot":{"captured_at":"2026-11-04T09:15:02+01:00","taken_from":"file","v":1}},"segment":"091502_1","source":"screenshots"}"#,
+    r#"{"day":"20261105","files":[{"submitted":"screenshot_screen.webp"}],"meta":{"screenshot":{"captured_at":"2026-11-05T00:00:00Z","taken_from":"platform","v":1}},"segment":"000000_1","source":"screenshots"}"#,
+];
+
+#[test]
+fn a_screenshot_envelope_matches_the_journal_golden() {
+    for golden in SCREENSHOTS_GOLDEN {
+        let want: serde_json::Value = serde_json::from_str(golden).unwrap();
+        let name = want["files"][0]["submitted"].as_str().unwrap();
+        let shot = &want["meta"]["screenshot"];
+        let multipart = IngestMultipart::new(
+            "v3-boundary",
+            want["day"].as_str().unwrap(),
+            want["segment"].as_str().unwrap(),
+            vec![FilePart {
+                filename: name.to_owned(),
+                content_type: "image/png".to_owned(),
+                bytes: b"image".to_vec(),
+            }],
+        )
+        .unwrap()
+        .with_source("screenshots")
+        .with_screenshot(
+            shot["captured_at"].as_str().unwrap(),
+            shot["taken_from"].as_str().unwrap(),
+        );
+        assert_eq!(envelope_json(&multipart.serialize().unwrap()), want);
+    }
+}

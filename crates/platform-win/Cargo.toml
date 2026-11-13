@@ -18,6 +18,7 @@ observer-segment.workspace = true
 observer-recovery.workspace = true
 observer-hotkey.workspace = true
 source-counters.workspace = true
+screenshots-source.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 
@@ -29,6 +30,7 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Imaging",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
     "Win32_Security",
@@ -49,6 +51,7 @@ windows = { version = "0.58", features = [
     "Win32_Security_Authorization",
     "Win32_UI_Accessibility",
     "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
     "Win32_System_WinRT",
     "Win32_Storage_FileSystem",
     "Win32_System_JobObjects",

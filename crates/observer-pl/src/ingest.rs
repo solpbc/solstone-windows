@@ -47,6 +47,16 @@ struct IngestMeta {
     /// Where the segment's audio came from: `microphone`, `computer` or both.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     audio_sources: Vec<String>,
+    /// A screenshot's capture moment, for the `screenshots` source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    screenshot: Option<ScreenshotMeta>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ScreenshotMeta {
+    v: u32,
+    captured_at: String,
+    taken_from: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -130,6 +140,21 @@ impl IngestMultipart {
                 .get_or_insert_with(IngestMeta::default)
                 .audio_sources = sources.to_vec();
         }
+        self
+    }
+
+    /// Say when a screenshot was taken: `captured_at` is RFC 3339 with its own
+    /// offset, `taken_from` is `platform` or `file`. `day` and `segment` must be
+    /// that moment's date and second in that offset.
+    pub fn with_screenshot(mut self, captured_at: &str, taken_from: &str) -> Self {
+        self.envelope
+            .meta
+            .get_or_insert_with(IngestMeta::default)
+            .screenshot = Some(ScreenshotMeta {
+            v: 1,
+            captured_at: captured_at.to_owned(),
+            taken_from: taken_from.to_owned(),
+        });
         self
     }
 

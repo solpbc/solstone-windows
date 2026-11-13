@@ -11,7 +11,9 @@
 //! stored segment, so a lost response costs a resend, never a second copy.
 
 use observer_model::LocalZone;
-use observer_pl::ingest::{validate_receipt, FilePart, IngestStatus, LocalFile, ReceiptFault};
+use observer_pl::ingest::{
+    validate_receipt, FilePart, IngestResponse, IngestStatus, LocalFile, ReceiptFault,
+};
 use spl_core::ca;
 
 use crate::{ObserverClient, RouteError, TransportError};
@@ -45,6 +47,78 @@ pub enum SourceFileReply {
     Held,
     /// The journal could not be reached.
     Unreachable,
+}
+
+/// What a journal said to one screenshot, for the source to route on the
+/// contract's answers table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScreenshotReply {
+    Answered {
+        http_status: u16,
+        status: Option<String>,
+        reason_code: Option<String>,
+    },
+    /// Sending is held until the owner confirms the journal mark.
+    Held,
+    /// The journal could not be reached.
+    Unreachable,
+}
+
+/// One screenshot, stamped at its capture second.
+pub struct ScreenshotFile<'a> {
+    pub day: &'a str,
+    pub segment: &'a str,
+    pub filename: &'a str,
+    pub content_type: &'a str,
+    pub captured_at: &'a str,
+    pub taken_from: &'a str,
+    pub bytes: Vec<u8>,
+}
+
+/// Send one screenshot into the `screenshots` sub-stream.
+pub async fn upload_screenshot(
+    client: &ObserverClient,
+    file: ScreenshotFile<'_>,
+) -> ScreenshotReply {
+    let part = FilePart {
+        filename: file.filename.to_string(),
+        content_type: file.content_type.to_string(),
+        bytes: file.bytes,
+    };
+    let response = client
+        .ingest_screenshot(
+            file.segment,
+            file.day,
+            part,
+            file.captured_at,
+            file.taken_from,
+        )
+        .await
+        .map(|(response, _)| response);
+    screenshot_reply(response)
+}
+
+fn screenshot_reply(response: Result<IngestResponse, RouteError>) -> ScreenshotReply {
+    match response {
+        Ok(response) => ScreenshotReply::Answered {
+            http_status: match response.status {
+                IngestStatus::Ok | IngestStatus::Duplicate | IngestStatus::Collision => 200,
+                IngestStatus::Conflict => 409,
+                IngestStatus::Failed => 500,
+            },
+            status: Some(status_word(response.status).to_string()),
+            reason_code: response.reason_code,
+        },
+        Err(RouteError::AwaitingConfirmation) => ScreenshotReply::Held,
+        Err(RouteError::Transport(TransportError::Rejected { status, body })) => {
+            ScreenshotReply::Answered {
+                http_status: status,
+                status: None,
+                reason_code: reason_code_of(&body),
+            }
+        }
+        Err(_) => ScreenshotReply::Unreachable,
+    }
 }
 
 pub struct SourceFile<'a> {
@@ -155,7 +229,48 @@ pub async fn upload_source_file(
 
 #[cfg(test)]
 mod tests {
-    use super::reason_code_of;
+    use super::{reason_code_of, screenshot_reply, ScreenshotReply};
+    use crate::{RouteError, TransportError};
+    use observer_pl::ingest::IngestResponse;
+
+    fn answered(http_status: u16, status: Option<&str>, reason: Option<&str>) -> ScreenshotReply {
+        ScreenshotReply::Answered {
+            http_status,
+            status: status.map(str::to_owned),
+            reason_code: reason.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_screenshot_answer_keeps_its_http_status_word_and_reason() {
+        let ok: IngestResponse =
+            serde_json::from_str(r#"{"status":"duplicate","existing_segment":"143207_1"}"#)
+                .unwrap();
+        assert_eq!(
+            screenshot_reply(Ok(ok)),
+            answered(200, Some("duplicate"), None)
+        );
+        let refused = TransportError::Rejected {
+            status: 400,
+            body: r#"{"error":"x","reason_code":"screenshot_invalid","detail":"y"}"#.into(),
+        };
+        assert_eq!(
+            screenshot_reply(Err(RouteError::Transport(refused))),
+            answered(400, None, Some("screenshot_invalid"))
+        );
+        let too_big = TransportError::Rejected {
+            status: 413,
+            body: "too large".into(),
+        };
+        assert_eq!(
+            screenshot_reply(Err(RouteError::Transport(too_big))),
+            answered(413, None, None)
+        );
+        assert_eq!(
+            screenshot_reply(Err(RouteError::AwaitingConfirmation)),
+            ScreenshotReply::Held
+        );
+    }
 
     #[test]
     fn a_refusal_reason_code_comes_out_of_a_json_body() {

@@ -1209,7 +1209,7 @@ impl ObserverClient {
         zone: Option<&LocalZone>,
         audio_sources: &[String],
     ) -> Result<(IngestResponse, SendMetadata), RouteError> {
-        self.send_ingest(segment, day, files, zone, None, audio_sources)
+        self.send_ingest(segment, day, files, zone, None, audio_sources, None)
             .await
     }
 
@@ -1223,8 +1223,31 @@ impl ObserverClient {
         zone: Option<&LocalZone>,
         source: Option<&str>,
     ) -> Result<(IngestResponse, SendMetadata), RouteError> {
-        self.send_ingest(segment, day, files, zone, source, &[])
+        self.send_ingest(segment, day, files, zone, source, &[], None)
             .await
+    }
+
+    /// Upload one screenshot into the `screenshots` sub-stream. `day` and
+    /// `segment` are the capture second in its own offset, which
+    /// `captured_at` carries, so no zone is sent beside it.
+    pub async fn ingest_screenshot(
+        &self,
+        segment: &str,
+        day: &str,
+        file: FilePart,
+        captured_at: &str,
+        taken_from: &str,
+    ) -> Result<(IngestResponse, SendMetadata), RouteError> {
+        self.send_ingest(
+            segment,
+            day,
+            vec![file],
+            None,
+            Some("screenshots"),
+            &[],
+            Some((captured_at, taken_from)),
+        )
+        .await
     }
 
     async fn send_ingest(
@@ -1235,6 +1258,7 @@ impl ObserverClient {
         zone: Option<&LocalZone>,
         source: Option<&str>,
         audio_sources: &[String],
+        screenshot: Option<(&str, &str)>,
     ) -> Result<(IngestResponse, SendMetadata), RouteError> {
         let boundary = self.next_boundary();
         let mut request = IngestMultipart::new(boundary, day, segment, files)
@@ -1245,6 +1269,9 @@ impl ObserverClient {
         }
         if let Some(source) = source {
             request = request.with_source(source);
+        }
+        if let Some((captured_at, taken_from)) = screenshot {
+            request = request.with_screenshot(captured_at, taken_from);
         }
         let body = request.serialize().map_err(TransportError::from)?;
 

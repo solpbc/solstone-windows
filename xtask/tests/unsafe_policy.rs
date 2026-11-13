@@ -126,6 +126,14 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         name: "folder_picker",
         owner: None,
     },
+    // The screenshots source: Windows' own Screenshots folder by its known
+    // folder id, and WIC conversion to PNG for a type the journal doesn't take.
+    ApprovedNode {
+        path: "crates/platform-win/src/lib.rs",
+        kind: ApprovedKind::ModDecl,
+        name: "screenshots",
+        owner: None,
+    },
     // The native file dialog behind choosing files for import.
     ApprovedNode {
         path: "crates/platform-win/src/lib.rs",
