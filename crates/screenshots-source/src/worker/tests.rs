@@ -1167,3 +1167,27 @@ async fn choosing_another_folder_counts_again() {
     assert_eq!(s.folder_name.as_deref(), Some("Desktop"));
     assert_eq!(count_for(&s, Span::ThirtyDays), 1);
 }
+
+#[tokio::test]
+async fn a_cloud_file_already_in_is_not_sent_again() {
+    let mut f = fixture();
+    let cloud = File {
+        bytes: png("cloud"),
+        modified_ms: NOW - DAY,
+        created_ms: Some(NOW - DAY),
+        cloud_only: true,
+        ..File::default()
+    };
+    f.fs.put(OWN, "Screenshot (9).png", cloud);
+    turn_on(&mut f).await;
+    confirm(&mut f, Span::ThirtyDays).await;
+    look(&mut f).await;
+    assert_eq!(f.journal.count(), 1);
+    // Still only in the cloud on every later look.
+    look(&mut f).await;
+    look(&mut f).await;
+    assert_eq!(f.journal.count(), 1);
+    call(&mut f, Command::TurnOff).await;
+    let s = turn_on(&mut f).await;
+    assert_eq!(count_for(&s, Span::ThirtyDays), 0, "it's in already");
+}

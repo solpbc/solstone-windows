@@ -429,7 +429,7 @@ impl Engine {
         let mut seen_ids = HashSet::new();
         for shot in self.ledger.seen.clone() {
             if !seen_ids.insert(shot.id.clone())
-                || delivered.contains(&shot.id)
+                || Self::already_in(&delivered, &shot)
                 || shot.captured_at.is_none_or(|at| at < start)
             {
                 continue;
@@ -479,8 +479,15 @@ impl Engine {
             .items
             .iter()
             .filter(|item| item.outcome == Outcome::Delivered)
-            .map(|item| item.shot.id.clone())
+            .flat_map(|item| [item.shot.id.clone(), format!("at:{}", item.shot.path)])
             .collect()
+    }
+
+    /// Whether the journal already has this one: by its hash, or, for a file
+    /// not read yet, by where it is.
+    fn already_in(delivered: &HashSet<String>, shot: &Shot) -> bool {
+        delivered.contains(&shot.id)
+            || (!shot.has_hash() && delivered.contains(&format!("at:{}", shot.path)))
     }
 
     // ── pause ──────────────────────────────────────────────────────────────
@@ -715,9 +722,14 @@ impl Engine {
             {
                 continue;
             }
-            if self.ledger.items.iter().any(|item| {
-                item.shot.path == shot.path && !item.shot.has_hash() && !shot.has_hash()
-            }) {
+            // Not read yet, and already in the ledger at that path.
+            if !shot.has_hash()
+                && self
+                    .ledger
+                    .items
+                    .iter()
+                    .any(|item| item.shot.path == shot.path)
+            {
                 continue;
             }
             if shot.has_hash() {
@@ -886,7 +898,7 @@ impl Engine {
                     .seen
                     .iter()
                     .filter(|shot| {
-                        !delivered.contains(&shot.id)
+                        !Self::already_in(&delivered, shot)
                             && shot.captured_at.is_some_and(|at| at >= start)
                     })
                     .map(|shot| shot.id.as_str())
