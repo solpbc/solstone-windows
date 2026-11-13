@@ -15,7 +15,7 @@ InstallerSwitches:
   Log: --log "<LOGPATH>"
 UpgradeBehavior: install
 ProductCode: Solstone
-ReleaseDate: 2026-11-12
+ReleaseDate: 2026-11-13
 # The Settings/About UI is a WebView2 surface; the app relies on the OS Evergreen
 # WebView2 runtime (not bundled). Declaring it lets winget resolve the runtime from
 # its own catalog first on the rare machine that lacks it (older Win10/LTSC/Server).

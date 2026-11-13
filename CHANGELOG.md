@@ -4,7 +4,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.48] - 2026-11-13
 
 ### Added
 
@@ -13,7 +13,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Changed
 
-- settings now opens on your sources. each one has a tile with its state, and audio, screen and Obsidian have their switch right on the tile. beside the tiles, status shows how much each source has taken in for your journal since it started counting, and when it last took something in. a tile opens that source's page in place of status. on the left are home, your journal, this PC, updates and help.
+- settings now opens on your sources. each one has a tile with its state, and audio, screen, screenshots and Obsidian have their switch right on the tile. beside the tiles, status shows how much each source has taken in for your journal since it started counting, and when it last took something in. a tile opens that source's page in place of status. on the left are home, your journal, this PC, updates and help.
 - what you set under privacy is now on screen's page, under "left out", and shortcut and storage are under this PC.
 - the tray icon's menu is now shorter. it names a source only when that source needs attention, and each source's state is on its tile in settings.
 
