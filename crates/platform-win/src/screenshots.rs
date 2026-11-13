@@ -144,8 +144,8 @@ pub fn own_folder() -> Option<PathBuf> {
 }
 
 /// Convert one image to PNG through WIC: the first frame, at its own size and
-/// resolution, with its ICC colour profile, and the EXIF and XMP blocks the
-/// system's PNG encoder takes. A type with no decoder here is undecodable.
+/// resolution, with its ICC colour profile, the XMP the system's PNG encoder
+/// takes, and the source's EXIF in an `eXIf` chunk. A type with no decoder here is undecodable.
 #[cfg(windows)]
 pub fn to_png(bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
     use windows::core::{Interface, GUID, PROPVARIANT};
@@ -338,7 +338,8 @@ pub fn to_png(bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
             }
             filled += read as usize;
         }
-        Ok(png)
+        // WIC's PNG encoder writes no eXIf, so the source's EXIF goes in here.
+        Ok(screenshots_source::exif::carry_exif(bytes, png))
     }
 }
 

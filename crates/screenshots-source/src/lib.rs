@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 mod engine;
+pub mod exif;
 pub mod ledger;
 pub mod rules;
 mod worker;

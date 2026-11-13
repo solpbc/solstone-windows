@@ -82,3 +82,71 @@ fn garbage_is_undecodable() {
         ConvertError::Undecodable
     );
 }
+
+/// A 2 by 1 RGB TIFF whose IFD0 Make is `make`.
+fn tiff_with_make(make: &str) -> Vec<u8> {
+    let le16 = |v: u16| v.to_le_bytes();
+    let le32 = |v: u32| v.to_le_bytes();
+    let make = format!("{make}\0");
+    let entries: u16 = 9;
+    let make_at = 8 + 2 + u32::from(entries) * 12 + 4;
+    let bits_at = make_at + make.len() as u32 + (make.len() as u32 % 2);
+    let pixels_at = bits_at + 6;
+    let mut out = b"II*\0".to_vec();
+    out.extend_from_slice(&le32(8));
+    out.extend_from_slice(&le16(entries));
+    for (tag, kind, count, value) in [
+        (256u16, 4u16, 1u32, 2u32),
+        (257, 4, 1, 1),
+        (258, 3, 3, bits_at),
+        (259, 3, 1, 1),
+        (262, 3, 1, 2),
+        (271, 2, make.len() as u32, make_at),
+        (273, 4, 1, pixels_at),
+        (277, 3, 1, 3),
+        (279, 4, 1, 6),
+    ] {
+        out.extend_from_slice(&le16(tag));
+        out.extend_from_slice(&le16(kind));
+        out.extend_from_slice(&le32(count));
+        out.extend_from_slice(&le32(value));
+    }
+    out.extend_from_slice(&le32(0));
+    out.extend_from_slice(make.as_bytes());
+    while out.len() < bits_at as usize {
+        out.push(0);
+    }
+    for _ in 0..3 {
+        out.extend_from_slice(&le16(8));
+    }
+    out.extend_from_slice(&[255, 0, 0, 0, 0, 255]);
+    out
+}
+
+/// Each chunk's type and data, in order.
+fn chunks(png: &[u8]) -> Vec<([u8; 4], Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut at = 8;
+    while at + 8 <= png.len() {
+        let len = u32::from_be_bytes(png[at..at + 4].try_into().unwrap()) as usize;
+        let kind: [u8; 4] = png[at + 4..at + 8].try_into().unwrap();
+        out.push((kind, png[at + 8..at + 8 + len].to_vec()));
+        at += 12 + len;
+    }
+    out
+}
+
+#[test]
+fn a_tiff_keeps_its_exif_make_in_an_exif_chunk_before_the_pixels() {
+    let png = to_png(&tiff_with_make("fixturemake")).unwrap();
+    let list = chunks(&png);
+    let exif = list
+        .iter()
+        .position(|(kind, _)| kind == b"eXIf")
+        .expect("an eXIf chunk");
+    let idat = list.iter().position(|(kind, _)| kind == b"IDAT").unwrap();
+    assert!(exif < idat, "eXIf comes before the first IDAT");
+    let data = &list[exif].1;
+    assert!(data.starts_with(b"II*\0"), "a TIFF header, no Exif prefix");
+    assert!(data.windows(11).any(|w| w == b"fixturemake"));
+}
