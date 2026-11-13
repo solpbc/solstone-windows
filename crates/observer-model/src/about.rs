@@ -772,6 +772,7 @@ mod tests {
             pump_degraded: false,
             listener_faults: crate::ListenerFaults::default(),
             setup: Default::default(),
+            screenshots_state: None,
         };
         let url = build_report_url(&dump, Some("Microsoft Windows [Version 10.0.26100]"));
         assert!(url.contains(

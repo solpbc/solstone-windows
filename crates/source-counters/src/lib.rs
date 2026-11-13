@@ -31,6 +31,7 @@ pub enum Source {
     Screen,
     Browsers,
     Obsidian,
+    Screenshots,
 }
 
 /// One accepted browser batch, in record order.
@@ -128,6 +129,16 @@ impl SharedCounters {
 
     pub fn apply_intakes(&self, intakes: &[NoteIntake]) -> bool {
         self.with_mut(|c| c.apply_intakes(intakes))
+    }
+
+    /// Screenshots taken in, each by the sha256 of its bytes. One already
+    /// counted adds nothing, whatever happened in between.
+    pub fn add_screenshots(&self, hashes: &[String], at_secs: i64) -> bool {
+        self.with_mut(|c| c.add_screenshots(hashes, at_secs))
+    }
+
+    pub fn screenshot_count(&self) -> u64 {
+        self.with_mut(|c| c.disk.screenshots.total)
     }
 
     pub fn last_intake_id(&self) -> u64 {
@@ -266,6 +277,10 @@ struct Disk {
     pages_applied: BTreeSet<String>,
     #[serde(default)]
     note_hashes: BTreeSet<String>,
+    #[serde(default)]
+    screenshots: CountTotal,
+    #[serde(default)]
+    screenshot_hashes: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -302,6 +317,8 @@ impl Counters {
                     tabs: BTreeMap::new(),
                     pages_applied: BTreeSet::new(),
                     note_hashes: BTreeSet::new(),
+                    screenshots: CountTotal::default(),
+                    screenshot_hashes: BTreeSet::new(),
                 }
             }
         };
@@ -358,6 +375,7 @@ impl Counters {
             Source::Screen => self.disk.screen.last,
             Source::Browsers => self.disk.browsers.last,
             Source::Obsidian => self.disk.obsidian.last,
+            Source::Screenshots => self.disk.screenshots.last,
         }
     }
 
@@ -566,6 +584,22 @@ impl Counters {
         }
         for intake in &ordered {
             self.apply_intake(intake);
+        }
+        self.persist_ok()
+    }
+
+    pub fn add_screenshots(&mut self, hashes: &[String], at_secs: i64) -> bool {
+        for hash in hashes {
+            if self.disk.screenshot_hashes.insert(hash.clone()) {
+                self.disk.screenshots.total = self.disk.screenshots.total.saturating_add(1);
+                self.disk.screenshots.last = Some(
+                    self.disk
+                        .screenshots
+                        .last
+                        .map_or(at_secs, |prev| prev.max(at_secs)),
+                );
+                self.dirty = true;
+            }
         }
         self.persist_ok()
     }
@@ -864,6 +898,7 @@ pub struct WindowCounterDocument {
     pub screen: WindowSourceTotal,
     pub browsers: WindowSourceTotal,
     pub obsidian: WindowSourceTotal,
+    pub screenshots: WindowSourceTotal,
 }
 
 /// What the settings window's read found.
@@ -901,6 +936,7 @@ pub struct WindowCounterPayload {
     pub screen: WindowSecondsCell,
     pub browsers: WindowCountCell,
     pub obsidian: WindowCountCell,
+    pub screenshots: WindowCountCell,
 }
 
 /// Map a window read onto the document the window renders.
@@ -929,6 +965,10 @@ pub fn window_payload(read: &WindowCounterRead) -> Option<WindowCounterPayload> 
             total: doc.obsidian.total,
             last: doc.obsidian.last,
         },
+        screenshots: WindowCountCell {
+            total: doc.screenshots.total,
+            last: doc.screenshots.last,
+        },
     })
 }
 
@@ -954,6 +994,10 @@ pub fn read_window_counters(dir: &Path) -> io::Result<WindowCounterRead> {
                 obsidian: WindowSourceTotal {
                     total: disk.obsidian.total,
                     last: disk.obsidian.last,
+                },
+                screenshots: WindowSourceTotal {
+                    total: disk.screenshots.total,
+                    last: disk.screenshots.last,
                 },
             })),
             Err(_) => Ok(WindowCounterRead::NoRows),
@@ -1660,5 +1704,30 @@ mod tests {
         assert!(value.get("pages_applied").is_none());
         assert!(window_payload(&WindowCounterRead::NoRows).is_none());
         assert_eq!(fs::read(dir.path().join(FILE_NAME)).unwrap(), bytes);
+    }
+
+    #[test]
+    fn a_screenshot_counts_once_by_its_hash_and_an_older_file_still_reads() {
+        let (dir, mut counters) = open_at("2026-11-13");
+        let hashes = vec!["aa".to_string(), "bb".to_string(), "aa".to_string()];
+        assert!(counters.add_screenshots(&hashes, 100));
+        assert!(counters.add_screenshots(&["bb".to_string()], 200));
+        assert_eq!(counters.disk.screenshots.total, 2);
+        assert_eq!(counters.last(Source::Screenshots), Some(100));
+        let payload = window_payload(&read_window_counters(dir.path()).unwrap()).unwrap();
+        assert_eq!(payload.screenshots.total, 2);
+
+        // A file written before screenshots were counted still reads.
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join(FILE_NAME)).unwrap()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("screenshots");
+        object.remove("screenshot_hashes");
+        fs::write(dir.path().join(FILE_NAME), serde_json::to_vec(&value).unwrap()).unwrap();
+        let payload = window_payload(&read_window_counters(dir.path()).unwrap()).unwrap();
+        assert_eq!(payload.screenshots.total, 0);
+        let mut reopened = Counters::open(dir.path(), "2026-11-13").unwrap();
+        assert!(reopened.add_screenshots(&["aa".to_string()], 300));
+        assert_eq!(reopened.disk.screenshots.total, 1);
     }
 }

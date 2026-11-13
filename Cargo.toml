@@ -25,6 +25,7 @@ members = [
     "crates/capture-engine",
     "crates/browser-host",
     "crates/obsidian-source",
+    "crates/screenshots-source",
     "crates/source-counters",
     "crates/journal-window",
     "src-tauri",
@@ -105,6 +106,7 @@ pl-transport-win = { path = "crates/pl-transport-win" }
 capture-engine = { path = "crates/capture-engine" }
 browser-host = { path = "crates/browser-host" }
 obsidian-source = { path = "crates/obsidian-source" }
+screenshots-source = { path = "crates/screenshots-source" }
 source-counters = { path = "crates/source-counters" }
 # The Obsidian vault engine, shared with the Linux desktop app. This copy comes
 # from solstone-linux crates/solstone-vault at f76df62.

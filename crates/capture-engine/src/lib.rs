@@ -568,6 +568,7 @@ where
             pump_degraded: false,
             listener_faults: observer_model::ListenerFaults::default(),
             setup: self.setup.clone(),
+            screenshots_state: None,
         }
     }
 
@@ -1874,6 +1875,8 @@ where
             dump.pump_degraded = shared.pump_degraded;
             // `listener_faults` is app-owned like `pump_degraded`; carry it forward too.
             dump.listener_faults = shared.listener_faults.clone();
+            // The screenshots source writes its own state word; carry it forward too.
+            dump.screenshots_state = shared.screenshots_state;
             *shared = dump.clone();
         }
         self.health_tx.send_replace(dump);
@@ -2048,6 +2051,7 @@ where
             pump_degraded: false,
             listener_faults: observer_model::ListenerFaults::default(),
             setup: SetupSnapshot::default(),
+            screenshots_state: None,
         }
     }
 }
@@ -3487,6 +3491,24 @@ mod tests {
     }
 
     #[test]
+    fn refresh_health_carries_the_screenshots_state_forward() {
+        let (sources, _) = active_sources();
+        let mut engine = engine_with(
+            FakeClock::new(0),
+            FakeSegmentFs::default(),
+            EngineConfig::default(),
+            sources,
+        );
+        let handle = engine.health_handle();
+        handle.lock().unwrap().screenshots_state = Some(observer_model::ScreenshotsState::On);
+        engine.refresh_health();
+        assert_eq!(
+            handle.lock().unwrap().screenshots_state,
+            Some(observer_model::ScreenshotsState::On)
+        );
+    }
+
+    #[test]
     fn refresh_health_carries_listener_faults_forward() {
         let (sources, _) = active_sources();
         let mut engine = engine_with(
@@ -4223,6 +4245,7 @@ mod tests {
             pump_degraded: false,
             listener_faults: observer_model::ListenerFaults::default(),
             setup: SetupSnapshot::default(),
+            screenshots_state: None,
         };
         let task = tokio::spawn(serve_health(listener, Arc::new(Mutex::new(fed)), |_, _| {
             false
@@ -4257,6 +4280,7 @@ mod tests {
             pump_degraded: false,
             listener_faults: observer_model::ListenerFaults::default(),
             setup: SetupSnapshot::default(),
+            screenshots_state: None,
         };
         let expected = observer_health::to_pretty_json(&fed).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

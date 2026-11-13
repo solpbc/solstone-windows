@@ -476,6 +476,30 @@ pub enum ViewRenderState {
     Rendered,
 }
 
+/// Where the screenshots source stands, for `--dump-state` / `/healthz`. Only
+/// the word: no counts, no folder. Tokens flow into the contract via
+/// `enum_tokens::<ScreenshotsState>()`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, IntoStaticStr,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum ScreenshotsState {
+    /// The switch is off.
+    Off,
+    /// No Screenshots folder resolves and none was chosen.
+    NoFolder,
+    /// The folder was there and is gone.
+    FolderMissing,
+    /// On, and waiting for the owner to choose how far back.
+    Choosing,
+    /// On, and what the owner chose from before is still going in.
+    BringingIn,
+    On,
+    /// On, under the computer's pause.
+    Paused,
+}
+
 /// The two on-demand webview views. Single source of truth for the `--open-view`
 /// startup arg's valid set, the `HealthDump::views` map keys, and the labels of
 /// the Tauri webview windows. `ALL` drives `label`/`parse`/`valid_list` so the
@@ -822,6 +846,10 @@ pub struct HealthDump {
     /// Durable setup and source preferences snapshot.
     #[serde(default)]
     pub setup: SetupSnapshot,
+    /// The screenshots source's state word. App-owned, carried forward like
+    /// `views`; absent until the source reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screenshots_state: Option<ScreenshotsState>,
 }
 
 /// True when `next` differs from `previous` in a way the Settings/About UI
@@ -1292,6 +1320,7 @@ mod tests {
             pump_degraded: false,
             listener_faults: ListenerFaults::default(),
             setup: Default::default(),
+            screenshots_state: None,
         }
     }
 
@@ -1499,6 +1528,7 @@ mod tests {
             pump_degraded: false,
             listener_faults: ListenerFaults::default(),
             setup: Default::default(),
+            screenshots_state: None,
         };
 
         let empty_json = serde_json::to_string(&dump).unwrap();

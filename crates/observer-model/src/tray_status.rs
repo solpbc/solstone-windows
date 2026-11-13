@@ -934,6 +934,7 @@ mod tests {
             pump_degraded: false,
             listener_faults: Default::default(),
             setup: Default::default(),
+            screenshots_state: None,
         }
     }
 

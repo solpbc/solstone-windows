@@ -174,6 +174,7 @@ crates/
   ── composition tier ──
   capture-engine/      orchestrator: sources→writer→rotation→state→recovery
   obsidian-source/     the Obsidian vault source: the vault engine's schedule and journal seam
+  screenshots-source/  the screenshots source: folder rules, ledger, pause windows and delivery over a journal seam
 src-tauri/             the binary: tray + Settings/About + IPC + arg dispatch
 ui/                    WebView2 front-end (vanilla TS + Vite); pure renderer
 xtask/                 cargo xtask: contract [--check], purity-check, rust-notices check, version-gate, package, dev

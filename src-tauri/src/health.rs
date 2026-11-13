@@ -59,6 +59,7 @@ pub fn not_running_snapshot() -> HealthDump {
         pump_degraded: false,
         listener_faults: observer_model::ListenerFaults::default(),
         setup,
+        screenshots_state: None,
     }
 }
 

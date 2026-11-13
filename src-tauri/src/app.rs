@@ -1196,6 +1196,10 @@ pub fn run(
                         .lock()
                         .map(|health| health.setup.clone())
                         .unwrap_or_default();
+                    let screenshots_state = health
+                        .lock()
+                        .ok()
+                        .and_then(|health| health.screenshots_state);
                     let terminal = HealthDump {
                         app_state: AppPhase::Error,
                         sources,
@@ -1213,6 +1217,7 @@ pub fn run(
                         pump_degraded,
                         listener_faults,
                         setup,
+                        screenshots_state,
                     };
                     log_health_transitions(previous.as_ref(), &terminal);
                     if let Ok(mut health) = health.lock() {
