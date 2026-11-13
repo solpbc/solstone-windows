@@ -1209,8 +1209,13 @@ impl ObserverClient {
         zone: Option<&LocalZone>,
         audio_sources: &[String],
     ) -> Result<(IngestResponse, SendMetadata), RouteError> {
-        self.send_ingest(segment, day, files, zone, None, audio_sources, None)
-            .await
+        let mut request = self
+            .multipart(segment, day, files)?
+            .with_audio_sources(audio_sources);
+        if let Some(zone) = zone {
+            request = request.with_zone(zone);
+        }
+        self.send_ingest(request).await
     }
 
     /// [`Self::ingest`] into a device sub-stream (`source`, e.g. `browser`);
@@ -1223,8 +1228,14 @@ impl ObserverClient {
         zone: Option<&LocalZone>,
         source: Option<&str>,
     ) -> Result<(IngestResponse, SendMetadata), RouteError> {
-        self.send_ingest(segment, day, files, zone, source, &[], None)
-            .await
+        let mut request = self.multipart(segment, day, files)?;
+        if let Some(zone) = zone {
+            request = request.with_zone(zone);
+        }
+        if let Some(source) = source {
+            request = request.with_source(source);
+        }
+        self.send_ingest(request).await
     }
 
     /// Upload one screenshot into the `screenshots` sub-stream. `day` and
@@ -1238,41 +1249,28 @@ impl ObserverClient {
         captured_at: &str,
         taken_from: &str,
     ) -> Result<(IngestResponse, SendMetadata), RouteError> {
-        self.send_ingest(
-            segment,
-            day,
-            vec![file],
-            None,
-            Some("screenshots"),
-            &[],
-            Some((captured_at, taken_from)),
-        )
-        .await
+        let request = self
+            .multipart(segment, day, vec![file])?
+            .with_source("screenshots")
+            .with_screenshot(captured_at, taken_from);
+        self.send_ingest(request).await
     }
 
-    async fn send_ingest(
+    fn multipart(
         &self,
         segment: &str,
         day: &str,
         files: Vec<FilePart>,
-        zone: Option<&LocalZone>,
-        source: Option<&str>,
-        audio_sources: &[String],
-        screenshot: Option<(&str, &str)>,
-    ) -> Result<(IngestResponse, SendMetadata), RouteError> {
+    ) -> Result<IngestMultipart, RouteError> {
         let boundary = self.next_boundary();
-        let mut request = IngestMultipart::new(boundary, day, segment, files)
-            .map_err(|error| TransportError::Ingest(error.to_string()))?
-            .with_audio_sources(audio_sources);
-        if let Some(zone) = zone {
-            request = request.with_zone(zone);
-        }
-        if let Some(source) = source {
-            request = request.with_source(source);
-        }
-        if let Some((captured_at, taken_from)) = screenshot {
-            request = request.with_screenshot(captured_at, taken_from);
-        }
+        Ok(IngestMultipart::new(boundary, day, segment, files)
+            .map_err(|error| TransportError::Ingest(error.to_string()))?)
+    }
+
+    async fn send_ingest(
+        &self,
+        request: IngestMultipart,
+    ) -> Result<(IngestResponse, SendMetadata), RouteError> {
         let body = request.serialize().map_err(TransportError::from)?;
 
         let mut headers = self.v3_headers();
