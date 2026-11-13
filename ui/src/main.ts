@@ -7703,11 +7703,11 @@ function screenshotsCommand(command: string, args?: Record<string, unknown>): vo
 /** The tile's line: the folder while on, progress while bringing in, the pause's own words. */
 function screenshotsTileLine(status: ScreenshotsStatus | null): { companion: string; setup: string; attention: string } {
   const companion =
-    status?.state === "bringing_in" && status.backlog
+    status?.state === "bringing_in" && status.backlog && !status.waiting_for_journal
       ? SCREENSHOTS_COPY.S5(status.backlog.done, status.backlog.total)
       : status?.state === "paused"
         ? SCREENSHOTS_COPY.S16ComputerPause
-        : status?.state === "on" && status.folder_line
+        : (status?.state === "on" || status?.state === "bringing_in") && status.folder_line
           ? SCREENSHOTS_COPY.S4(status.folder_line)
           : "";
   return {

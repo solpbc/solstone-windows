@@ -261,6 +261,10 @@ describe("the screenshots page and tile", () => {
     renderDesk(status({ state: "on", waiting_for_journal: true, waiting: 4 }));
     expect(reasons()).toBe(1);
     expect(tile().querySelector(".desk-tile-word")?.textContent).toBe("on");
+    // A backlog that can't go in yet shows where it's from, not a stalled count.
+    renderDesk(status({ state: "bringing_in", backlog: { done: 0, total: 7 }, waiting_for_journal: true, waiting: 7 }));
+    expect(tile().textContent).not.toContain("0 of 7");
+    expect(tile().textContent).toContain("Pictures \u203A Screenshots");
   });
 
   it("says what can't come in once confirmed, and lets what couldn't be read try again", () => {
