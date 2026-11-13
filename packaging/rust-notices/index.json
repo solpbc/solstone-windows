@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "f880d5ab62aa581b24be4602b61c7914485a6df910eb7d2b422e42524637c6b9",
+  "cargo_lock_sha256": "c477a3b21722fbb445a6cd3c7bc6d58111094e8f33569d03c7d661ee82bfa070",
   "notice_texts": [
     {
       "byte_end_exclusive": 1418,
@@ -10336,10 +10336,10 @@
     "filter_platform": "x86_64-pc-windows-msvc",
     "notice_text_count": 290,
     "query": "cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc; follow non-dev edges from solstone-windows-app",
-    "query_utc": "2026-11-12T05:59:55.825341+00:00",
+    "query_utc": "2026-11-13T13:48:04.909947+00:00",
     "root_package": "solstone-windows-app",
     "source": "non-dev dependency closure; conservative inclusion, not exact PE link graph",
-    "workspace_package_count": 28
+    "workspace_package_count": 29
   },
   "schema": "solstone.windows-app-rust-notices.v1"
 }
