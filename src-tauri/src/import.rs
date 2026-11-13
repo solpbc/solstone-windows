@@ -137,7 +137,7 @@ fn document_for(
         }
         }
     } else if attention > 0 {
-        "imports here won't go on their own. each one says why."
+        "not going to your journal right now. each one says why."
     } else if !journal.is_empty() && store.delivered_to.as_deref() == Some(journal) {
         "in your journal."
     } else {
