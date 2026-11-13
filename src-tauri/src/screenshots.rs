@@ -24,10 +24,8 @@ use tauri::Manager;
 
 static HANDLE: OnceLock<ScreenshotsHandle> = OnceLock::new();
 
-/// The folder dialog's title.
-// PLACEHOLDER (copy gap): the locked copy names no title for the folder dialog.
-// Proposed: D8's own second sentence, without its period. Gate before release.
-const CHOOSER_TITLE: &str = "choose the folder your screenshots save to";
+/// The folder dialog's title: D8's second sentence, without its period.
+const D8_CHOOSER_TITLE: &str = "choose the folder your screenshots save to";
 
 type LoadClient = Arc<
     dyn Fn() -> Pin<Box<dyn Future<Output = Option<Arc<ObserverClient>>> + Send>> + Send + Sync,
@@ -251,7 +249,7 @@ pub async fn choose_folder(
         .map_err(|_| "screenshots_window_unavailable")?
         .0 as isize;
     let chosen = tauri::async_runtime::spawn_blocking(move || {
-        platform_win::folder_picker::choose_folder(owner, CHOOSER_TITLE)
+        platform_win::folder_picker::choose_folder(owner, D8_CHOOSER_TITLE)
     })
     .await
     .map_err(|_| "screenshots_dialog_failed")?
