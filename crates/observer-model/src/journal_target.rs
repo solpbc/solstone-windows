@@ -49,7 +49,11 @@ pub fn classify(url: &str) -> Ingress<'_> {
     match rest
         .get(..4)
         .filter(|s| s.eq_ignore_ascii_case("open"))
-        .and_then(|_| rest[4..].strip_prefix('#'))
+        .and_then(|_| {
+            let suffix = &rest[4..];
+            // Edge inserts a root slash when handing the URL to Windows.
+            suffix.strip_prefix('#').or_else(|| suffix.strip_prefix("/#"))
+        })
     {
         Some(target) if valid_target(target) => Ingress::Target(target),
         _ => Ingress::Invalid,
@@ -80,11 +84,29 @@ mod tests {
     }
 
     #[test]
+    fn browser_root_slash_preserves_the_original_fragment() {
+        for target in [
+            "Ae-dnDlBpuNhZ_rn9mI0iIC-_riM4eorcuYY".to_string(),
+            "Aa-_~090020".to_string(),
+            format!("{}~256199", "A".repeat(512)),
+        ] {
+            let received = format!("solstone://open/#{target}");
+            assert_eq!(classify(&received), Ingress::Target(target.as_str()));
+            assert_eq!(path(&target), format!("/app/open/{target}"));
+        }
+        assert_eq!(classify("SOLSTONE://OPEN/#a"), Ingress::Target("a"));
+    }
+
+    #[test]
     fn malformed_open_never_enters_pairing() {
         for suffix in [
             "",
             "#",
-            "/#a",
+            "/path#a",
+            "//#a",
+            "/../#a",
+            "/%2F#a",
+            "/?x#a",
             "?x#a",
             "@evil#a",
             "#a=",
