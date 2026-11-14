@@ -25,6 +25,10 @@ pub fn activity_file_name(
     format!("{seg}_{artifact_id}_desktop_activity.jsonl")
 }
 
+/// How often a focused Chrome or Edge window's address is read again while its
+/// title stays the same. Each read starts a short-lived helper process.
+const URL_REREAD_MS: u64 = 30_000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenForeground {
     pub start_ms: u64,
@@ -330,7 +334,9 @@ impl DesktopActivityScheduler {
             }
         }
 
-        // 4. Cadence check for browser document URL (4s re-read)
+        // 4. Cadence check for browser document URL. Focus and title changes
+        // read it at once; this re-read catches a page that changed address
+        // under the same title.
         if let Some(fg) = self.open_foreground.as_ref() {
             if self.page_addresses && !self.is_locked {
                 let is_browser = fg.exe_name == "msedge.exe" || fg.exe_name == "chrome.exe";
@@ -340,7 +346,7 @@ impl DesktopActivityScheduler {
                     } else {
                         match self.url_state.last_poll_at_ms {
                             None => true,
-                            Some(last) => now_ms.saturating_sub(last) >= 4000,
+                            Some(last) => now_ms.saturating_sub(last) >= URL_REREAD_MS,
                         }
                     };
 
@@ -1057,6 +1063,7 @@ mod tests {
         cancels: usize,
         snapshot: Option<ForegroundSnapshot>,
         last_title: Option<String>,
+        requests: usize,
     }
 
     impl DesktopActivitySource for FakeDesktopActivityProbe {
@@ -1115,6 +1122,7 @@ mod tests {
             }
             self.last_request = Some(request);
             self.worker_count = 1;
+            self.requests += 1;
         }
 
         fn poll_url_result(&mut self) -> Option<DesktopActivityUrlResult> {
@@ -1270,6 +1278,32 @@ mod tests {
     }
 
     #[test]
+    fn a_focused_browser_with_a_steady_title_reads_its_address_every_thirty_seconds() {
+        let mut scheduler =
+            DesktopActivityScheduler::new(true, true, test_rules(), "testart".into());
+        let mut probe = FakeDesktopActivityProbe::default();
+        probe.events.push(DesktopActivityProbeEvent::Foreground {
+            window_id: 21,
+            app: "Chrome".into(),
+            exe_name: "chrome.exe".into(),
+            title: "Steady".into(),
+        });
+        for second in 1..=61u64 {
+            scheduler.poll_and_step(&mut probe, second * 1000);
+            if scheduler.url_state.in_flight {
+                probe.next_result = Some(DesktopActivityUrlResult {
+                    generation: scheduler.url_state.generation,
+                    window_id: 21,
+                    url: Some("https://example.com/a".into()),
+                    unavailable: false,
+                });
+                scheduler.poll_and_step(&mut probe, second * 1000 + 100);
+            }
+        }
+        assert_eq!(probe.requests, 3, "the first look, then one each 30 s");
+    }
+
+    #[test]
     fn timeout_emits_url_unavailable_and_clears_url() {
         let mut scheduler =
             DesktopActivityScheduler::new(true, true, test_rules(), "testart".into());
@@ -1296,13 +1330,13 @@ mod tests {
             Some("https://example.com/page".into())
         );
 
-        // 4s cadence triggers re-read at 5100ms
-        scheduler.poll_and_step(&mut probe, 5100);
+        // the 30 s cadence triggers a re-read at 31,100 ms
+        scheduler.poll_and_step(&mut probe, 31_100);
         assert!(scheduler.url_state.in_flight);
 
         let old_gen = scheduler.url_state.generation;
-        // Advance 2100ms past deadline (7200ms) with no result returned in time
-        let rows = scheduler.poll_and_step(&mut probe, 7200);
+        // Advance 2100ms past deadline (33,200 ms) with no result returned in time
+        let rows = scheduler.poll_and_step(&mut probe, 33_200);
 
         // Timeout split open foreground to url: None
         assert_eq!(scheduler.open_foreground.as_ref().unwrap().url, None);
@@ -1363,15 +1397,15 @@ mod tests {
         scheduler.poll_and_step(&mut probe, 1100);
         assert!(scheduler.open_foreground.as_ref().unwrap().url.is_some());
 
-        // 4s later, probe reports unavailable
-        scheduler.poll_and_step(&mut probe, 5200);
+        // 30 s later, probe reports unavailable
+        scheduler.poll_and_step(&mut probe, 31_200);
         probe.next_result = Some(DesktopActivityUrlResult {
             generation: scheduler.url_state.generation,
             window_id: 30,
             url: None,
             unavailable: true,
         });
-        let rows = scheduler.poll_and_step(&mut probe, 5300);
+        let rows = scheduler.poll_and_step(&mut probe, 31_300);
 
         // Foreground interval with old URL is closed, new interval has url: None
         let fg_closed = rows.iter().find(|r| r.kind == "foreground").unwrap();
@@ -1405,7 +1439,7 @@ mod tests {
         assert!(rows.is_empty());
 
         // Deduped: second poll does not re-emit
-        let rows2 = scheduler.poll_and_step(&mut probe, 5100);
+        let rows2 = scheduler.poll_and_step(&mut probe, 31_100);
         assert!(rows2.is_empty());
         assert!(probe.last_request.is_none());
 
@@ -1524,15 +1558,15 @@ mod tests {
         scheduler.poll_and_step(&mut probe, 1100);
         let start_ms = scheduler.open_foreground.as_ref().unwrap().start_ms;
 
-        // 4s cadence returns the exact same URL
-        scheduler.poll_and_step(&mut probe, 5100);
+        // the 30 s cadence returns the exact same URL
+        scheduler.poll_and_step(&mut probe, 31_100);
         probe.next_result = Some(DesktopActivityUrlResult {
             generation: scheduler.url_state.generation,
             window_id: 70,
             url: Some("https://example.com/stable".into()),
             unavailable: false,
         });
-        let rows = scheduler.poll_and_step(&mut probe, 5200);
+        let rows = scheduler.poll_and_step(&mut probe, 31_200);
 
         assert!(rows.is_empty());
         assert_eq!(
@@ -1567,15 +1601,15 @@ mod tests {
         scheduler.poll_and_step(&mut probe, 1100);
         assert_eq!(scheduler.open_foreground.as_ref().unwrap().url, None);
 
-        // 4s cadence re-requests, returns loaded URL
-        scheduler.poll_and_step(&mut probe, 5200);
+        // the 30 s cadence re-requests, returns loaded URL
+        scheduler.poll_and_step(&mut probe, 31_200);
         probe.next_result = Some(DesktopActivityUrlResult {
             generation: scheduler.url_state.generation,
             window_id: 80,
             url: Some("https://example.com/app/view1".into()),
             unavailable: false,
         });
-        let rows = scheduler.poll_and_step(&mut probe, 5300);
+        let rows = scheduler.poll_and_step(&mut probe, 31_300);
         assert_eq!(rows.len(), 2);
         let fg = rows
             .iter()
@@ -1600,15 +1634,15 @@ mod tests {
             Some("https://example.com/app/view1".into())
         );
 
-        // Another 4s cadence, URL changes to view2 with same title
-        scheduler.poll_and_step(&mut probe, 9400);
+        // Another 30 s cadence, URL changes to view2 with same title
+        scheduler.poll_and_step(&mut probe, 61_400);
         probe.next_result = Some(DesktopActivityUrlResult {
             generation: scheduler.url_state.generation,
             window_id: 80,
             url: Some("https://example.com/app/view2".into()),
             unavailable: false,
         });
-        let rows = scheduler.poll_and_step(&mut probe, 9500);
+        let rows = scheduler.poll_and_step(&mut probe, 61_500);
         assert_eq!(rows.len(), 1);
         if let observer_model::desktop_activity::DesktopActivityPayload::Foreground(p) =
             &rows[0].payload
@@ -1657,7 +1691,7 @@ mod tests {
 
         // Reset in_flight state by advancing time for next cadence request
         scheduler.url_state.in_flight = false;
-        scheduler.poll_and_step(&mut probe, 5200);
+        scheduler.poll_and_step(&mut probe, 31_200);
         let gen2 = scheduler.url_state.generation;
 
         // Snapshot has window A, but excluded title
@@ -1673,13 +1707,13 @@ mod tests {
             url: Some("https://example.com/should_drop_2".into()),
             unavailable: false,
         });
-        let rows2 = scheduler.poll_and_step(&mut probe, 5300);
+        let rows2 = scheduler.poll_and_step(&mut probe, 31_300);
         assert!(rows2.is_empty());
         assert_eq!(scheduler.open_foreground.as_ref().unwrap().url, None);
 
         // 3. Snapshot has window A, same exe, but different non-excluded title
         scheduler.url_state.in_flight = false;
-        scheduler.poll_and_step(&mut probe, 9400);
+        scheduler.poll_and_step(&mut probe, 61_400);
         let gen3 = scheduler.url_state.generation;
 
         probe.snapshot = Some(ForegroundSnapshot {
@@ -1694,7 +1728,7 @@ mod tests {
             url: Some("https://example.com/should_drop_3".into()),
             unavailable: false,
         });
-        let rows3 = scheduler.poll_and_step(&mut probe, 9500);
+        let rows3 = scheduler.poll_and_step(&mut probe, 61_500);
         assert!(rows3.is_empty());
         assert_eq!(scheduler.open_foreground.as_ref().unwrap().url, None);
     }
