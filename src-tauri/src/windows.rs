@@ -50,9 +50,10 @@ fn caption_stand_in(dark: bool) -> (u8, u8, u8) {
     }
 }
 
-fn caption_colors() -> &'static std::sync::Mutex<std::collections::HashMap<String, (u8, u8, u8)>> {
-    static COLORS: OnceLock<std::sync::Mutex<std::collections::HashMap<String, (u8, u8, u8)>>> =
-        OnceLock::new();
+type CaptionColors = std::sync::Mutex<std::collections::HashMap<String, (u8, u8, u8)>>;
+
+fn caption_colors() -> &'static CaptionColors {
+    static COLORS: OnceLock<CaptionColors> = OnceLock::new();
     COLORS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
