@@ -55,6 +55,10 @@ pub struct TrayMenu {
     pause_shown: bool,
     resume_shown: bool,
     journal_shown: bool,
+    icon_shown: Option<TrayVisual>,
+    tooltip_shown: Option<String>,
+    status_shown: Option<String>,
+    attention_text_shown: Option<String>,
 }
 
 /// Install the tray icon and its native menu.
@@ -219,6 +223,10 @@ pub fn init(
         pause_shown: true,
         resume_shown: false,
         journal_shown: false,
+        icon_shown: None,
+        tooltip_shown: None,
+        status_shown: None,
+        attention_text_shown: None,
     })
 }
 
@@ -245,6 +253,17 @@ fn place(menu: &Menu<Wry>, item: &impl IsMenuItem<Wry>, shown: &mut bool, want: 
     }
 }
 
+/// Hand `value` to the tray only when it differs from what the tray already
+/// shows. A value the tray refused is offered again on the next render.
+fn show<T: PartialEq>(shown: &mut Option<T>, value: T, apply: impl FnOnce(&T) -> bool) {
+    if shown.as_ref() == Some(&value) {
+        return;
+    }
+    if apply(&value) {
+        *shown = Some(value);
+    }
+}
+
 /// Re-render the tray from `dump`; returns what it shows, for the notifier.
 pub fn apply_state(menu: &mut TrayMenu, dump: &HealthDump) -> (TrayVisual, Option<SourceKind>) {
     let fault_detail = owner_fault_detail(&dump.sources, dump.storage.as_ref(), |kind| {
@@ -260,9 +279,17 @@ pub fn apply_state(menu: &mut TrayMenu, dump: &HealthDump) -> (TrayVisual, Optio
         blocked,
         deliberate_off,
     );
-    let _ = menu.tray.set_icon(Some(icon_for(visual)));
-    let _ = menu.tray.set_tooltip(Some(tooltip));
-    let _ = menu.status.set_text(menu_status_line(dump));
+    let tray = &menu.tray;
+    show(&mut menu.icon_shown, visual, |visual| {
+        tray.set_icon(Some(icon_for(*visual))).is_ok()
+    });
+    show(&mut menu.tooltip_shown, tooltip, |tooltip| {
+        tray.set_tooltip(Some(tooltip.as_str())).is_ok()
+    });
+    let status = &menu.status;
+    show(&mut menu.status_shown, menu_status_line(dump), |line| {
+        status.set_text(line).is_ok()
+    });
 
     #[cfg(feature = "browser-host")]
     let browsers = crate::browser::needs_attention();
@@ -277,7 +304,12 @@ pub fn apply_state(menu: &mut TrayMenu, dump: &HealthDump) -> (TrayVisual, Optio
         dump.app_state == AppPhase::Paused,
     );
     if let Some(name) = source {
-        let _ = menu.attention.set_text(format!("{name} needs attention"));
+        let attention = &menu.attention;
+        show(
+            &mut menu.attention_text_shown,
+            format!("{name} needs attention"),
+            |text| attention.set_text(text).is_ok(),
+        );
         if let Ok(mut slot) = menu.attention_target.lock() {
             *slot = attention_route(name).to_string();
         }
@@ -361,4 +393,47 @@ pub(crate) async fn open_journal_from_menu<S: crate::windows::JournalSurface>(
     app: Option<&tauri::AppHandle>,
 ) {
     let _ = crate::windows::open_journal(state, surface, app).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unchanged_render_hands_the_tray_nothing() {
+        let mut shown = None;
+        let mut sets = 0;
+        for _ in 0..100 {
+            show(&mut shown, "observing".to_string(), |_| {
+                sets += 1;
+                true
+            });
+        }
+        assert_eq!(sets, 1);
+        show(&mut shown, "paused".to_string(), |_| {
+            sets += 1;
+            true
+        });
+        assert_eq!(sets, 2);
+    }
+
+    #[test]
+    fn a_value_the_tray_refused_is_offered_again() {
+        let mut shown = None;
+        let mut sets = 0;
+        show(&mut shown, TrayVisual::Healthy, |_| {
+            sets += 1;
+            false
+        });
+        show(&mut shown, TrayVisual::Healthy, |_| {
+            sets += 1;
+            true
+        });
+        show(&mut shown, TrayVisual::Healthy, |_| {
+            sets += 1;
+            true
+        });
+        assert_eq!(sets, 2);
+        assert_eq!(shown, Some(TrayVisual::Healthy));
+    }
 }
