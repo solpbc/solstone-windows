@@ -822,15 +822,17 @@ mod notification_pump {
     use windows::Win32::System::RemoteDesktop::{
         WTSRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
     };
+    use windows::Win32::System::Threading::{GetCurrentThreadId, INFINITE};
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
         MOD_SHIFT, MOD_WIN,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW,
-        TranslateMessage, MSG, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PM_REMOVE, WINDOW_STYLE,
-        WM_DISPLAYCHANGE, WM_HOTKEY, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WNDCLASSW,
-        WS_EX_TOOLWINDOW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+        CreateWindowExW, DefWindowProcW, DispatchMessageW, MsgWaitForMultipleObjectsEx,
+        PeekMessageW, PostThreadMessageW, RegisterClassW, TranslateMessage, MSG,
+        MWMO_INPUTAVAILABLE, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PM_REMOVE, QS_ALLINPUT,
+        WINDOW_STYLE, WM_APP, WM_DISPLAYCHANGE, WM_HOTKEY, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE,
+        WNDCLASSW, WS_EX_TOOLWINDOW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
     };
 
     use super::{SystemNotification, HOTKEY_ID};
@@ -912,7 +914,7 @@ mod notification_pump {
                 Some(SystemNotification::Resumed)
             }
             // Our global hotkey fired. We register it against this window, so the
-            // message lands here (and the filtered PeekMessage below retrieves it).
+            // message lands here when the pump drains its thread's queue.
             WM_HOTKEY if wparam.0 == HOTKEY_ID as usize => Some(SystemNotification::HotkeyPressed),
             _ => None,
         };
@@ -982,6 +984,22 @@ mod notification_pump {
         hwnd: HWND,
         degraded: bool,
         hotkey: Option<HotkeyBinding>,
+        thread: u32,
+    }
+
+    /// Wakes a pump blocked in [`NotificationPump::wait`], from any thread, so
+    /// it reconciles a changed hotkey at once.
+    #[derive(Debug, Clone, Copy)]
+    pub struct PumpWaker {
+        thread: u32,
+    }
+
+    impl PumpWaker {
+        pub fn wake(&self) {
+            unsafe {
+                let _ = PostThreadMessageW(self.thread, WM_APP, WPARAM(0), LPARAM(0));
+            }
+        }
     }
 
     impl std::fmt::Debug for HotkeyBinding {
@@ -1006,6 +1024,7 @@ mod notification_pump {
                 hwnd: setup.hwnd,
                 degraded: setup.degraded,
                 hotkey: None,
+                thread: unsafe { GetCurrentThreadId() },
             }
         }
 
@@ -1027,6 +1046,23 @@ mod notification_pump {
                     applied: None,
                     registered: false,
                 }),
+                thread: unsafe { GetCurrentThreadId() },
+            }
+        }
+
+        /// A waker for this pump's thread.
+        pub fn waker(&self) -> PumpWaker {
+            PumpWaker {
+                thread: self.thread,
+            }
+        }
+
+        /// Block until a message reaches this thread: a notification, a hotkey
+        /// press, or a [`PumpWaker`]. [`poll`](Self::poll) then drains it.
+        pub fn wait(&self) {
+            unsafe {
+                let _ =
+                    MsgWaitForMultipleObjectsEx(None, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
             }
         }
 
@@ -1100,12 +1136,14 @@ mod notification_pump {
             }
         }
 
-        /// Drain any pending notifications.
+        /// Drain any pending notifications. Every message on this thread is
+        /// taken, the waker's thread message included, so a later
+        /// [`wait`](Self::wait) blocks until something new arrives.
         pub fn poll(&mut self) -> Vec<SystemNotification> {
             self.reconcile_hotkey();
             unsafe {
                 let mut message = MSG::default();
-                while PeekMessageW(&mut message, self.hwnd, 0, 0, PM_REMOVE).as_bool() {
+                while PeekMessageW(&mut message, None, 0, 0, PM_REMOVE).as_bool() {
                     let _ = TranslateMessage(&message);
                     DispatchMessageW(&message);
                 }
@@ -1153,15 +1191,47 @@ mod notification_pump {
                 hwnd: setup.hwnd,
                 degraded: setup.degraded,
                 hotkey: None,
+                thread: unsafe { GetCurrentThreadId() },
             };
             assert!(pump.is_degraded());
             assert!(pump.poll().is_empty());
+        }
+
+        #[test]
+        fn a_drained_pump_sleeps_until_it_is_woken() {
+            let mut pump = NotificationPump::new();
+            let waker = pump.waker();
+            pump.poll();
+            let started = std::time::Instant::now();
+            let wake = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(600));
+                waker.wake();
+            });
+            pump.wait();
+            let slept = started.elapsed();
+            wake.join().unwrap();
+            assert!(
+                slept >= std::time::Duration::from_millis(500),
+                "the pump woke after {slept:?} with nothing to do"
+            );
+            assert!(pump.poll().is_empty());
+
+            // The waker's message is drained, so the next wait sleeps again.
+            let waker = pump.waker();
+            let started = std::time::Instant::now();
+            let wake = std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(600));
+                waker.wake();
+            });
+            pump.wait();
+            assert!(started.elapsed() >= std::time::Duration::from_millis(500));
+            wake.join().unwrap();
         }
     }
 }
 
 #[cfg(windows)]
-pub use notification_pump::NotificationPump;
+pub use notification_pump::{NotificationPump, PumpWaker};
 
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 

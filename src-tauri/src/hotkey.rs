@@ -21,6 +21,8 @@ pub struct HotkeyController {
     desired: Arc<Mutex<HotkeyConfig>>,
     outcome: Arc<Mutex<HotkeyRegistration>>,
     path: Arc<PathBuf>,
+    /// Wakes the pump so a new config is registered at once.
+    waker: Arc<Mutex<Option<platform_win::PumpWaker>>>,
 }
 
 impl HotkeyController {
@@ -37,6 +39,14 @@ impl HotkeyController {
             desired: Arc::new(Mutex::new(loaded)),
             outcome: Arc::new(Mutex::new(HotkeyRegistration::Inactive)),
             path: Arc::new(path),
+            waker: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// The pump's waker, once the pump runs.
+    pub fn set_waker(&self, waker: platform_win::PumpWaker) {
+        if let Ok(mut slot) = self.waker.lock() {
+            *slot = Some(waker);
         }
     }
 
@@ -58,11 +68,14 @@ impl HotkeyController {
         }
     }
 
-    /// Replace the desired config: update the shared handle (the pump reconciles
-    /// registration on its next poll, ~250 ms) and persist to disk.
+    /// Replace the desired config: update the shared handle, wake the pump so
+    /// it reconciles registration now, and persist to disk.
     pub fn set(&self, config: HotkeyConfig) {
         if let Ok(mut guard) = self.desired.lock() {
             *guard = config;
+        }
+        if let Some(waker) = self.waker.lock().ok().and_then(|slot| *slot) {
+            waker.wake();
         }
         self.persist(&config);
     }

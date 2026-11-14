@@ -1256,9 +1256,11 @@ pub fn run(
                 let health = health.clone();
                 let hotkey_desired = hotkey.desired_handle();
                 let hotkey_outcome = hotkey.outcome_handle();
+                let hotkey = hotkey.clone();
                 move || {
                     let mut pump =
                         platform_win::NotificationPump::with_hotkey(hotkey_desired, hotkey_outcome);
+                    hotkey.set_waker(pump.waker());
                     platform_win::mark_pump_registration_finished(!pump.is_degraded());
                     if pump.is_degraded() {
                         platform_win::set_pump_degraded(true);
@@ -1306,7 +1308,9 @@ pub fn run(
                                 let _ = cmd_tx.send(command);
                             }
                         }
-                        std::thread::sleep(Duration::from_millis(250));
+                        // Sleep until a notification, a hotkey press, or a
+                        // hotkey change arrives.
+                        pump.wait();
                     }
                 }
             });
