@@ -1168,6 +1168,9 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 #[derive(Debug)]
 struct SegmentHandle {
     file: File,
+    /// The open timeline, kept for the segment's chunks. Dropped before a
+    /// reconcile, which replaces the file.
+    timeline: Option<File>,
     last_flush: Option<Instant>,
     timeline_valid: bool,
 }
@@ -1398,9 +1401,9 @@ impl SegmentFs for LocalSegmentFs {
             ));
         }
         let dir = incomplete_dir(&self.root, key);
-        fs::create_dir_all(&dir)?;
         let handle_key = (key, chunk.source);
         if let std::collections::btree_map::Entry::Vacant(entry) = self.handles.entry(handle_key) {
+            fs::create_dir_all(&dir)?;
             if let Some(format) = chunk.format {
                 let sidecar_path = dir.join(source_fmt_file_name(chunk.source));
                 if !sidecar_path.exists() {
@@ -1414,23 +1417,29 @@ impl SegmentFs for LocalSegmentFs {
             let file = OpenOptions::new().create(true).append(true).open(path)?;
             entry.insert(SegmentHandle {
                 file,
+                timeline: None,
                 last_flush: None,
                 timeline_valid: false,
             });
         }
         let handle = self.handles.get_mut(&handle_key).expect("handle inserted");
         if chunk.at_us.is_some() && !handle.timeline_valid {
+            handle.timeline = None;
             reconcile_audio_timeline(&dir, chunk.source, handle.file.metadata()?.len())?;
         }
         handle.timeline_valid = false;
         handle.file.write_all(&chunk.data)?;
         if let Some(us) = chunk.at_us {
-            let timeline_path = dir.join(source_timeline_file_name(chunk.source));
-            let mut timeline_file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(timeline_path)?;
-            writeln!(timeline_file, "{us} {}", chunk.data.len())?;
+            let timeline = match &mut handle.timeline {
+                Some(timeline) => timeline,
+                None => handle.timeline.insert(
+                    OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(dir.join(source_timeline_file_name(chunk.source)))?,
+                ),
+            };
+            timeline.write_all(format!("{us} {}\n", chunk.data.len()).as_bytes())?;
             handle.timeline_valid = true;
         }
         // Commit durability on a ~1s per-handle cadence, not per chunk. Audio
@@ -1872,6 +1881,31 @@ mod tests {
         assert_eq!(flac_bytes, expected);
         assert_eq!(observer_audio::flac_duration_secs(&flac_bytes), Some(0.2));
 
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_segments_chunks_reuse_one_open_timeline() {
+        let root = temp_root("timeline-handle");
+        let _ = fs::remove_dir_all(&root);
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        let key = key(9);
+        fs_impl.open_incomplete(key).unwrap();
+        let mut first = audio_chunk(SourceKind::Mic, &[1000; 1600]);
+        first.at_us = Some(0);
+        fs_impl.write_chunk(key, &first).unwrap();
+        let timeline = root.join("9.incomplete/mic.timeline");
+        let moved = root.join("9.incomplete/moved.timeline");
+        fs::rename(&timeline, &moved).unwrap();
+        let mut second = audio_chunk(SourceKind::Mic, &[1000; 1600]);
+        second.at_us = Some(100_000);
+        fs_impl.write_chunk(key, &second).unwrap();
+        assert!(
+            !timeline.exists(),
+            "the second chunk opened the timeline again"
+        );
+        assert_eq!(fs::read(&moved).unwrap(), b"0 3200\n100000 3200\n");
+        drop(fs_impl);
         let _ = fs::remove_dir_all(&root);
     }
 
