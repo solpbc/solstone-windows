@@ -56,9 +56,53 @@ mod reselect {
         values.iter().any(|value| value.as_deref() == Some("Deny"))
     }
 
+    /// The running microphone reads Windows' privacy switches on every fifth
+    /// one-second tick, and as soon as a pull is refused.
+    pub(crate) const CONSENT_EVERY_TICKS: u32 = 5;
+
+    /// What the running microphone looks at on one of its one-second ticks.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct MicChecks {
+        /// List the devices and apply the owner's choice again.
+        pub reselect: bool,
+        /// Read the privacy switches.
+        pub consent: bool,
+    }
+
+    /// Counts the running microphone's ticks. Devices are listed again only
+    /// when Windows reported a device change or the owner's choice changed.
+    #[derive(Debug, Default)]
+    pub(crate) struct MicTicks {
+        ticks: u32,
+    }
+
+    impl MicTicks {
+        pub(crate) fn next(&mut self, devices_changed: bool, config_changed: bool) -> MicChecks {
+            self.ticks = self.ticks.wrapping_add(1);
+            MicChecks {
+                reselect: devices_changed || config_changed,
+                consent: self.ticks.is_multiple_of(CONSENT_EVERY_TICKS),
+            }
+        }
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn a_steady_microphone_lists_devices_only_on_a_change_and_reads_consent_every_five_seconds()
+        {
+            let mut ticks = MicTicks::default();
+            let checks: Vec<MicChecks> = (0..60).map(|_| ticks.next(false, false)).collect();
+            assert_eq!(checks.iter().filter(|c| c.reselect).count(), 0);
+            assert_eq!(checks.iter().filter(|c| c.consent).count(), 12);
+            assert!(ticks.next(true, false).reselect, "a device change");
+            assert!(
+                ticks.next(false, true).reselect,
+                "the owner's choice changed"
+            );
+        }
 
         #[test]
         fn render_reopen_needed_tracks_default_identity() {
@@ -134,20 +178,21 @@ mod imp {
 
     use crate::reselect::{
         consent_refuses, is_access_denied, is_render_reselect_error, render_reopen_needed,
-        MIC_CONSENT_DESKTOP_KEY, MIC_CONSENT_KEY,
+        MicTicks, CONSENT_EVERY_TICKS, MIC_CONSENT_DESKTOP_KEY, MIC_CONSENT_KEY,
     };
     use observer_mic::{apply_gain_f32, apply_gain_i16, MicConfig, MicDeviceRef};
     use observer_model::{
         monotonic_us, AudioFormat, CaptureChunk, CaptureSink, ErrorReason, MicSource, SourceError,
         SourceKind, SourceState, SystemAudioSource,
     };
-    use windows::core::{Error as WindowsError, Result as WindowsResult, PCWSTR};
+    use windows::core::{implement, Error as WindowsError, Result as WindowsResult, PCWSTR};
     use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
     use windows::Win32::Foundation::{ERROR_SUCCESS, RPC_E_CHANGED_MODE};
     use windows::Win32::Media::Audio::{
-        eCapture, eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDevice,
-        IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT,
-        AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, DEVICE_STATE_ACTIVE, WAVEFORMATEX,
+        eCapture, eConsole, eRender, EDataFlow, ERole, IAudioCaptureClient, IAudioClient,
+        IMMDevice, IMMDeviceEnumerator, IMMNotificationClient, IMMNotificationClient_Impl,
+        MMDeviceEnumerator, AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED,
+        AUDCLNT_STREAMFLAGS_LOOPBACK, DEVICE_STATE, DEVICE_STATE_ACTIVE, WAVEFORMATEX,
         WAVEFORMATEXTENSIBLE, WAVE_FORMAT_PCM,
     };
     use windows::Win32::Media::KernelStreaming::{
@@ -165,12 +210,93 @@ mod imp {
         RegGetValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ,
     };
 
-    /// How often the mic loop re-enumerates devices + re-applies the owner's
-    /// selection policy while running, so a device unplug or a Settings change
-    /// takes effect without an app restart. Cheap relative to the pull cadence.
+    /// The running mic loop's tick. On each one it re-applies the owner's
+    /// selection when Windows reported a device change or the owner's choice
+    /// changed, so an unplug or a Settings change takes effect without an app
+    /// restart; it lists devices only then.
     const MIC_RESELECT_INTERVAL: Duration = Duration::from_millis(1000);
 
     const PULL_INTERVAL: Duration = Duration::from_millis(100);
+
+    /// Raised by Windows whenever an audio endpoint is added, removed, changes
+    /// state or becomes a default, so the microphone lists its devices again
+    /// only then.
+    #[implement(IMMNotificationClient)]
+    struct DeviceChanges {
+        changed: Arc<AtomicBool>,
+    }
+
+    impl IMMNotificationClient_Impl for DeviceChanges_Impl {
+        fn OnDeviceStateChanged(&self, _: &PCWSTR, _: DEVICE_STATE) -> WindowsResult<()> {
+            self.changed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn OnDeviceAdded(&self, _: &PCWSTR) -> WindowsResult<()> {
+            self.changed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn OnDeviceRemoved(&self, _: &PCWSTR) -> WindowsResult<()> {
+            self.changed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn OnDefaultDeviceChanged(&self, _: EDataFlow, _: ERole, _: &PCWSTR) -> WindowsResult<()> {
+            self.changed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn OnPropertyValueChanged(
+            &self,
+            _: &PCWSTR,
+            _: &windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY,
+        ) -> WindowsResult<()> {
+            Ok(())
+        }
+    }
+
+    /// The device-change watch for one capture thread. When Windows will not
+    /// take the callback, every tick counts as a change, as before.
+    struct DeviceWatch {
+        enumerator: IMMDeviceEnumerator,
+        client: Option<IMMNotificationClient>,
+        changed: Arc<AtomicBool>,
+    }
+
+    impl DeviceWatch {
+        fn new(enumerator: &IMMDeviceEnumerator) -> Self {
+            let changed = Arc::new(AtomicBool::new(false));
+            let client: IMMNotificationClient = DeviceChanges {
+                changed: Arc::clone(&changed),
+            }
+            .into();
+            let registered =
+                unsafe { enumerator.RegisterEndpointNotificationCallback(&client) }.is_ok();
+            Self {
+                enumerator: enumerator.clone(),
+                client: registered.then_some(client),
+                changed,
+            }
+        }
+
+        /// Whether a device changed since the last call.
+        fn take(&self) -> bool {
+            self.client.is_none() || self.changed.swap(false, Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for DeviceWatch {
+        fn drop(&mut self) {
+            if let Some(client) = self.client.take() {
+                unsafe {
+                    let _ = self
+                        .enumerator
+                        .UnregisterEndpointNotificationCallback(&client);
+                }
+            }
+        }
+    }
     const WASAPI_BUFFER_DURATION_100NS: i64 = 10_000_000;
 
     struct ComApartment {
@@ -374,9 +500,9 @@ mod imp {
     }
 
     /// The config-aware microphone capture loop. Selects the owner's preferred
-    /// present-and-enabled device, applies input gain to each buffer, and — on a
-    /// modest cadence — re-enumerates + re-selects so a device unplug or a Settings
-    /// change takes effect without an app restart. Honest state throughout:
+    /// present-and-enabled device, applies input gain to each buffer, and
+    /// re-selects when a device or the owner's choice changes, so an unplug or a
+    /// Settings change takes effect without an app restart. Honest state throughout:
     /// `NoInputDevice` when no hardware exists, `Inactive` when every device is
     /// disabled by the owner, `Active` only while truly streaming.
     fn consent_value(root: HKEY, subkey: &str) -> Option<String> {
@@ -464,28 +590,40 @@ mod imp {
         let _com = ComApartment::new()?;
         let enumerator: IMMDeviceEnumerator =
             unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)? };
+        let watch = DeviceWatch::new(&enumerator);
+        let read_config = || config.read().map(|c| c.clone()).unwrap_or_default();
+        // Until a device or the owner's choice changes, listing again finds
+        // the same thing.
+        let wait_for_change = |cfg: &MicConfig| {
+            while !stop.load(Ordering::Relaxed) {
+                thread::sleep(MIC_RESELECT_INTERVAL);
+                if watch.take() || read_config() != *cfg {
+                    return;
+                }
+            }
+        };
 
         while !stop.load(Ordering::Relaxed) {
             sink.begin_stream();
             let devices = enumerate_mic_devices(&enumerator).unwrap_or_default();
+            let mut cfg = read_config();
             if devices.is_empty() {
                 set_state(&state, SourceState::NoInputDevice);
                 set_active(&active, None);
-                thread::sleep(MIC_RESELECT_INTERVAL);
+                wait_for_change(&cfg);
                 continue;
             }
-            let cfg = config.read().map(|c| c.clone()).unwrap_or_default();
             let Some(selected) = cfg.select(&devices).cloned() else {
                 // Devices exist but the owner disabled them all -> not producing.
                 set_state(&state, SourceState::Inactive);
                 set_active(&active, None);
-                thread::sleep(MIC_RESELECT_INTERVAL);
+                wait_for_change(&cfg);
                 continue;
             };
 
             if microphone_refused() {
                 report_refused(&state, &active);
-                thread::sleep(MIC_RESELECT_INTERVAL);
+                thread::sleep(MIC_RESELECT_INTERVAL * CONSENT_EVERY_TICKS);
                 continue;
             }
 
@@ -515,20 +653,35 @@ mod imp {
             set_active(&active, Some(selected.id.clone()));
 
             let mut since_reselect = Duration::ZERO;
+            let mut ticks = MicTicks::default();
             'inner: while !stop.load(Ordering::Relaxed) {
                 thread::sleep(PULL_INTERVAL);
                 since_reselect += PULL_INTERVAL;
                 let mult = config.read().map(|c| c.gain_multiplier()).unwrap_or(1.0);
                 loop {
-                    let packet = unsafe { capture.GetNextPacketSize()? };
+                    let packet = match unsafe { capture.GetNextPacketSize() } {
+                        Ok(packet) => packet,
+                        Err(err) if is_access_denied(err.code().0) => {
+                            report_refused(&state, &active);
+                            break 'inner;
+                        }
+                        Err(err) => return Err(err),
+                    };
                     if packet == 0 {
                         break;
                     }
                     let mut data_ptr: *mut u8 = ptr::null_mut();
                     let mut frames: u32 = 0;
                     let mut flags: u32 = 0;
-                    unsafe {
-                        capture.GetBuffer(&mut data_ptr, &mut frames, &mut flags, None, None)?;
+                    match unsafe {
+                        capture.GetBuffer(&mut data_ptr, &mut frames, &mut flags, None, None)
+                    } {
+                        Ok(()) => {}
+                        Err(err) if is_access_denied(err.code().0) => {
+                            report_refused(&state, &active);
+                            break 'inner;
+                        }
+                        Err(err) => return Err(err),
                     }
                     if frames > 0 {
                         let byte_len = frames as usize * bpf;
@@ -552,11 +705,18 @@ mod imp {
                 }
                 if since_reselect >= MIC_RESELECT_INTERVAL {
                     since_reselect = Duration::ZERO;
-                    let devices = enumerate_mic_devices(&enumerator).unwrap_or_default();
-                    let cfg = config.read().map(|c| c.clone()).unwrap_or_default();
-                    let now = cfg.select(&devices).map(|d| d.id.clone());
-                    if now.as_deref() != Some(selected.id.as_str()) || microphone_refused() {
-                        break 'inner; // selection changed or access refused -> reopen
+                    let now_cfg = read_config();
+                    let checks = ticks.next(watch.take(), now_cfg != cfg);
+                    if checks.reselect {
+                        let devices = enumerate_mic_devices(&enumerator).unwrap_or_default();
+                        let now = now_cfg.select(&devices).map(|d| d.id.clone());
+                        if now.as_deref() != Some(selected.id.as_str()) {
+                            break 'inner; // selection changed -> reopen
+                        }
+                        cfg = now_cfg;
+                    }
+                    if checks.consent && microphone_refused() {
+                        break 'inner; // access refused -> reopen reports it
                     }
                 }
             }

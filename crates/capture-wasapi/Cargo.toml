@@ -16,6 +16,8 @@ observer-model.workspace = true
 observer-mic.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+# The device-change callback's `#[implement]` expands to paths in this crate.
+windows-core = "=0.58.0"
 windows = { version = "0.58", features = [
     "Win32_Media_Audio",
     "Win32_Media_Multimedia",
@@ -26,4 +28,5 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Devices_FunctionDiscovery",
     "Win32_System_Registry",
+    "implement",
 ] }
