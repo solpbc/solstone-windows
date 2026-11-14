@@ -56,6 +56,20 @@ mod reselect {
         values.iter().any(|value| value.as_deref() == Some("Deny"))
     }
 
+    /// When the first frame of a packet was taken, on the monotonic clock.
+    ///
+    /// A pull drains every packet queued since the last one, so the moment of
+    /// the pull is not when each packet's audio happened. Windows gives each
+    /// packet the performance-counter time of its first frame, in 100 ns units;
+    /// the packet happened that long before `now`. A position of zero, or one
+    /// ahead of `now`, says nothing, and the packet is stamped `now`.
+    pub(crate) fn packet_start_us(now_us: u64, now_100ns: u64, packet_100ns: u64) -> u64 {
+        if packet_100ns == 0 || packet_100ns > now_100ns {
+            return now_us;
+        }
+        now_us.saturating_sub((now_100ns - packet_100ns) / 10)
+    }
+
     /// The running microphone reads Windows' privacy switches on every fifth
     /// one-second tick, and as soon as a pull is refused.
     pub(crate) const CONSENT_EVERY_TICKS: u32 = 5;
@@ -102,6 +116,26 @@ mod reselect {
                 ticks.next(false, true).reselect,
                 "the owner's choice changed"
             );
+        }
+
+        #[test]
+        fn packets_drained_in_one_pull_keep_their_own_times() {
+            // Ten 10 ms packets drained by one pull at 100 ms: each is stamped
+            // when its audio began, so together they cover the whole 100 ms.
+            let now_us = 5_000_000;
+            let now_100ns = 90_000_000;
+            let mut covered = 0;
+            let mut end = 0;
+            for packet in 0..10u64 {
+                let at_100ns = now_100ns - 1_000_000 + packet * 100_000;
+                let start = packet_start_us(now_us, now_100ns, at_100ns);
+                assert_eq!(start, now_us - 100_000 + packet * 10_000);
+                covered += (start + 10_000).saturating_sub(start.max(end));
+                end = end.max(start + 10_000);
+            }
+            assert_eq!(covered, 100_000);
+            assert_eq!(packet_start_us(now_us, now_100ns, 0), now_us);
+            assert_eq!(packet_start_us(now_us, now_100ns, now_100ns + 1), now_us);
         }
 
         #[test]
@@ -177,8 +211,9 @@ mod imp {
     use std::time::Duration;
 
     use crate::reselect::{
-        consent_refuses, is_access_denied, is_render_reselect_error, render_reopen_needed,
-        MicTicks, CONSENT_EVERY_TICKS, MIC_CONSENT_DESKTOP_KEY, MIC_CONSENT_KEY,
+        consent_refuses, is_access_denied, is_render_reselect_error, packet_start_us,
+        render_reopen_needed, MicTicks, CONSENT_EVERY_TICKS, MIC_CONSENT_DESKTOP_KEY,
+        MIC_CONSENT_KEY,
     };
     use observer_mic::{apply_gain_f32, apply_gain_i16, MicConfig, MicDeviceRef};
     use observer_model::{
@@ -206,6 +241,7 @@ mod imp {
         CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL,
         COINIT_MULTITHREADED, STGM_READ,
     };
+    use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
     use windows::Win32::System::Registry::{
         RegGetValueW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ,
     };
@@ -217,6 +253,29 @@ mod imp {
     const MIC_RESELECT_INTERVAL: Duration = Duration::from_millis(1000);
 
     const PULL_INTERVAL: Duration = Duration::from_millis(100);
+
+    /// The monotonic clock and the performance counter read together, the
+    /// counter in the 100 ns units Windows stamps packets with.
+    fn clocks_now() -> (u64, u64) {
+        let now_us = monotonic_us();
+        let mut counter = 0i64;
+        let mut frequency = 0i64;
+        let read = unsafe {
+            QueryPerformanceCounter(&mut counter).is_ok()
+                && QueryPerformanceFrequency(&mut frequency).is_ok()
+        };
+        if !read || counter <= 0 || frequency <= 0 {
+            return (now_us, 0);
+        }
+        let now_100ns = (counter as u128 * 10_000_000 / frequency as u128) as u64;
+        (now_us, now_100ns)
+    }
+
+    /// When the packet just taken from `GetBuffer` began.
+    fn packet_at_us(packet_100ns: u64) -> u64 {
+        let (now_us, now_100ns) = clocks_now();
+        packet_start_us(now_us, now_100ns, packet_100ns)
+    }
 
     /// Raised by Windows whenever an audio endpoint is added, removed, changes
     /// state or becomes a default, so the microphone lists its devices again
@@ -673,8 +732,15 @@ mod imp {
                     let mut data_ptr: *mut u8 = ptr::null_mut();
                     let mut frames: u32 = 0;
                     let mut flags: u32 = 0;
+                    let mut packet_100ns: u64 = 0;
                     match unsafe {
-                        capture.GetBuffer(&mut data_ptr, &mut frames, &mut flags, None, None)
+                        capture.GetBuffer(
+                            &mut data_ptr,
+                            &mut frames,
+                            &mut flags,
+                            None,
+                            Some(&mut packet_100ns),
+                        )
                     } {
                         Ok(()) => {}
                         Err(err) if is_access_denied(err.code().0) => {
@@ -698,7 +764,7 @@ mod imp {
                             seq,
                             data,
                             format: Some(audio_format),
-                            at_us: Some(monotonic_us()),
+                            at_us: Some(packet_at_us(packet_100ns)),
                         });
                     }
                     unsafe { capture.ReleaseBuffer(frames)? };
@@ -885,8 +951,15 @@ mod imp {
                     let mut data_ptr: *mut u8 = ptr::null_mut();
                     let mut frames: u32 = 0;
                     let mut flags: u32 = 0;
+                    let mut packet_100ns: u64 = 0;
                     match unsafe {
-                        capture.GetBuffer(&mut data_ptr, &mut frames, &mut flags, None, None)
+                        capture.GetBuffer(
+                            &mut data_ptr,
+                            &mut frames,
+                            &mut flags,
+                            None,
+                            Some(&mut packet_100ns),
+                        )
                     } {
                         Ok(()) => {}
                         Err(err) if is_render_reselect_error(err.code().0) => {
@@ -911,7 +984,7 @@ mod imp {
                             seq,
                             data,
                             format: Some(audio_format),
-                            at_us: Some(monotonic_us()),
+                            at_us: Some(packet_at_us(packet_100ns)),
                         });
                     }
                     match unsafe { capture.ReleaseBuffer(frames) } {

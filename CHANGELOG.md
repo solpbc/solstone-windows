@@ -13,6 +13,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 ### Fixed
 
 - while audio or screen is on, the solstone app writes far less to this PC's disk, and it does less in the background when nothing has changed.
+- from this update on, the audio total under status counts all the audio taken in for your journal. before, it counted only part of it.
 
 ## [2.0.48] - 2026-11-13
 
