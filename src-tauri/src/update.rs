@@ -1213,7 +1213,10 @@ impl UpdateController {
                         cost,
                     )
                 {
-                    observer_update::cost_deferral(cost).map(ScheduledDownloadAction::Defer)
+                    // Asked again every tick: only a new reason is news.
+                    observer_update::cost_deferral(cost)
+                        .filter(|reason| observer_update::deferral_is_news(&rt.state, *reason))
+                        .map(ScheduledDownloadAction::Defer)
                 } else {
                     None
                 }

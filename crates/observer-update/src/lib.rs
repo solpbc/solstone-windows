@@ -748,6 +748,14 @@ pub fn last_checked_relative(checked_at: Option<u64>, now: u64) -> String {
 
 /// Fold one [`UpdateEvent`] into the state. No arm sets a display directly — the
 /// honest view is always recomputed by [`UpdateState::view`].
+/// Whether deferring an automatic download for `reason` changes what the
+/// owner is shown. The same deferral, already shown, is not news.
+pub fn deferral_is_news(state: &UpdateState, reason: CostDeferral) -> bool {
+    let mut next = state.clone();
+    reduce(&mut next, UpdateEvent::DownloadDeferred { reason });
+    next != *state
+}
+
 pub fn reduce(state: &mut UpdateState, event: UpdateEvent) {
     match event {
         UpdateEvent::CheckStarted => {
@@ -1856,6 +1864,22 @@ mod tests {
         reduce(&mut s, UpdateEvent::DownloadFailed);
         assert_eq!(s.status.last_checked_at, Some(123));
         assert!(s.download_failed);
+    }
+
+    #[test]
+    fn the_same_deferral_again_is_not_news_and_a_new_reason_is() {
+        let mut s = UpdateState::new();
+        assert!(deferral_is_news(&s, CostDeferral::Metered));
+        reduce(
+            &mut s,
+            UpdateEvent::DownloadDeferred {
+                reason: CostDeferral::Metered,
+            },
+        );
+        assert!(!deferral_is_news(&s, CostDeferral::Metered));
+        assert!(deferral_is_news(&s, CostDeferral::Roaming));
+        reduce(&mut s, UpdateEvent::DownloadFailed);
+        assert!(deferral_is_news(&s, CostDeferral::Metered));
     }
 
     #[test]
