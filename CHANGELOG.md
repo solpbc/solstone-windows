@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- journal links from your agent open the place in your journal window.
+
 ### Fixed
 
 - while audio or screen is on, the solstone app writes far less to this PC's disk, and it does less in the background when nothing has changed.
