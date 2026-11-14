@@ -5,6 +5,7 @@
 //! current for each individual send.
 
 use std::future::Future;
+use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
@@ -35,6 +36,50 @@ pub trait Journal {
 pub struct PassSummary {
     pub delivered: usize,
     pub remaining: usize,
+    /// The pass stopped before the outbox was through: no journal, a held or
+    /// failed send, or a local read that did not match.
+    pub stalled: bool,
+}
+
+/// How long to wait before the next pass. A stalled pass doubles the wait
+/// from five seconds up to five minutes; a pass that got through, or a change
+/// in the journal connection, starts again at five seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryDelay {
+    secs: u64,
+}
+
+impl RetryDelay {
+    pub const FIRST: Duration = Duration::from_secs(5);
+    pub const MAX: Duration = Duration::from_secs(300);
+
+    pub fn new() -> Self {
+        Self {
+            secs: Self::FIRST.as_secs(),
+        }
+    }
+
+    /// The wait after `pass`.
+    pub fn after(&mut self, pass: &PassSummary) -> Duration {
+        if pass.stalled {
+            let wait = Duration::from_secs(self.secs);
+            self.secs = (self.secs * 2).min(Self::MAX.as_secs());
+            wait
+        } else {
+            self.reset();
+            Self::FIRST
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.secs = Self::FIRST.as_secs();
+    }
+}
+
+impl Default for RetryDelay {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 struct Reservation<'a> {
@@ -64,9 +109,11 @@ where
     let mut summary = PassSummary {
         delivered: 0,
         remaining: entries.len(),
+        stalled: false,
     };
     for entry in entries {
         let Some(journal) = load().await else {
+            summary.stalled = true;
             return summary;
         };
         if !hub.reserve(&entry) {
@@ -92,6 +139,7 @@ where
                 if still {
                     hub.set_delivery_failure(Some("local_io"));
                 }
+                summary.stalled = true;
                 return summary;
             }
         };
@@ -106,6 +154,7 @@ where
                     if still {
                         hub.set_delivery_failure(Some("local_io"));
                     }
+                    summary.stalled = true;
                     return summary;
                 }
                 reservation.armed = false;
@@ -119,15 +168,37 @@ where
                 if still {
                     hub.set_delivery_failure(None);
                 }
+                summary.stalled = true;
                 return summary;
             }
             UploadOutcome::Failed(code) => {
                 if still {
                     hub.set_delivery_failure(Some(code));
                 }
+                summary.stalled = true;
                 return summary;
             }
         }
     }
     summary
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_stalled_pass_waits_longer_each_time_up_to_five_minutes() {
+        let stalled = PassSummary {
+            stalled: true,
+            ..PassSummary::default()
+        };
+        let mut delay = RetryDelay::new();
+        let waits: Vec<u64> = (0..9).map(|_| delay.after(&stalled).as_secs()).collect();
+        assert_eq!(waits, vec![5, 10, 20, 40, 80, 160, 300, 300, 300]);
+        assert_eq!(delay.after(&PassSummary::default()), RetryDelay::FIRST);
+        assert_eq!(delay.after(&stalled), RetryDelay::FIRST);
+        delay.reset();
+        assert_eq!(delay.after(&stalled), RetryDelay::FIRST);
+    }
 }

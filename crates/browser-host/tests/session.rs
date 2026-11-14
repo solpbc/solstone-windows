@@ -522,11 +522,13 @@ async fn a_held_mark_keeps_text_locally_until_sending_opens() {
     };
     let pass = deliver_pending(&rig.hub, || async { Some(held.clone()) }).await;
     assert_eq!(pass.delivered, 0);
+    assert!(pass.stalled, "a held send is a stalled pass");
     assert_eq!(rig.hub.status().delivery, "kept_locally");
 
     let open = journal(JOURNAL_A);
     let pass = deliver_pending(&rig.hub, || async { Some(open.clone()) }).await;
     assert_eq!(pass.delivered, 1);
+    assert!(!pass.stalled);
     let got = open.received.lock().unwrap();
     assert!(String::from_utf8_lossy(&got[0].2).contains("WAITING_ON_MARK"));
     assert_eq!(rig.hub.status().delivery, "idle");

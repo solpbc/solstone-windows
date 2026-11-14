@@ -46,7 +46,7 @@ mod imp {
     use browser_host::custody::{OutboxEntry, Policy, Store};
     use browser_host::hub::{BrowserStatus, Gates, Hub, HubConfig, Pairing};
     use browser_host::relay::{self, RelayEnd};
-    use browser_host::upload::{deliver_pending, Journal, UploadOutcome};
+    use browser_host::upload::{deliver_pending, Journal, RetryDelay, UploadOutcome};
     use observer_model::{AppPhase, LocalOffset, PairingPhase, PauseReason};
     use pl_transport_win::source_upload::{upload_source_file, SourceFile, SourceUploadOutcome};
     use pl_transport_win::ObserverClient;
@@ -282,25 +282,53 @@ mod imp {
             }
         });
 
-        // Delivery, every few seconds while anything is held.
+        // Delivery, every few seconds while anything is held. A pass that
+        // stalls waits longer each time, up to five minutes; a change in the
+        // pairing or the journal connection tries again at once.
         let upload_app = app;
         let upload_hub = hub;
         tauri::async_runtime::spawn(async move {
-            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            let mut tick = tokio::time::interval(RetryDelay::FIRST);
+            let mut delay = RetryDelay::new();
+            let mut next_pass = tokio::time::Instant::now();
+            let mut connection = None;
             loop {
                 tick.tick().await;
                 if upload_hub.outbox().is_empty() {
+                    delay.reset();
+                    continue;
+                }
+                let now_connection = journal_connection(&upload_app);
+                if connection != Some(now_connection) {
+                    connection = Some(now_connection);
+                    delay.reset();
+                    next_pass = tokio::time::Instant::now();
+                }
+                if tokio::time::Instant::now() < next_pass {
                     continue;
                 }
                 let pass = deliver_pending(&upload_hub, || async {
                     current_client(&upload_app).await.map(ClientJournal::new)
                 })
                 .await;
+                next_pass = tokio::time::Instant::now() + delay.after(&pass);
                 if pass.delivered > 0 {
                     tracing::info!(target: "browser", component = "delivery", delivered = pass.delivered, remaining = pass.remaining, "browser delivery");
                 }
             }
         });
+    }
+
+    /// The pairing and journal connection as the app shows them.
+    fn journal_connection(
+        app: &tauri::AppHandle,
+    ) -> (PairingPhase, Option<observer_model::JournalLink>) {
+        let state = app.state::<crate::app::AppState>();
+        state
+            .sync
+            .lock()
+            .map(|s| (s.pairing.phase, s.journal_link))
+            .unwrap_or((PairingPhase::NotPaired, None))
     }
 
     async fn current_client(app: &tauri::AppHandle) -> Option<Arc<ObserverClient>> {
