@@ -1090,9 +1090,9 @@ pub fn run(
                 let shared_sync = sync.clone();
                 let liveness = liveness.clone();
                 let mut rx = watch_rx;
+                let mut previous_pairing = shared_sync.lock().ok().map(|s| s.pairing.phase);
                 async move {
                     let mut previous: Option<HealthDump> = None;
-                    let mut previous_pairing = shared_sync.lock().ok().map(|s| s.pairing.phase);
                     let notify_id = tauri::async_runtime::spawn_blocking(crate::notify::identity)
                         .await
                         .ok()
