@@ -355,9 +355,9 @@ mod tests {
             observer_model::PairingPhase::AwaitingConfirmation,
         ] {
             state.sync.lock().unwrap().pairing.phase = phase;
-            crate::windows::open_journal(&state, &surface, None)
+            assert!(crate::windows::open_journal(&state, &surface, None)
                 .await
-                .unwrap();
+                .is_ok());
             assert_eq!(
                 pl_transport_win::journal_target::read(root)
                     .unwrap()
@@ -368,9 +368,9 @@ mod tests {
             assert!(surface.paths.lock().unwrap().is_empty());
         }
         state.sync.lock().unwrap().pairing.phase = observer_model::PairingPhase::Paired;
-        crate::windows::open_journal(&state, &surface, None)
+        assert!(crate::windows::open_journal(&state, &surface, None)
             .await
-            .unwrap();
+            .is_ok());
         assert_eq!(*surface.paths.lock().unwrap(), ["/app/open/Aa-_~090020"]);
         assert!(pl_transport_win::journal_target::read(root)
             .unwrap()
