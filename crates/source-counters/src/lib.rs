@@ -24,6 +24,11 @@ pub const FILE_NAME: &str = "counters.json";
 
 const VERSION: u32 = 1;
 
+/// Audio chunks and screen time change the totals many times a second. They
+/// are written at most this often; a seal, a hold, or anything another source
+/// takes in writes them at once.
+const STEADY_SAVE_SECS: i64 = 60;
+
 /// Which total `last` belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Source {
@@ -117,6 +122,12 @@ impl SharedCounters {
 
     pub fn quarantine(&self, segment: u64) -> bool {
         self.with_mut(|c| c.quarantine(segment))
+    }
+
+    /// Drop the record of each sealed or quarantined segment `keep` does not
+    /// hold on to. Nothing is written here; the next write carries it.
+    pub fn forget_sealed(&self, keep: impl Fn(u64) -> bool) {
+        self.with_mut(|c| c.forget_sealed(keep));
     }
 
     pub fn reconcile_pages(&self, batches: &[PageBatch]) -> bool {
@@ -256,6 +267,10 @@ struct NotesDisk {
 struct SegmentDisk {
     audio_us: u64,
     audio_sealed: bool,
+    /// Held in memory only. Start-up rebuilds an open segment's spans from its
+    /// timelines, so the file keeps the field empty, which an older build
+    /// still reads.
+    #[serde(serialize_with = "no_ranges")]
     ranges: Vec<(u64, u64)>,
     screen_us: u64,
     voided: bool,
@@ -291,6 +306,8 @@ pub struct Counters {
     dirty: bool,
     fail_writes: u32,
     saves: u64,
+    /// Intake time of the last steady write.
+    steady_saved_at: Option<i64>,
 }
 
 impl Counters {
@@ -329,6 +346,7 @@ impl Counters {
             dirty: !path_readable(&dir.join(FILE_NAME)),
             fail_writes: 0,
             saves: 0,
+            steady_saved_at: None,
         };
         // A file created just now, or one restored from the backup after the
         // destination was missing, is written on the next successful save.
@@ -388,7 +406,7 @@ impl Counters {
     ) {
         if let Some(book) = self.disk.segments.get(&segment) {
             if book.voided || book.audio_sealed {
-                self.persist_quiet();
+                self.persist_steady(intake);
                 return;
             }
         }
@@ -403,7 +421,7 @@ impl Counters {
                 self.dirty = true;
             }
         }
-        self.persist_quiet();
+        self.persist_steady(intake);
     }
 
     pub fn seal_audio(
@@ -481,14 +499,14 @@ impl Counters {
             .get(&segment)
             .is_some_and(|book| book.voided)
         {
-            self.persist_quiet();
+            self.persist_steady(intake);
             return;
         }
         if self.cursor.held || self.cursor.segment != Some(segment) {
             self.cursor.held = false;
             self.cursor.open_from = Some(at_us);
             self.cursor.segment = Some(segment);
-            self.persist_quiet();
+            self.persist_steady(intake);
             return;
         }
         if let Some(from) = self.cursor.open_from {
@@ -500,21 +518,25 @@ impl Counters {
             self.cursor.open_from = Some(at_us);
             self.cursor.segment = Some(segment);
         }
-        self.persist_quiet();
+        self.persist_steady(intake);
     }
 
     /// A hold drops the open interval. The time from the previous kept frame
-    /// through the next kept frame is not taken in.
+    /// through the next kept frame is not taken in. The hold that starts one
+    /// writes what is pending; a hold that is already on writes nothing.
     pub fn note_screen_held(&mut self, _segment: u64, _at_us: u64) {
+        let starts = !self.cursor.held;
         self.cursor.open_from = None;
         self.cursor.segment = None;
         self.cursor.held = true;
-        self.persist_quiet();
+        if starts {
+            self.persist_quiet();
+        }
     }
 
     pub fn pulse_screen(&mut self, segment: u64, at_us: u64, intake: Option<i64>) {
         if self.cursor.held || self.cursor.segment != Some(segment) {
-            self.persist_quiet();
+            self.persist_steady(intake);
             return;
         }
         if let Some(from) = self.cursor.open_from {
@@ -523,7 +545,20 @@ impl Counters {
                 self.cursor.open_from = Some(at_us);
             }
         }
-        self.persist_quiet();
+        self.persist_steady(intake);
+    }
+
+    /// Drop the record of each sealed or quarantined segment `keep` does not
+    /// hold on to. A segment still open always stays. Nothing is written here;
+    /// the next write carries it.
+    pub fn forget_sealed(&mut self, keep: impl Fn(u64) -> bool) {
+        let before = self.disk.segments.len();
+        self.disk
+            .segments
+            .retain(|&index, book| !(book.audio_sealed || book.voided) || keep(index));
+        if self.disk.segments.len() != before {
+            self.dirty = true;
+        }
     }
 
     pub fn quarantine(&mut self, segment: u64) -> bool {
@@ -723,6 +758,22 @@ impl Counters {
         }
     }
 
+    /// A write for the steady stream: at most once a minute by intake time. A
+    /// clock that went back writes at once and starts the minute again.
+    fn persist_steady(&mut self, now: Option<i64>) {
+        if !self.dirty {
+            return;
+        }
+        let due = match (self.steady_saved_at, now) {
+            (Some(last), Some(now)) => now < last || now - last >= STEADY_SAVE_SECS,
+            _ => true,
+        };
+        if due {
+            let _ = self.save();
+            self.steady_saved_at = now;
+        }
+    }
+
     fn persist_ok(&mut self) -> bool {
         if !self.dirty {
             return true;
@@ -802,6 +853,22 @@ fn insert_range(ranges: &mut Vec<(u64, u64)>, start: u64, end: u64) {
     if end <= start {
         return;
     }
+    // Chunks arrive in order, so the new span almost always lands at the end.
+    match ranges.last_mut() {
+        None => {
+            ranges.push((start, end));
+            return;
+        }
+        Some(last) if start > last.1 => {
+            ranges.push((start, end));
+            return;
+        }
+        Some(last) if start >= last.0 => {
+            last.1 = last.1.max(end);
+            return;
+        }
+        Some(_) => {}
+    }
     ranges.push((start, end));
     ranges.sort_unstable();
     let mut merged = Vec::new();
@@ -817,6 +884,11 @@ fn insert_range(ranges: &mut Vec<(u64, u64)>, start: u64, end: u64) {
         merged.push((start, end));
     }
     *ranges = merged;
+}
+
+fn no_ranges<S: serde::Serializer>(_: &[(u64, u64)], out: S) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeSeq;
+    out.serialize_seq(Some(0))?.end()
 }
 
 fn covered(ranges: &[(u64, u64)]) -> u64 {
@@ -1126,7 +1198,7 @@ mod tests {
             serde_json::from_slice(&fs::read(counters.path()).unwrap()).unwrap();
         assert_eq!(value["audio"]["seconds"], 15);
         assert_eq!(value["audio"]["remainder_us"], 0);
-        counters.add_audio_span(2, 0, 3_000_000_000 * S, Some(9));
+        counters.add_audio_span(2, 0, 3_000_000_000 * S, Some(8 + 60));
         assert_eq!(counters.audio_seconds(), 15 + 3_000_000_000);
         drop(counters);
         let reloaded = Counters::open(dir.path(), "1999-01-01").unwrap();
@@ -1704,6 +1776,114 @@ mod tests {
         assert!(value.get("pages_applied").is_none());
         assert!(window_payload(&WindowCounterRead::NoRows).is_none());
         assert_eq!(fs::read(dir.path().join(FILE_NAME)).unwrap(), bytes);
+    }
+
+    /// Five minutes of 100 ms audio chunks from two sources whose pulls do not
+    /// line up, with the engine's one-second hold check in between.
+    fn five_minutes_of_chunks(counters: &mut Counters, segment: u64) {
+        for tick in 0..3_000u64 {
+            let at = 1_000 + (tick / 10) as i64;
+            let start = tick * 100_000;
+            counters.add_audio_span(segment, start, start + 10_000, Some(at));
+            counters.add_audio_span(segment, start + 50_000, start + 60_000, Some(at));
+            if tick % 10 == 0 {
+                counters.note_screen_held(segment, start);
+            }
+        }
+    }
+
+    #[test]
+    fn five_minutes_of_audio_saves_at_most_once_a_minute() {
+        let (_dir, mut counters) = open_at("2026-11-13");
+        let before = counters.saves;
+        five_minutes_of_chunks(&mut counters, 1);
+        assert!(
+            counters.saves - before <= 6,
+            "{} saves for five minutes of audio",
+            counters.saves - before
+        );
+        assert_eq!(counters.audio_seconds(), 60);
+    }
+
+    #[test]
+    fn a_steady_screen_saves_at_most_once_a_minute() {
+        let (_dir, mut counters) = open_at("2026-11-13");
+        counters.note_screen_kept(1, 0, 0, Some(1_000));
+        let before = counters.saves;
+        for second in 1..=300u64 {
+            counters.pulse_screen(1, second * S, Some(1_000 + second as i64));
+        }
+        assert!(
+            counters.saves - before <= 6,
+            "{} saves for five minutes of screen",
+            counters.saves - before
+        );
+        assert_eq!(counters.screen_seconds(), 300);
+    }
+
+    #[test]
+    fn a_hold_and_a_seal_write_what_is_pending() {
+        let (dir, mut counters) = open_at("2026-11-13");
+        counters.note_screen_kept(1, 0, 0, Some(100));
+        counters.pulse_screen(1, 2 * S, Some(102));
+        counters.pulse_screen(1, 4 * S, Some(104));
+        counters.note_screen_held(1, 4 * S);
+        let reloaded = Counters::open(dir.path(), "2026-11-13").unwrap();
+        assert_eq!(reloaded.screen_seconds(), 4);
+        let saves = counters.saves;
+        for _ in 0..100 {
+            counters.note_screen_held(1, 4 * S);
+        }
+        assert_eq!(counters.saves, saves, "an unchanged hold writes nothing");
+
+        audio(&mut counters, 1, 0, 10, 110);
+        audio(&mut counters, 1, 10, 20, 111);
+        assert!(counters.seal_audio(1, None, None, true));
+        let reloaded = Counters::open(dir.path(), "2026-11-13").unwrap();
+        assert_eq!(reloaded.audio_seconds(), 20);
+    }
+
+    #[test]
+    fn an_open_segment_does_not_grow_the_file_with_each_chunk() {
+        let (dir, mut counters) = open_at("2026-11-13");
+        five_minutes_of_chunks(&mut counters, 1);
+        assert!(counters.seal_audio(1, None, None, false));
+        let len = fs::metadata(dir.path().join(FILE_NAME)).unwrap().len();
+        assert!(len < 2_000, "counter file is {len} bytes");
+    }
+
+    #[test]
+    fn a_forgotten_sealed_segment_leaves_the_file_and_an_open_one_stays() {
+        let (dir, mut counters) = open_at("2026-11-13");
+        audio(&mut counters, 1, 0, 10, 100);
+        audio(&mut counters, 2, 0, 5, 100);
+        assert!(counters.seal_audio(1, Some(&[(0, 10 * S)]), Some(100), true));
+        let saves = counters.saves;
+        counters.forget_sealed(|index| index == 3);
+        assert_eq!(counters.saves, saves, "the next write carries it");
+        assert!(counters.seal_audio(3, Some(&[]), Some(100), true));
+        counters.forget_sealed(|index| index == 3);
+        assert!(counters.seal_audio(3, None, None, true));
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join(FILE_NAME)).unwrap()).unwrap();
+        let segments = value["segments"].as_object().unwrap();
+        assert_eq!(segments.keys().collect::<Vec<_>>(), vec!["2", "3"]);
+        assert_eq!(value["audio"]["seconds"], 15);
+        audio(&mut counters, 2, 5, 8, 101);
+        assert_eq!(counters.audio_seconds(), 18);
+    }
+
+    #[test]
+    fn spans_kept_only_in_memory_come_back_from_the_timeline_on_restart() {
+        let (dir, mut counters) = open_at("2026-11-13");
+        audio(&mut counters, 4, 0, 10, 100);
+        drop(counters);
+        let mut restarted = Counters::open(dir.path(), "2026-11-13").unwrap();
+        assert_eq!(restarted.audio_seconds(), 10);
+        assert!(restarted.seal_audio(4, Some(&[(0, 10 * S)]), Some(100), false));
+        assert_eq!(restarted.audio_seconds(), 10);
+        audio(&mut restarted, 4, 5, 12, 101);
+        assert_eq!(restarted.audio_seconds(), 12);
     }
 
     #[test]

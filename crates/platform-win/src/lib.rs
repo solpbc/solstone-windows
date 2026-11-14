@@ -1265,6 +1265,23 @@ fn seal_audio_counters(
     }
 }
 
+/// Drop the counter records of sealed segments whose folder is no longer
+/// `.incomplete`: neither recovery nor the writer reaches those again. The
+/// segment being sealed keeps its record, because a restart inside its window
+/// opens the same segment again and that audio must not count twice. The seal
+/// that follows writes the result.
+fn forget_sealed(
+    counters: Option<&source_counters::SharedCounters>,
+    root: &Path,
+    sealing: SegmentKey,
+) {
+    if let Some(counters) = counters {
+        counters.forget_sealed(|index| {
+            index == sealing.index || root.join(format!("{index}.incomplete")).exists()
+        });
+    }
+}
+
 /// Real `%LocalAppData%`-backed segment filesystem.
 #[derive(Debug)]
 pub struct LocalSegmentFs {
@@ -1503,6 +1520,7 @@ impl SegmentFs for LocalSegmentFs {
             }
         }
         let dir = incomplete_dir(&self.root, key);
+        forget_sealed(self.counters.as_ref(), &self.root, key);
         seal_audio_counters(self.counters.as_ref(), key, &dir, true)?;
         seal_audio_flac(&dir)?;
         persist_seal_len(&dir, video_end_secs, DEFAULT_SEGMENT_SECS)?;
@@ -1604,6 +1622,7 @@ impl RecoveryFs for LocalRecoveryFs {
         // remaining final media files.
         let dir = Path::new(&seg.path);
         remove_partial_media(dir)?;
+        forget_sealed(self.counters.as_ref(), &self.root, seg.key);
         seal_audio_counters(self.counters.as_ref(), seg.key, dir, true)?;
         seal_audio_flac(dir)?;
         persist_seal_len(dir, None, self.period_secs)?;
@@ -1677,6 +1696,29 @@ mod tests {
         assert_eq!(counters.audio_seconds(), 1);
         let seg = stale.iter().find(|seg| seg.key.index == key.index).unwrap();
         recovery.finalize(seg).unwrap();
+        assert_eq!(counters.audio_seconds(), 1);
+        let segments = |dir: &Path| {
+            let value: serde_json::Value =
+                serde_json::from_slice(&fs::read(dir.join("counters.json")).unwrap()).unwrap();
+            value["segments"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(segments(&counters_dir), vec!["10".to_string()]);
+
+        // The next seal drops the record of the one whose folder is sealed.
+        let mut segment_fs = LocalSegmentFs::new(root.clone());
+        segment_fs.set_counters(counters.clone());
+        let next = SegmentKey {
+            boundary_epoch_secs: 11 * DEFAULT_SEGMENT_SECS,
+            index: 11,
+        };
+        segment_fs.open_incomplete(next).unwrap();
+        segment_fs.finalize(next, None).unwrap();
+        assert_eq!(segments(&counters_dir), vec!["11".to_string()]);
         assert_eq!(counters.audio_seconds(), 1);
         let again = source_counters::SharedCounters::open(&counters_dir, "2026-11-10").unwrap();
         assert_eq!(again.audio_seconds(), 1);
