@@ -206,7 +206,11 @@ pub fn read_bounded(path: &Path, limit: usize) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
-fn write_atomic_json<T: Serialize>(path: &Path, value: &T, limit: usize) -> io::Result<()> {
+pub(crate) fn write_atomic_json<T: Serialize>(
+    path: &Path,
+    value: &T,
+    limit: usize,
+) -> io::Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("missing parent directory"))?;

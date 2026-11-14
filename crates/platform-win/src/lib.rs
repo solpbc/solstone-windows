@@ -51,6 +51,8 @@ pub mod local_offset;
 pub mod local_port;
 #[allow(unsafe_code)]
 pub mod log_save;
+#[allow(unsafe_code)]
+pub mod notice;
 pub mod scheme;
 /// Windows' Screenshots folder, the folder listing and WIC conversion.
 #[allow(unsafe_code)]

@@ -21,6 +21,7 @@ mod hotkey;
 mod import;
 mod integration;
 mod ipc;
+mod journal_links;
 mod lifecycle;
 mod logs;
 mod mic;
@@ -244,6 +245,7 @@ fn main() -> ExitCode {
     }
 
     let mut reload_setup = false;
+    let mut journal_link = false;
     let data_root = platform_win::local_data_root();
     let state_path = data_root.join("pairing.json");
     let answer_path = pl_transport_win::answer::answer_path(&state_path);
@@ -265,6 +267,21 @@ fn main() -> ExitCode {
     });
 
     for arg in &args {
+        match observer_model::journal_target::classify(arg) {
+            observer_model::journal_target::Ingress::Other => {}
+            ingress => {
+                let target = match ingress {
+                    observer_model::journal_target::Ingress::Target(target) => Some(target),
+                    _ => None,
+                };
+                if pl_transport_win::journal_target::store(&data_root, target).is_err() {
+                    journal_links::show_failure();
+                    return ExitCode::FAILURE;
+                }
+                journal_link = true;
+                continue;
+            }
+        }
         let trimmed = arg.trim();
         if trimmed
             .get(..11)
@@ -291,6 +308,12 @@ fn main() -> ExitCode {
         std::env::var("RUST_LOG").ok().as_deref(),
     );
     log_restore(&interrupted);
-    app::run(open_view, surface_on_launch, open_journal, reload_setup);
+    app::run(
+        open_view,
+        surface_on_launch,
+        open_journal,
+        reload_setup,
+        journal_link,
+    );
     ExitCode::SUCCESS
 }

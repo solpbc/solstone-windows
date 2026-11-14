@@ -112,6 +112,9 @@ pub fn usable_failure_reason(
 /// path, and every other query parameter - those are the diagnostic signal.
 /// A URL with no query, or no `cap` parameter, is returned unchanged.
 pub fn strip_cap(url: &str) -> String {
+    if let Some((origin, _)) = url.split_once("/app/open/") {
+        return format!("{origin}/app/open/<redacted>");
+    }
     let Some((prefix, query)) = url.split_once('?') else {
         return url.to_string();
     };
@@ -129,6 +132,18 @@ pub fn strip_cap(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn journal_targets_never_enter_url_diagnostics() {
+        assert_eq!(
+            strip_cap("http://127.0.0.1:9/app/open/Aa-_~090020"),
+            "http://127.0.0.1:9/app/open/<redacted>"
+        );
+        assert_eq!(
+            strip_cap("http://127.0.0.1:9/app/activities/20260305"),
+            "http://127.0.0.1:9/app/activities/20260305"
+        );
+    }
 
     // classify: full truth table over the failure domain (!navigated || !usable).
     #[test]

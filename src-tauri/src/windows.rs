@@ -263,7 +263,7 @@ where
 
 pub trait JournalSurface: Send + Sync {
     fn open_settings(&self) -> tauri::Result<()>;
-    fn focus_journal_if_present(&self) -> bool;
+    fn focus_journal_if_present(&self, path: Option<&str>) -> tauri::Result<bool>;
     fn close_journal(&self);
 }
 
@@ -272,12 +272,16 @@ impl JournalSurface for tauri::AppHandle {
         open_settings(self)
     }
 
-    fn focus_journal_if_present(&self) -> bool {
+    fn focus_journal_if_present(&self, path: Option<&str>) -> tauri::Result<bool> {
         if let Some(window) = opened_journal_window(self) {
-            window.set_focus().ok();
-            true
+            if let Some(path) = path {
+                navigate_journal(&window, path)?;
+            }
+            window.unminimize()?;
+            window.set_focus()?;
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -345,6 +349,28 @@ pub async fn open_journal<S: JournalSurface>(
     surface: &S,
     app: Option<&tauri::AppHandle>,
 ) -> Result<(), OpenJournalError> {
+    let result = open_journal_inner(state, surface, app).await;
+    if result.is_err() && app.is_some() {
+        std::thread::spawn(crate::journal_links::show_failure);
+    }
+    result
+}
+
+fn navigate_journal(window: &WebviewWindow, path: &str) -> tauri::Result<()> {
+    let mut url = window.url()?;
+    // Only a ready authenticated journal window reaches this function.
+    url.set_path(path);
+    url.set_query(None);
+    url.set_fragment(None);
+    window.navigate(url)
+}
+
+async fn open_journal_inner<S: JournalSurface>(
+    state: &crate::app::AppState,
+    surface: &S,
+    app: Option<&tauri::AppHandle>,
+) -> Result<(), OpenJournalError> {
+    let _open_guard = state.journal_open_lock.lock().await;
     let phase = state
         .sync
         .lock()
@@ -358,9 +384,19 @@ pub async fn open_journal<S: JournalSurface>(
             Ok(())
         },
         || async {
-            let _open_guard = state.journal_open_lock.lock().await;
+            let root = state.sync_config.state_path.parent().expect("per-user state root");
+            let pending = pl_transport_win::journal_target::read(root)
+                .map_err(|_| OpenJournalError::OpenFailed)?;
+            if pending.target.is_some() && phase != observer_model::PairingPhase::Paired {
+                surface.open_settings().map_err(|_| OpenJournalError::OpenFailed)?;
+                return Ok(());
+            }
+            let target_path = pending.target.as_deref().map(observer_model::journal_target::path);
 
-            if surface.focus_journal_if_present() {
+            if surface.focus_journal_if_present(target_path.as_deref()).map_err(|_| OpenJournalError::OpenFailed)? {
+                if let Some(target) = pending.target.as_deref() {
+                    pl_transport_win::journal_target::clear_used(root, target).map_err(|_| OpenJournalError::OpenFailed)?;
+                }
                 tracing::info!(
                     target: "window",
                     label = "journal",
@@ -536,6 +572,13 @@ pub async fn open_journal<S: JournalSurface>(
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .opened(label);
+
+            if let Some(path) = target_path.as_deref() {
+                navigate_journal(&window, path).map_err(|_| OpenJournalError::OpenFailed)?;
+                if let Some(target) = pending.target.as_deref() {
+                    pl_transport_win::journal_target::clear_used(root, target).map_err(|_| OpenJournalError::OpenFailed)?;
+                }
+            }
 
             tracing::info!(
                 target: "window",

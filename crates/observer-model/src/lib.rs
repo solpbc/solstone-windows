@@ -23,6 +23,7 @@ use strum::{EnumIter, IntoStaticStr};
 pub mod about;
 pub mod desktop_activity;
 pub mod journal_link;
+pub mod journal_target;
 pub mod launch;
 pub mod notice;
 pub mod scheme;
@@ -1099,6 +1100,7 @@ pub fn classify_presence(mutex: SessionMutexView, population: AppPopulation) -> 
 pub const CONTROL_ACK: &[u8] = b"ok\n";
 
 pub const OPEN_JOURNAL_VERB: &[u8] = b"open-journal\n";
+pub const OPEN_JOURNAL_LINK_VERB: &[u8] = b"open-journal-link\n";
 pub const SURFACE_ABOUT_VERB: &[u8] = b"surface-about\n";
 pub const SURFACE_SETTINGS_VERB: &[u8] = b"surface-settings\n";
 pub const RELOAD_SETUP_VERB: &[u8] = b"reload-setup\n";
@@ -1115,7 +1117,7 @@ pub trait ControlActions {
 }
 
 pub fn dispatch_control<A: ControlActions>(buf: &[u8], actions: &A) -> bool {
-    if buf.starts_with(OPEN_JOURNAL_VERB) {
+    if buf.starts_with(OPEN_JOURNAL_VERB) || buf.starts_with(OPEN_JOURNAL_LINK_VERB) {
         actions.open_journal();
         true
     } else if buf.starts_with(SURFACE_ABOUT_VERB) {
@@ -1953,6 +1955,14 @@ mod tests {
     #[test]
     fn control_dispatch_and_ack() {
         let actions = MockActions::new();
+        assert_eq!(
+            control_ack_after_dispatch(b"open-journal-link\n", &actions),
+            Some(CONTROL_ACK)
+        );
+        assert_eq!(
+            actions.journal.swap(0, std::sync::atomic::Ordering::SeqCst),
+            1
+        );
         assert!(dispatch_control(b"open-journal\n", &actions));
         assert_eq!(actions.journal.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(

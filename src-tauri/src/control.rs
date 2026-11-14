@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use observer_contract::{CONTROL_PORT, LOOPBACK_HOST};
 use observer_model::{
-    control_ack_after_dispatch, send_control, ControlActions, OPEN_JOURNAL_VERB, RELOAD_SETUP_VERB,
-    SURFACE_ABOUT_VERB, SURFACE_SETTINGS_VERB,
+    control_ack_after_dispatch, send_control, ControlActions, OPEN_JOURNAL_LINK_VERB,
+    OPEN_JOURNAL_VERB, RELOAD_SETUP_VERB, SURFACE_ABOUT_VERB, SURFACE_SETTINGS_VERB,
 };
 use tokio::io::AsyncReadExt;
 
@@ -17,6 +17,10 @@ pub fn signal_surface() -> bool {
 
 pub fn signal_open_journal() -> bool {
     signal(OPEN_JOURNAL_VERB)
+}
+
+pub fn signal_journal_link() -> bool {
+    signal(OPEN_JOURNAL_LINK_VERB)
 }
 
 pub fn signal_reload_setup() -> bool {
@@ -70,9 +74,7 @@ impl ControlActions for TauriControlActions {
     fn open_journal(&self) {
         let app = self.app.clone();
         tokio::spawn(async move {
-            use tauri::Manager;
-            let state = app.state::<crate::app::AppState>();
-            open_journal_from_control(&state, &app, Some(&app)).await;
+            crate::journal_links::open(app).await;
         });
     }
 
@@ -172,6 +174,8 @@ mod tests {
         journal_focused: AtomicUsize,
         journal_closed: AtomicUsize,
         focus_returns: AtomicBool,
+        navigation_fails: AtomicBool,
+        paths: std::sync::Mutex<Vec<String>>,
     }
 
     impl FakeJournalSurface {
@@ -181,6 +185,8 @@ mod tests {
                 journal_focused: AtomicUsize::new(0),
                 journal_closed: AtomicUsize::new(0),
                 focus_returns: AtomicBool::new(false),
+                navigation_fails: AtomicBool::new(false),
+                paths: std::sync::Mutex::new(Vec::new()),
             }
         }
     }
@@ -191,9 +197,17 @@ mod tests {
             Ok(())
         }
 
-        fn focus_journal_if_present(&self) -> bool {
+        fn focus_journal_if_present(&self, path: Option<&str>) -> tauri::Result<bool> {
             self.journal_focused.fetch_add(1, Ordering::SeqCst);
-            self.focus_returns.load(Ordering::SeqCst)
+            if let Some(path) = path {
+                self.paths.lock().unwrap().push(path.to_owned());
+            }
+            if self.navigation_fails.load(Ordering::SeqCst) {
+                return Err(tauri::Error::InvalidWebviewUrl(
+                    "controlled navigation refusal",
+                ));
+            }
+            Ok(self.focus_returns.load(Ordering::SeqCst))
         }
 
         fn close_journal(&self) {
@@ -327,6 +341,72 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(surface.journal_focused.load(Ordering::SeqCst), 1);
         assert_eq!(surface.settings_opened.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn journal_target_waits_for_pairing_and_confirmation_then_navigates_existing_window() {
+        let state = test_app_state(None);
+        let root = state.sync_config.state_path.parent().unwrap();
+        let surface = FakeJournalSurface::new();
+        surface.focus_returns.store(true, Ordering::SeqCst);
+        pl_transport_win::journal_target::store(root, Some("Aa-_~090020")).unwrap();
+        for phase in [
+            observer_model::PairingPhase::NotPaired,
+            observer_model::PairingPhase::AwaitingConfirmation,
+        ] {
+            state.sync.lock().unwrap().pairing.phase = phase;
+            crate::windows::open_journal(&state, &surface, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                pl_transport_win::journal_target::read(root)
+                    .unwrap()
+                    .target
+                    .as_deref(),
+                Some("Aa-_~090020")
+            );
+            assert!(surface.paths.lock().unwrap().is_empty());
+        }
+        state.sync.lock().unwrap().pairing.phase = observer_model::PairingPhase::Paired;
+        crate::windows::open_journal(&state, &surface, None)
+            .await
+            .unwrap();
+        assert_eq!(*surface.paths.lock().unwrap(), ["/app/open/Aa-_~090020"]);
+        assert!(pl_transport_win::journal_target::read(root)
+            .unwrap()
+            .target
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn open_journal_retry_uses_the_target_retained_after_navigation_failure() {
+        let state = test_app_state(None);
+        state.sync.lock().unwrap().pairing.phase = observer_model::PairingPhase::Paired;
+        let root = state.sync_config.state_path.parent().unwrap();
+        let surface = FakeJournalSurface::new();
+        surface.focus_returns.store(true, Ordering::SeqCst);
+        surface.navigation_fails.store(true, Ordering::SeqCst);
+        pl_transport_win::journal_target::store(root, Some("retry~123456")).unwrap();
+        assert!(crate::windows::open_journal(&state, &surface, None)
+            .await
+            .is_err());
+        assert_eq!(
+            pl_transport_win::journal_target::read(root)
+                .unwrap()
+                .target
+                .as_deref(),
+            Some("retry~123456")
+        );
+        surface.navigation_fails.store(false, Ordering::SeqCst);
+        crate::tray::open_journal_from_menu(&state, &surface, None).await;
+        assert_eq!(
+            *surface.paths.lock().unwrap(),
+            ["/app/open/retry~123456", "/app/open/retry~123456"]
+        );
+        assert!(pl_transport_win::journal_target::read(root)
+            .unwrap()
+            .target
+            .is_none());
     }
 
     #[tokio::test]

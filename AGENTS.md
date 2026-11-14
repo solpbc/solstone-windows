@@ -262,10 +262,12 @@ See `docs/observer-contract-adoption.md`.
   enabled-source fault (other than access denial) drops out of `observing` into
   `Error` via the backoff/breaker; a fault leaves observing only for an enabled
   source. When all sources are off, the phase is `idle`.
-- **Single instance:** a per-session named mutex; a second launch still signals
-  the first and exits; a pairing link only fills the field; `--setup-handoff` only
-  asks the first to read the fixed file; other second launches still surface
-  Settings; none of these pair or open a browser.
+- **Single instance:** a per-session named mutex; a second launch signals the first
+  and exits. A pairing link only fills the field; `--setup-handoff` asks the first
+  to read the fixed file. A journal link uses a separate per-user file and a fixed
+  control verb. It waits for pairing and mark confirmation, then opens the place in
+  the journal window, navigating that window if it is already open. A bare second
+  launch surfaces Settings. These launches never pair silently or open a browser.
 - **Velopack hooks** the app must handle: `--veloapp-install`, `--veloapp-updated`,
   `--veloapp-obsolete`, `--veloapp-uninstall` (the uninstall fast-callback removes
   the autostart login item it owns). The app must be Velopack-aware so the hooks exit 0.

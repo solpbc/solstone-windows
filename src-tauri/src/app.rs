@@ -612,6 +612,7 @@ pub fn run(
     surface_on_launch: bool,
     open_journal_on_launch: bool,
     reload_setup: bool,
+    journal_link_on_launch: bool,
 ) {
     tracing::info!(
         target: "lifecycle",
@@ -721,7 +722,9 @@ pub fn run(
                         outcome = "already_running",
                         "single instance"
                     );
-                    let acknowledged = if reload_setup {
+                    let acknowledged = if journal_link_on_launch {
+                        crate::control::signal_journal_link()
+                    } else if reload_setup {
                         crate::control::signal_reload_setup()
                     } else if open_journal_on_launch {
                         crate::control::signal_open_journal()
@@ -745,6 +748,9 @@ pub fn run(
                     // result. This instance owns no engine or capture tasks:
                     // clean up Tauri before returning the exact client result.
                     app.handle().cleanup_before_exit();
+                    if journal_link_on_launch && !acknowledged {
+                        crate::journal_links::show_failure();
+                    }
                     std::process::exit(control_client_exit_code(acknowledged));
                 }
                 platform_win::InstanceLock::Acquired => {
@@ -1086,6 +1092,7 @@ pub fn run(
                 let mut rx = watch_rx;
                 async move {
                     let mut previous: Option<HealthDump> = None;
+                    let mut previous_pairing = shared_sync.lock().ok().map(|s| s.pairing.phase);
                     let notify_id = tauri::async_runtime::spawn_blocking(crate::notify::identity)
                         .await
                         .ok()
@@ -1130,6 +1137,21 @@ pub fn run(
                             now_ms,
                         );
                         log_health_transitions(previous.as_ref(), &dump);
+                        // Resume a link held through pairing, including same-PC
+                        // pairing, once the ordinary confirmation gate opens.
+                        if dump.sync.pairing.phase == observer_model::PairingPhase::Paired
+                            && previous_pairing.is_some_and(|phase| phase != observer_model::PairingPhase::Paired)
+                        {
+                            let app = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let state = app.state::<AppState>();
+                                let root = state.sync_config.state_path.parent().expect("per-user state root");
+                                if pl_transport_win::journal_target::read(root).is_ok_and(|p| p.target.is_some() && !p.invalid_notice) {
+                                    crate::control::open_journal_from_control(&state, &app, Some(&app)).await;
+                                }
+                            });
+                        }
+                        previous_pairing = Some(dump.sync.pairing.phase);
                         let changed = previous
                             .as_ref()
                             .is_none_or(|prev| should_emit(prev, &dump));
@@ -1319,7 +1341,12 @@ pub fn run(
             // AlreadyRunning early-return). No explicit view surfaces Settings only
             // for user-visible launches; autostart stays tray-first.
             let handle = app.handle();
-            if open_journal_on_launch {
+            let pending_link = pl_transport_win::journal_target::read(&platform_win::local_data_root())
+                .is_ok_and(|pending| pending.target.is_some() || pending.invalid_notice);
+            if journal_link_on_launch || pending_link {
+                let handle = handle.clone();
+                tauri::async_runtime::spawn(crate::journal_links::open(handle));
+            } else if open_journal_on_launch {
                 let handle = handle.clone();
                 tauri::async_runtime::spawn(async move {
                     let state = handle.state::<crate::app::AppState>();

@@ -34,6 +34,7 @@ pub mod import_client;
 pub mod import_store;
 pub mod integration;
 pub mod journal_bridge;
+pub mod journal_target;
 pub mod journal_version;
 pub mod liveness;
 mod local_endpoints;

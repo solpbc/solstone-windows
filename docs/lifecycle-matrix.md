@@ -14,10 +14,12 @@ shell is a pure renderer of the engine's honest `HealthDump`.
 ## Single instance
 
 A per-user named mutex in the `Local\` namespace = per interactive session =
-"one observer per session". A second launch still signals the first and exits;
-a pairing link only fills the field; `--setup-handoff` only asks the first to
-read the fixed file; other second launches still surface Settings; none of these
-pair or open a browser.
+"one observer per session". A second launch signals the first and exits. A pairing
+link only fills the field; `--setup-handoff` asks the first to read the fixed file.
+A journal link uses a separate per-user file and a fixed control verb. It waits for
+pairing and mark confirmation, then opens the place in the journal window,
+navigating that window if it is already open. A bare second launch surfaces
+Settings. These launches never pair silently or open a browser.
 
 ## Session / power events
 
