@@ -52,9 +52,10 @@ pub fn classify(url: &str) -> Ingress<'_> {
         .and_then(|_| {
             let suffix = &rest[4..];
             // Edge inserts a root slash when handing the URL to Windows.
-            suffix.strip_prefix('#').or_else(|| suffix.strip_prefix("/#"))
-        })
-    {
+            suffix
+                .strip_prefix('#')
+                .or_else(|| suffix.strip_prefix("/#"))
+        }) {
         Some(target) if valid_target(target) => Ingress::Target(target),
         _ => Ingress::Invalid,
     }
