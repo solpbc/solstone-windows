@@ -540,6 +540,9 @@ impl Engine {
             return;
         };
         let now = self.now_ms();
+        // The look's time is shown, not kept: the ledger is written only when
+        // a look changed what it holds.
+        let before = self.ledger.clone();
         let listing = match self.platform.list(&dir) {
             Ok(listing) => {
                 self.missing = false;
@@ -551,7 +554,7 @@ impl Engine {
             Err(ListError::Missing) if self.ledger.folder_seen => {
                 self.missing = true;
                 self.ledger.last_checked_ms = Some(now);
-                self.save();
+                self.save_if_changed(before);
                 return;
             }
             // Windows' folder not made yet: empty until the first screenshot.
@@ -583,7 +586,14 @@ impl Engine {
         } else {
             self.count = Count::Ready;
         }
-        self.save();
+        self.save_if_changed(before);
+    }
+
+    fn save_if_changed(&self, mut before: Ledger) {
+        before.last_checked_ms = self.ledger.last_checked_ms;
+        if before != self.ledger {
+            self.save();
+        }
     }
 
     /// One listed file as a screenshot, or `None` when it isn't one this

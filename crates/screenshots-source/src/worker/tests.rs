@@ -576,6 +576,30 @@ async fn the_capture_time_comes_from_the_name_then_the_creation_then_the_change(
 // ── the confirm ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
+async fn an_unchanged_folder_is_looked_at_without_writing_the_ledger() {
+    let mut f = fixture();
+    shot(&f, "a.png", DAY);
+    turn_on(&mut f).await;
+    confirm(&mut f, Span::ThirtyDays).await;
+    look(&mut f).await;
+    assert_eq!(f.journal.count(), 1);
+    look(&mut f).await;
+    let ledger = f.dir.join(crate::ledger::FILE_NAME);
+    std::fs::remove_file(&ledger).unwrap();
+    for _ in 0..20 {
+        f.fs.advance(15_000);
+        look(&mut f).await;
+    }
+    assert!(!ledger.exists(), "nothing changed, so nothing was written");
+    assert_eq!(status(&f).last_checked_ms, Some(f.fs.now()));
+
+    shot(&f, "b.png", MINUTE);
+    look(&mut f).await;
+    assert!(ledger.exists(), "a new screenshot is written");
+    assert_eq!(f.journal.count(), 2);
+}
+
+#[tokio::test]
 async fn confirm_freezes_the_count_and_sends_each_hash_once() {
     let mut f = fixture();
     shot(&f, "a.png", DAY);
