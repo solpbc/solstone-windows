@@ -3731,6 +3731,50 @@
     {
       "bundle": "windows",
       "call_contract": {
+        "arguments": [
+          {
+            "name": "count",
+            "type": "cardinal",
+            "value": 0
+          },
+          {
+            "name": "display",
+            "type": "string",
+            "value": "sample"
+          }
+        ],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.health.attentioncount\u0004m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74",
+        "gettext_plural_key": "m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74_plural",
+        "gettext_unsigned_quantity": 0,
+        "locale": "en-US",
+        "message_id": "windows.health.attentioncount",
+        "resource_key": "m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74",
+        "signed_quantity": 0
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "⁨sample⁩ need attention",
+      "folder": null,
+      "inputs": {
+        "count": 0,
+        "display": "sample"
+      },
+      "locale": "en-US",
+      "logical_expected": "⁨sample⁩ need attention",
+      "message_id": "windows.health.attentioncount",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.health.attentioncount\", &[(\"count\", Value::Cardinal(0)), (\"display\", Value::String(\"sample\"))])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
         "arguments": [],
         "bundle": "windows",
         "entry": "render(locale, MessageId, named_args)",
@@ -5189,6 +5233,138 @@
         "entry": "render(locale, MessageId, named_args)",
         "enum_argument": null,
         "format_passes": 1,
+        "gettext_lookup_key": "windows.screenshots.bringcount\u0004m77696e646f77732e73637265656e73686f74732e6272696e67636f756e74",
+        "gettext_plural_key": "m77696e646f77732e73637265656e73686f74732e6272696e67636f756e74_plural",
+        "gettext_unsigned_quantity": 0,
+        "locale": "en-US",
+        "message_id": "windows.screenshots.bringcount",
+        "resource_key": "m77696e646f77732e73637265656e73686f74732e6272696e67636f756e74",
+        "signed_quantity": 0
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "bring in ⁨sample⁩ screenshots",
+      "folder": null,
+      "inputs": {
+        "count": 0,
+        "display": "sample"
+      },
+      "locale": "en-US",
+      "logical_expected": "bring in ⁨sample⁩ screenshots",
+      "message_id": "windows.screenshots.bringcount",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.screenshots.bringcount\", &[(\"count\", Value::Cardinal(0)), (\"display\", Value::String(\"sample\"))])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e73637265656e73686f74732e6272696e67636f756e74",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [
+          {
+            "name": "count",
+            "type": "cardinal",
+            "value": 0
+          },
+          {
+            "name": "display",
+            "type": "string",
+            "value": "sample"
+          }
+        ],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.screenshots.cantcount\u0004m77696e646f77732e73637265656e73686f74732e63616e74636f756e74",
+        "gettext_plural_key": "m77696e646f77732e73637265656e73686f74732e63616e74636f756e74_plural",
+        "gettext_unsigned_quantity": 0,
+        "locale": "en-US",
+        "message_id": "windows.screenshots.cantcount",
+        "resource_key": "m77696e646f77732e73637265656e73686f74732e63616e74636f756e74",
+        "signed_quantity": 0
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "⁨sample⁩ screenshots can't come in, so they stay in the folder.",
+      "folder": null,
+      "inputs": {
+        "count": 0,
+        "display": "sample"
+      },
+      "locale": "en-US",
+      "logical_expected": "⁨sample⁩ screenshots can't come in, so they stay in the folder.",
+      "message_id": "windows.screenshots.cantcount",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.screenshots.cantcount\", &[(\"count\", Value::Cardinal(0)), (\"display\", Value::String(\"sample\"))])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e73637265656e73686f74732e63616e74636f756e74",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [
+          {
+            "name": "count",
+            "type": "cardinal",
+            "value": 0
+          },
+          {
+            "name": "display",
+            "type": "string",
+            "value": "sample"
+          }
+        ],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.screenshots.unreadablecount\u0004m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74",
+        "gettext_plural_key": "m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74_plural",
+        "gettext_unsigned_quantity": 0,
+        "locale": "en-US",
+        "message_id": "windows.screenshots.unreadablecount",
+        "resource_key": "m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74",
+        "signed_quantity": 0
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "couldn't read ⁨sample⁩ screenshots.",
+      "folder": null,
+      "inputs": {
+        "count": 0,
+        "display": "sample"
+      },
+      "locale": "en-US",
+      "logical_expected": "couldn't read ⁨sample⁩ screenshots.",
+      "message_id": "windows.screenshots.unreadablecount",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.screenshots.unreadablecount\", &[(\"count\", Value::Cardinal(0)), (\"display\", Value::String(\"sample\"))])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [
+          {
+            "name": "count",
+            "type": "cardinal",
+            "value": 0
+          },
+          {
+            "name": "display",
+            "type": "string",
+            "value": "sample"
+          }
+        ],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
         "gettext_lookup_key": "windows.time.checkedday\u0004m77696e646f77732e74696d652e636865636b6564646179",
         "gettext_plural_key": "m77696e646f77732e74696d652e636865636b6564646179_plural",
         "gettext_unsigned_quantity": 0,
@@ -5344,6 +5520,50 @@
       "own_reader_call": "render(\"en-US\", \"windows.time.nextsave\", &[(\"minutes\", Value::String(\"sample\")), (\"seconds\", Value::String(\"sample\"))])",
       "platform_reader": "pending",
       "resource_key": "m77696e646f77732e74696d652e6e65787473617665",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [
+          {
+            "name": "count",
+            "type": "cardinal",
+            "value": 0
+          },
+          {
+            "name": "display",
+            "type": "string",
+            "value": "sample"
+          }
+        ],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.time.takenhours\u0004m77696e646f77732e74696d652e74616b656e686f757273",
+        "gettext_plural_key": "m77696e646f77732e74696d652e74616b656e686f757273_plural",
+        "gettext_unsigned_quantity": 0,
+        "locale": "en-US",
+        "message_id": "windows.time.takenhours",
+        "resource_key": "m77696e646f77732e74696d652e74616b656e686f757273",
+        "signed_quantity": 0
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "⁨sample⁩ hours ago",
+      "folder": null,
+      "inputs": {
+        "count": 0,
+        "display": "sample"
+      },
+      "locale": "en-US",
+      "logical_expected": "⁨sample⁩ hours ago",
+      "message_id": "windows.time.takenhours",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.time.takenhours\", &[(\"count\", Value::Cardinal(0)), (\"display\", Value::String(\"sample\"))])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e74696d652e74616b656e686f757273",
       "target": "rust"
     },
     {
@@ -6754,44 +6974,6 @@
         "entry": "render(locale, MessageId, named_args)",
         "enum_argument": null,
         "format_passes": 1,
-        "gettext_lookup_key": "windows.ui.arg0hoursago\u0004m77696e646f77732e75692e61726730686f75727361676f",
-        "gettext_plural_key": "m77696e646f77732e75692e61726730686f75727361676f_plural",
-        "gettext_unsigned_quantity": null,
-        "locale": "en-US",
-        "message_id": "windows.ui.arg0hoursago",
-        "resource_key": "m77696e646f77732e75692e61726730686f75727361676f",
-        "signed_quantity": null
-      },
-      "cardinal": "en",
-      "expectation_kind": "resource-golden",
-      "expected": "⁨sample⁩ hours ago",
-      "folder": null,
-      "inputs": {
-        "arg0": "sample"
-      },
-      "locale": "en-US",
-      "logical_expected": "⁨sample⁩ hours ago",
-      "message_id": "windows.ui.arg0hoursago",
-      "own_reader": "rust-api",
-      "own_reader_call": "render(\"en-US\", \"windows.ui.arg0hoursago\", &[(\"arg0\", Value::String(\"sample\"))])",
-      "platform_reader": "pending",
-      "resource_key": "m77696e646f77732e75692e61726730686f75727361676f",
-      "target": "rust"
-    },
-    {
-      "bundle": "windows",
-      "call_contract": {
-        "arguments": [
-          {
-            "name": "arg0",
-            "type": "string",
-            "value": "sample"
-          }
-        ],
-        "bundle": "windows",
-        "entry": "render(locale, MessageId, named_args)",
-        "enum_argument": null,
-        "format_passes": 1,
         "gettext_lookup_key": "windows.ui.arg0hr\u0004m77696e646f77732e75692e617267306872",
         "gettext_plural_key": "m77696e646f77732e75692e617267306872_plural",
         "gettext_unsigned_quantity": null,
@@ -7134,44 +7316,6 @@
         "entry": "render(locale, MessageId, named_args)",
         "enum_argument": null,
         "format_passes": 1,
-        "gettext_lookup_key": "windows.ui.arg0needattention\u0004m77696e646f77732e75692e617267306e656564617474656e74696f6e",
-        "gettext_plural_key": "m77696e646f77732e75692e617267306e656564617474656e74696f6e_plural",
-        "gettext_unsigned_quantity": null,
-        "locale": "en-US",
-        "message_id": "windows.ui.arg0needattention",
-        "resource_key": "m77696e646f77732e75692e617267306e656564617474656e74696f6e",
-        "signed_quantity": null
-      },
-      "cardinal": "en",
-      "expectation_kind": "resource-golden",
-      "expected": "⁨sample⁩ need attention",
-      "folder": null,
-      "inputs": {
-        "arg0": "sample"
-      },
-      "locale": "en-US",
-      "logical_expected": "⁨sample⁩ need attention",
-      "message_id": "windows.ui.arg0needattention",
-      "own_reader": "rust-api",
-      "own_reader_call": "render(\"en-US\", \"windows.ui.arg0needattention\", &[(\"arg0\", Value::String(\"sample\"))])",
-      "platform_reader": "pending",
-      "resource_key": "m77696e646f77732e75692e617267306e656564617474656e74696f6e",
-      "target": "rust"
-    },
-    {
-      "bundle": "windows",
-      "call_contract": {
-        "arguments": [
-          {
-            "name": "arg0",
-            "type": "string",
-            "value": "sample"
-          }
-        ],
-        "bundle": "windows",
-        "entry": "render(locale, MessageId, named_args)",
-        "enum_argument": null,
-        "format_passes": 1,
         "gettext_lookup_key": "windows.ui.arg0needsattention\u0004m77696e646f77732e75692e617267306e65656473617474656e74696f6e",
         "gettext_plural_key": "m77696e646f77732e75692e617267306e65656473617474656e74696f6e_plural",
         "gettext_unsigned_quantity": null,
@@ -7282,44 +7426,6 @@
       "own_reader_call": "render(\"en-US\", \"windows.ui.arg0ofarg1screenshotsinyourjournal\", &[(\"arg0\", Value::String(\"sample\")), (\"arg1\", Value::String(\"sample\"))])",
       "platform_reader": "pending",
       "resource_key": "m77696e646f77732e75692e617267306f666172673173637265656e73686f7473696e796f75726a6f75726e616c",
-      "target": "rust"
-    },
-    {
-      "bundle": "windows",
-      "call_contract": {
-        "arguments": [
-          {
-            "name": "arg0",
-            "type": "string",
-            "value": "sample"
-          }
-        ],
-        "bundle": "windows",
-        "entry": "render(locale, MessageId, named_args)",
-        "enum_argument": null,
-        "format_passes": 1,
-        "gettext_lookup_key": "windows.ui.arg0screenshotscantcomeinsotheystayinthefolder\u0004m77696e646f77732e75692e6172673073637265656e73686f747363616e74636f6d65696e736f7468657973746179696e746865666f6c646572",
-        "gettext_plural_key": "m77696e646f77732e75692e6172673073637265656e73686f747363616e74636f6d65696e736f7468657973746179696e746865666f6c646572_plural",
-        "gettext_unsigned_quantity": null,
-        "locale": "en-US",
-        "message_id": "windows.ui.arg0screenshotscantcomeinsotheystayinthefolder",
-        "resource_key": "m77696e646f77732e75692e6172673073637265656e73686f747363616e74636f6d65696e736f7468657973746179696e746865666f6c646572",
-        "signed_quantity": null
-      },
-      "cardinal": "en",
-      "expectation_kind": "resource-golden",
-      "expected": "⁨sample⁩ screenshots can't come in, so they stay in the folder.",
-      "folder": null,
-      "inputs": {
-        "arg0": "sample"
-      },
-      "locale": "en-US",
-      "logical_expected": "⁨sample⁩ screenshots can't come in, so they stay in the folder.",
-      "message_id": "windows.ui.arg0screenshotscantcomeinsotheystayinthefolder",
-      "own_reader": "rust-api",
-      "own_reader_call": "render(\"en-US\", \"windows.ui.arg0screenshotscantcomeinsotheystayinthefolder\", &[(\"arg0\", Value::String(\"sample\"))])",
-      "platform_reader": "pending",
-      "resource_key": "m77696e646f77732e75692e6172673073637265656e73686f747363616e74636f6d65696e736f7468657973746179696e746865666f6c646572",
       "target": "rust"
     },
     {
@@ -7696,74 +7802,6 @@
       "own_reader_call": "render(\"en-US\", \"windows.ui.backgrounddatauserestricted\", &[])",
       "platform_reader": "pending",
       "resource_key": "m77696e646f77732e75692e6261636b67726f756e646461746175736572657374726963746564",
-      "target": "rust"
-    },
-    {
-      "bundle": "windows",
-      "call_contract": {
-        "arguments": [],
-        "bundle": "windows",
-        "entry": "render(locale, MessageId, named_args)",
-        "enum_argument": null,
-        "format_passes": 1,
-        "gettext_lookup_key": "windows.ui.bringin1screenshot\u0004m77696e646f77732e75692e6272696e67696e3173637265656e73686f74",
-        "gettext_plural_key": "m77696e646f77732e75692e6272696e67696e3173637265656e73686f74_plural",
-        "gettext_unsigned_quantity": null,
-        "locale": "en-US",
-        "message_id": "windows.ui.bringin1screenshot",
-        "resource_key": "m77696e646f77732e75692e6272696e67696e3173637265656e73686f74",
-        "signed_quantity": null
-      },
-      "cardinal": "en",
-      "expectation_kind": "resource-golden",
-      "expected": "bring in 1 screenshot",
-      "folder": null,
-      "inputs": {},
-      "locale": "en-US",
-      "logical_expected": "bring in 1 screenshot",
-      "message_id": "windows.ui.bringin1screenshot",
-      "own_reader": "rust-api",
-      "own_reader_call": "render(\"en-US\", \"windows.ui.bringin1screenshot\", &[])",
-      "platform_reader": "pending",
-      "resource_key": "m77696e646f77732e75692e6272696e67696e3173637265656e73686f74",
-      "target": "rust"
-    },
-    {
-      "bundle": "windows",
-      "call_contract": {
-        "arguments": [
-          {
-            "name": "arg0",
-            "type": "string",
-            "value": "sample"
-          }
-        ],
-        "bundle": "windows",
-        "entry": "render(locale, MessageId, named_args)",
-        "enum_argument": null,
-        "format_passes": 1,
-        "gettext_lookup_key": "windows.ui.bringinarg0screenshots\u0004m77696e646f77732e75692e6272696e67696e6172673073637265656e73686f7473",
-        "gettext_plural_key": "m77696e646f77732e75692e6272696e67696e6172673073637265656e73686f7473_plural",
-        "gettext_unsigned_quantity": null,
-        "locale": "en-US",
-        "message_id": "windows.ui.bringinarg0screenshots",
-        "resource_key": "m77696e646f77732e75692e6272696e67696e6172673073637265656e73686f7473",
-        "signed_quantity": null
-      },
-      "cardinal": "en",
-      "expectation_kind": "resource-golden",
-      "expected": "bring in ⁨sample⁩ screenshots",
-      "folder": null,
-      "inputs": {
-        "arg0": "sample"
-      },
-      "locale": "en-US",
-      "logical_expected": "bring in ⁨sample⁩ screenshots",
-      "message_id": "windows.ui.bringinarg0screenshots",
-      "own_reader": "rust-api",
-      "own_reader_call": "render(\"en-US\", \"windows.ui.bringinarg0screenshots\", &[(\"arg0\", Value::String(\"sample\"))])",
-      "platform_reader": "pending",
-      "resource_key": "m77696e646f77732e75692e6272696e67696e6172673073637265656e73686f7473",
       "target": "rust"
     },
     {
@@ -9544,74 +9582,6 @@
       "own_reader_call": "render(\"en-US\", \"windows.ui.couldntreachyourjournaloveryour\", &[])",
       "platform_reader": "pending",
       "resource_key": "m77696e646f77732e75692e636f756c646e747265616368796f75726a6f75726e616c6f766572796f7572",
-      "target": "rust"
-    },
-    {
-      "bundle": "windows",
-      "call_contract": {
-        "arguments": [],
-        "bundle": "windows",
-        "entry": "render(locale, MessageId, named_args)",
-        "enum_argument": null,
-        "format_passes": 1,
-        "gettext_lookup_key": "windows.ui.couldntread1screenshot\u0004m77696e646f77732e75692e636f756c646e74726561643173637265656e73686f74",
-        "gettext_plural_key": "m77696e646f77732e75692e636f756c646e74726561643173637265656e73686f74_plural",
-        "gettext_unsigned_quantity": null,
-        "locale": "en-US",
-        "message_id": "windows.ui.couldntread1screenshot",
-        "resource_key": "m77696e646f77732e75692e636f756c646e74726561643173637265656e73686f74",
-        "signed_quantity": null
-      },
-      "cardinal": "en",
-      "expectation_kind": "resource-golden",
-      "expected": "couldn't read 1 screenshot.",
-      "folder": null,
-      "inputs": {},
-      "locale": "en-US",
-      "logical_expected": "couldn't read 1 screenshot.",
-      "message_id": "windows.ui.couldntread1screenshot",
-      "own_reader": "rust-api",
-      "own_reader_call": "render(\"en-US\", \"windows.ui.couldntread1screenshot\", &[])",
-      "platform_reader": "pending",
-      "resource_key": "m77696e646f77732e75692e636f756c646e74726561643173637265656e73686f74",
-      "target": "rust"
-    },
-    {
-      "bundle": "windows",
-      "call_contract": {
-        "arguments": [
-          {
-            "name": "arg0",
-            "type": "string",
-            "value": "sample"
-          }
-        ],
-        "bundle": "windows",
-        "entry": "render(locale, MessageId, named_args)",
-        "enum_argument": null,
-        "format_passes": 1,
-        "gettext_lookup_key": "windows.ui.couldntreadarg0screenshots\u0004m77696e646f77732e75692e636f756c646e74726561646172673073637265656e73686f7473",
-        "gettext_plural_key": "m77696e646f77732e75692e636f756c646e74726561646172673073637265656e73686f7473_plural",
-        "gettext_unsigned_quantity": null,
-        "locale": "en-US",
-        "message_id": "windows.ui.couldntreadarg0screenshots",
-        "resource_key": "m77696e646f77732e75692e636f756c646e74726561646172673073637265656e73686f7473",
-        "signed_quantity": null
-      },
-      "cardinal": "en",
-      "expectation_kind": "resource-golden",
-      "expected": "couldn't read ⁨sample⁩ screenshots.",
-      "folder": null,
-      "inputs": {
-        "arg0": "sample"
-      },
-      "locale": "en-US",
-      "logical_expected": "couldn't read ⁨sample⁩ screenshots.",
-      "message_id": "windows.ui.couldntreadarg0screenshots",
-      "own_reader": "rust-api",
-      "own_reader_call": "render(\"en-US\", \"windows.ui.couldntreadarg0screenshots\", &[(\"arg0\", Value::String(\"sample\"))])",
-      "platform_reader": "pending",
-      "resource_key": "m77696e646f77732e75692e636f756c646e74726561646172673073637265656e73686f7473",
       "target": "rust"
     },
     {
@@ -19234,96 +19204,6 @@
       "own_reader_call": "render(\"en-US\", \"windows.ui.value1hour\", &[])",
       "platform_reader": "pending",
       "resource_key": "m77696e646f77732e75692e76616c756531686f7572",
-      "target": "rust"
-    },
-    {
-      "bundle": "windows",
-      "call_contract": {
-        "arguments": [],
-        "bundle": "windows",
-        "entry": "render(locale, MessageId, named_args)",
-        "enum_argument": null,
-        "format_passes": 1,
-        "gettext_lookup_key": "windows.ui.value1hourago\u0004m77696e646f77732e75692e76616c756531686f757261676f",
-        "gettext_plural_key": "m77696e646f77732e75692e76616c756531686f757261676f_plural",
-        "gettext_unsigned_quantity": null,
-        "locale": "en-US",
-        "message_id": "windows.ui.value1hourago",
-        "resource_key": "m77696e646f77732e75692e76616c756531686f757261676f",
-        "signed_quantity": null
-      },
-      "cardinal": "en",
-      "expectation_kind": "resource-golden",
-      "expected": "1 hour ago",
-      "folder": null,
-      "inputs": {},
-      "locale": "en-US",
-      "logical_expected": "1 hour ago",
-      "message_id": "windows.ui.value1hourago",
-      "own_reader": "rust-api",
-      "own_reader_call": "render(\"en-US\", \"windows.ui.value1hourago\", &[])",
-      "platform_reader": "pending",
-      "resource_key": "m77696e646f77732e75692e76616c756531686f757261676f",
-      "target": "rust"
-    },
-    {
-      "bundle": "windows",
-      "call_contract": {
-        "arguments": [],
-        "bundle": "windows",
-        "entry": "render(locale, MessageId, named_args)",
-        "enum_argument": null,
-        "format_passes": 1,
-        "gettext_lookup_key": "windows.ui.value1needsattention\u0004m77696e646f77732e75692e76616c7565316e65656473617474656e74696f6e",
-        "gettext_plural_key": "m77696e646f77732e75692e76616c7565316e65656473617474656e74696f6e_plural",
-        "gettext_unsigned_quantity": null,
-        "locale": "en-US",
-        "message_id": "windows.ui.value1needsattention",
-        "resource_key": "m77696e646f77732e75692e76616c7565316e65656473617474656e74696f6e",
-        "signed_quantity": null
-      },
-      "cardinal": "en",
-      "expectation_kind": "resource-golden",
-      "expected": "1 needs attention",
-      "folder": null,
-      "inputs": {},
-      "locale": "en-US",
-      "logical_expected": "1 needs attention",
-      "message_id": "windows.ui.value1needsattention",
-      "own_reader": "rust-api",
-      "own_reader_call": "render(\"en-US\", \"windows.ui.value1needsattention\", &[])",
-      "platform_reader": "pending",
-      "resource_key": "m77696e646f77732e75692e76616c7565316e65656473617474656e74696f6e",
-      "target": "rust"
-    },
-    {
-      "bundle": "windows",
-      "call_contract": {
-        "arguments": [],
-        "bundle": "windows",
-        "entry": "render(locale, MessageId, named_args)",
-        "enum_argument": null,
-        "format_passes": 1,
-        "gettext_lookup_key": "windows.ui.value1screenshotcantcomeinsoitstaysinthefolder\u0004m77696e646f77732e75692e76616c75653173637265656e73686f7463616e74636f6d65696e736f69747374617973696e746865666f6c646572",
-        "gettext_plural_key": "m77696e646f77732e75692e76616c75653173637265656e73686f7463616e74636f6d65696e736f69747374617973696e746865666f6c646572_plural",
-        "gettext_unsigned_quantity": null,
-        "locale": "en-US",
-        "message_id": "windows.ui.value1screenshotcantcomeinsoitstaysinthefolder",
-        "resource_key": "m77696e646f77732e75692e76616c75653173637265656e73686f7463616e74636f6d65696e736f69747374617973696e746865666f6c646572",
-        "signed_quantity": null
-      },
-      "cardinal": "en",
-      "expectation_kind": "resource-golden",
-      "expected": "1 screenshot can't come in, so it stays in the folder.",
-      "folder": null,
-      "inputs": {},
-      "locale": "en-US",
-      "logical_expected": "1 screenshot can't come in, so it stays in the folder.",
-      "message_id": "windows.ui.value1screenshotcantcomeinsoitstaysinthefolder",
-      "own_reader": "rust-api",
-      "own_reader_call": "render(\"en-US\", \"windows.ui.value1screenshotcantcomeinsoitstaysinthefolder\", &[])",
-      "platform_reader": "pending",
-      "resource_key": "m77696e646f77732e75692e76616c75653173637265656e73686f7463616e74636f6d65696e736f69747374617973696e746865666f6c646572",
       "target": "rust"
     },
     {

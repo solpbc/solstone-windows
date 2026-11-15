@@ -1789,7 +1789,7 @@ function quarantinedCount(upload: UploadStatus): number {
 }
 
 function needsAttentionLabel(count: number): string {
-  return count === 1 ? t("windows.ui.value1needsattention") : t("windows.ui.arg0needattention", { "arg0": String(count) });
+  return t("windows.health.attentioncount", {count, display: number(count, {useGrouping:false})});
 }
 
 function uploadLabel(upload: UploadStatus): string {
@@ -3921,7 +3921,7 @@ const SCREENSHOTS_COPY = {
     nothing: t("windows.ui.nothingfrombeforetoday"),
   } as Record<ScreenshotsSpan, string>,
   S9: t("windows.ui.youllseehowmanyscreenshotstherearebeforeanycomei"),
-  S10: (count: number) => (count === 1 ? t("windows.ui.bringin1screenshot") : t("windows.ui.bringinarg0screenshots", { "arg0": String(count.toLocaleString("en-US")) })),
+  S10: (count: number) => t("windows.screenshots.bringcount", {count, display: number(count)}),
   S10Today: t("windows.ui.startfromtoday"),
   checking: t("windows.ui.checking"),
   S11: t("windows.ui.choosehowfarbacktostartthenbringthemin"),
@@ -3942,11 +3942,8 @@ const SCREENSHOTS_COPY = {
   D3: (folder: string) => t("windows.ui.otherfilesinarg0staywheretheyare", { "arg0": String(folder) }),
   D8: t("windows.ui.couldntfindascreenshotsfolderonthispcchoosethefo"),
   D9: (folder: string) => t("windows.ui.thearg0folderisntonthispcanymore", { "arg0": String(folder) }),
-  D12: (count: number) =>
-    count === 1
-      ? t("windows.ui.value1screenshotcantcomeinsoitstaysinthefolder")
-      : t("windows.ui.arg0screenshotscantcomeinsotheystayinthefolder", { "arg0": String(count) }),
-  D13: (count: number) => (count === 1 ? t("windows.ui.couldntread1screenshot") : t("windows.ui.couldntreadarg0screenshots", { "arg0": String(count) })),
+  D12: (count: number) => t("windows.screenshots.cantcount", {count, display: number(count, {useGrouping:false})}),
+  D13: (count: number) => t("windows.screenshots.unreadablecount", {count, display: number(count, {useGrouping:false})}),
   D13Action: t("windows.desktop.shared.copy.tryagain"),
   D15: t("windows.ui.moreaboutthis"),
   D16: (folder: string) => t("windows.ui.everypicturesavedinarg0comesinnotonlyyourscreens", { "arg0": String(folder) }),

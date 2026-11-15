@@ -295,6 +295,16 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
       "string"
     ]
   ],
+  "windows.health.attentioncount": [
+    [
+      "count",
+      "cardinal"
+    ],
+    [
+      "display",
+      "string"
+    ]
+  ],
   "windows.logs.availablelogsareshownbelowcheckthe": [],
   "windows.logs.copysaved": [],
   "windows.logs.couldntreadthelogfilestry": [],
@@ -453,6 +463,36 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
       "string"
     ]
   ],
+  "windows.screenshots.bringcount": [
+    [
+      "count",
+      "cardinal"
+    ],
+    [
+      "display",
+      "string"
+    ]
+  ],
+  "windows.screenshots.cantcount": [
+    [
+      "count",
+      "cardinal"
+    ],
+    [
+      "display",
+      "string"
+    ]
+  ],
+  "windows.screenshots.unreadablecount": [
+    [
+      "count",
+      "cardinal"
+    ],
+    [
+      "display",
+      "string"
+    ]
+  ],
   "windows.time.checkedday": [
     [
       "count",
@@ -490,6 +530,16 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
     ],
     [
       "seconds",
+      "string"
+    ]
+  ],
+  "windows.time.takenhours": [
+    [
+      "count",
+      "cardinal"
+    ],
+    [
+      "display",
       "string"
     ]
   ],
@@ -620,12 +670,6 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
       "string"
     ]
   ],
-  "windows.ui.arg0hoursago": [
-    [
-      "arg0",
-      "string"
-    ]
-  ],
   "windows.ui.arg0hr": [
     [
       "arg0",
@@ -680,12 +724,6 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
       "string"
     ]
   ],
-  "windows.ui.arg0needattention": [
-    [
-      "arg0",
-      "string"
-    ]
-  ],
   "windows.ui.arg0needsattention": [
     [
       "arg0",
@@ -712,12 +750,6 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
       "string"
     ]
   ],
-  "windows.ui.arg0screenshotscantcomeinsotheystayinthefolder": [
-    [
-      "arg0",
-      "string"
-    ]
-  ],
   "windows.ui.arg0tb": [
     [
       "arg0",
@@ -740,13 +772,6 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
   "windows.ui.automaticchecksareon": [],
   "windows.ui.awindowthatclosesormovescan": [],
   "windows.ui.backgrounddatauserestricted": [],
-  "windows.ui.bringin1screenshot": [],
-  "windows.ui.bringinarg0screenshots": [
-    [
-      "arg0",
-      "string"
-    ]
-  ],
   "windows.ui.browsers": [],
   "windows.ui.browserstateunavailable": [],
   "windows.ui.change": [],
@@ -830,13 +855,6 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
   "windows.ui.couldntopenyourjournal": [],
   "windows.ui.couldntopenyourjournaltryagain": [],
   "windows.ui.couldntreachyourjournaloveryour": [],
-  "windows.ui.couldntread1screenshot": [],
-  "windows.ui.couldntreadarg0screenshots": [
-    [
-      "arg0",
-      "string"
-    ]
-  ],
   "windows.ui.couldntreadimportsonthisdevicenothinghasbeenremo": [],
   "windows.ui.couldntreadyoursavedsourcechoices": [],
   "windows.ui.couldntregisterthatshortcut": [],
@@ -1387,9 +1405,6 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
   "windows.ui.usevault": [],
   "windows.ui.value15minutes": [],
   "windows.ui.value1hour": [],
-  "windows.ui.value1hourago": [],
-  "windows.ui.value1needsattention": [],
-  "windows.ui.value1screenshotcantcomeinsoitstaysinthefolder": [],
   "windows.ui.value30minutes": [],
   "windows.ui.vaults": [],
   "windows.ui.vaultscomputer": [],

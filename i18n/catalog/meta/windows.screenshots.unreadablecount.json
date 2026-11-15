@@ -1,0 +1,30 @@
+{
+  "description": "Whole quantity message: windows.screenshots.unreadablecount",
+  "context": "Windows app display. The catalog owns singular/plural selection. Preserve the existing English in both branches.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "count",
+      "type": "cardinal",
+      "numeric_style": "ungrouped"
+    },
+    {
+      "name": "display",
+      "type": "string"
+    }
+  ],
+  "format_intent": "cardinal",
+  "selector": {
+    "name": "count",
+    "type": "cardinal"
+  },
+  "max_length": 600,
+  "source_revision": "0120204606650eaa838fb6127b628e09189d3b5acda53450654925585caffa3e",
+  "risk": "routine",
+  "auto_merge": true
+}

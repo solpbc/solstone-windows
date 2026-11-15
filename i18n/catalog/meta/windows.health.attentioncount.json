@@ -1,0 +1,30 @@
+{
+  "description": "Whole quantity message: windows.health.attentioncount",
+  "context": "Windows app display. The catalog owns singular/plural selection. Preserve the existing English in both branches.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "count",
+      "type": "cardinal",
+      "numeric_style": "ungrouped"
+    },
+    {
+      "name": "display",
+      "type": "string"
+    }
+  ],
+  "format_intent": "cardinal",
+  "selector": {
+    "name": "count",
+    "type": "cardinal"
+  },
+  "max_length": 600,
+  "source_revision": "ba92d30dc5f0958b4992d92488fb09fb5e4b044c175630819b149adecb006f35",
+  "risk": "routine",
+  "auto_merge": true
+}

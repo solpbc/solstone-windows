@@ -646,7 +646,7 @@ export function relativeTaken(unixSecs: number, nowSecs: number): string {
   }
   if (delta < 86_400) {
     const hours = Math.floor(delta / 3600);
-    return hours === 1 ? t("windows.ui.value1hourago") : t("windows.ui.arg0hoursago", { "arg0": String(hours) });
+    return t("windows.time.takenhours", {count: hours, display: number(hours, {useGrouping:false})});
   }
   if (delta < 172_800) return t("windows.ui.yesterday");
   return startedLabel(new Date(unixSecs * 1000).toISOString().slice(0, 10), new Date(nowSecs * 1000).getUTCFullYear());

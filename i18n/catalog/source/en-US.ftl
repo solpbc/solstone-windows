@@ -816,8 +816,6 @@ windows.ui.finishconnectingtoyourjournal = finish connecting to your journal
 
 windows.ui.waitingforyoutoconfirmyourjournalsmark = waiting for you to confirm your journal's mark
 
-windows.ui.value1needsattention = 1 needs attention
-
 windows.ui.pairing = pairing
 
 windows.ui.status = status
@@ -879,11 +877,6 @@ windows.ui.nothingfrombeforetoday = nothing from before today
 
 windows.ui.youllseehowmanyscreenshotstherearebeforeanycomei = you'll see how many screenshots there are before any come in.
 
-windows.ui.bringin1screenshot = bring in 1 screenshot
-
-windows.ui.bringinarg0screenshots = bring in { $arg0 } screenshots
-
-
 windows.ui.startfromtoday = start from today
 
 windows.ui.checking = checking…
@@ -916,14 +909,6 @@ windows.ui.otherfilesinarg0staywheretheyare = other files in { $arg0 } stay wher
 windows.ui.couldntfindascreenshotsfolderonthispcchoosethefo = couldn't find a Screenshots folder on this PC. choose the folder your screenshots save to.
 
 windows.ui.thearg0folderisntonthispcanymore = the { $arg0 } folder isn't on this PC anymore.
-
-windows.ui.value1screenshotcantcomeinsoitstaysinthefolder = 1 screenshot can't come in, so it stays in the folder.
-
-windows.ui.arg0screenshotscantcomeinsotheystayinthefolder = { $arg0 } screenshots can't come in, so they stay in the folder.
-
-windows.ui.couldntread1screenshot = couldn't read 1 screenshot.
-
-windows.ui.couldntreadarg0screenshots = couldn't read { $arg0 } screenshots.
 
 windows.ui.moreaboutthis = more about this
 
@@ -1115,15 +1100,11 @@ windows.ui.december = december
 
 windows.ui.value1hour = 1 hour
 
-windows.ui.value1hourago = 1 hour ago
-
 windows.ui.yesterday = yesterday
 
 windows.ui.homex4e7a5cec = ‹ home
 
 windows.ui.connectajournal = connect a journal
-
-windows.ui.arg0needattention = { $arg0 } need attention
 
 windows.ui.arg0minleft = { $arg0 } min left
 
@@ -1166,8 +1147,6 @@ windows.ui.arg0arg1arg2 = { $arg0 } { $arg1 }, { $arg2 }
 
 
 windows.ui.arg0minago = { $arg0 } min ago
-
-windows.ui.arg0hoursago = { $arg0 } hours ago
 
 windows.ui.pausedword = paused
 
@@ -1427,3 +1406,28 @@ windows.ui.setupsequenceisunavailableinthisbuild = setup sequence is unavailable
 windows.browser.discarded = discarded
 
 windows.obsidian.vault = vault
+
+windows.health.attentioncount = { $count ->
+        [one] { $display } needs attention
+       *[other] { $display } need attention
+    }
+
+windows.screenshots.bringcount = { $count ->
+        [one] bring in { $display } screenshot
+       *[other] bring in { $display } screenshots
+    }
+
+windows.screenshots.cantcount = { $count ->
+        [one] { $display } screenshot can't come in, so it stays in the folder.
+       *[other] { $display } screenshots can't come in, so they stay in the folder.
+    }
+
+windows.screenshots.unreadablecount = { $count ->
+        [one] couldn't read { $display } screenshot.
+       *[other] couldn't read { $display } screenshots.
+    }
+
+windows.time.takenhours = { $count ->
+        [one] { $display } hour ago
+       *[other] { $display } hours ago
+    }

@@ -1794,6 +1794,38 @@
       }
     },
     {
+      "id": "windows.health.attentioncount",
+      "resource": "m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74",
+      "namespace": "windows.health",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "cardinal",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "cardinal",
+          "numeric_style": "ungrouped",
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "display",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": {
+        "name": "count",
+        "type": "cardinal",
+        "enum_values": [],
+        "enum_default": null
+      }
+    },
+    {
       "id": "windows.logs.availablelogsareshownbelowcheckthe",
       "resource": "m77696e646f77732e6c6f67732e617661696c61626c656c6f677361726573686f776e62656c6f77636865636b746865",
       "namespace": "windows.logs",
@@ -2514,6 +2546,102 @@
       }
     },
     {
+      "id": "windows.screenshots.bringcount",
+      "resource": "m77696e646f77732e73637265656e73686f74732e6272696e67636f756e74",
+      "namespace": "windows.screenshots",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "cardinal",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "cardinal",
+          "numeric_style": "ungrouped",
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "display",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": {
+        "name": "count",
+        "type": "cardinal",
+        "enum_values": [],
+        "enum_default": null
+      }
+    },
+    {
+      "id": "windows.screenshots.cantcount",
+      "resource": "m77696e646f77732e73637265656e73686f74732e63616e74636f756e74",
+      "namespace": "windows.screenshots",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "cardinal",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "cardinal",
+          "numeric_style": "ungrouped",
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "display",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": {
+        "name": "count",
+        "type": "cardinal",
+        "enum_values": [],
+        "enum_default": null
+      }
+    },
+    {
+      "id": "windows.screenshots.unreadablecount",
+      "resource": "m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74",
+      "namespace": "windows.screenshots",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "cardinal",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "cardinal",
+          "numeric_style": "ungrouped",
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "display",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": {
+        "name": "count",
+        "type": "cardinal",
+        "enum_values": [],
+        "enum_default": null
+      }
+    },
+    {
       "id": "windows.time.checkedday",
       "resource": "m77696e646f77732e74696d652e636865636b6564646179",
       "namespace": "windows.time",
@@ -2635,6 +2763,38 @@
       ],
       "protected_slots": [],
       "selector": null
+    },
+    {
+      "id": "windows.time.takenhours",
+      "resource": "m77696e646f77732e74696d652e74616b656e686f757273",
+      "namespace": "windows.time",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "cardinal",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "cardinal",
+          "numeric_style": "ungrouped",
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "display",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": {
+        "name": "count",
+        "type": "cardinal",
+        "enum_values": [],
+        "enum_default": null
+      }
     },
     {
       "id": "windows.tray.about",
@@ -3615,7 +3775,7 @@
       "resource": "m77696e646f77732e75692e61726730686f75727361676f",
       "namespace": "windows.ui",
       "owner": "windows",
-      "tombstone": false,
+      "tombstone": true,
       "replacement": null,
       "format_intent": "text",
       "arguments": [
@@ -3855,7 +4015,7 @@
       "resource": "m77696e646f77732e75692e617267306e656564617474656e74696f6e",
       "namespace": "windows.ui",
       "owner": "windows",
-      "tombstone": false,
+      "tombstone": true,
       "replacement": null,
       "format_intent": "text",
       "arguments": [
@@ -3949,7 +4109,7 @@
       "resource": "m77696e646f77732e75692e6172673073637265656e73686f747363616e74636f6d65696e736f7468657973746179696e746865666f6c646572",
       "namespace": "windows.ui",
       "owner": "windows",
-      "tombstone": false,
+      "tombstone": true,
       "replacement": null,
       "format_intent": "text",
       "arguments": [
@@ -4193,7 +4353,7 @@
       "resource": "m77696e646f77732e75692e6272696e67696e3173637265656e73686f74",
       "namespace": "windows.ui",
       "owner": "windows",
-      "tombstone": false,
+      "tombstone": true,
       "replacement": null,
       "format_intent": "text",
       "arguments": [],
@@ -4205,7 +4365,7 @@
       "resource": "m77696e646f77732e75692e6272696e67696e6172673073637265656e73686f7473",
       "namespace": "windows.ui",
       "owner": "windows",
-      "tombstone": false,
+      "tombstone": true,
       "replacement": null,
       "format_intent": "text",
       "arguments": [
@@ -5200,7 +5360,7 @@
       "resource": "m77696e646f77732e75692e636f756c646e74726561643173637265656e73686f74",
       "namespace": "windows.ui",
       "owner": "windows",
-      "tombstone": false,
+      "tombstone": true,
       "replacement": null,
       "format_intent": "text",
       "arguments": [],
@@ -5212,7 +5372,7 @@
       "resource": "m77696e646f77732e75692e636f756c646e74726561646172673073637265656e73686f7473",
       "namespace": "windows.ui",
       "owner": "windows",
-      "tombstone": false,
+      "tombstone": true,
       "replacement": null,
       "format_intent": "text",
       "arguments": [
@@ -10215,7 +10375,7 @@
       "resource": "m77696e646f77732e75692e76616c756531686f757261676f",
       "namespace": "windows.ui",
       "owner": "windows",
-      "tombstone": false,
+      "tombstone": true,
       "replacement": null,
       "format_intent": "text",
       "arguments": [],
@@ -10239,7 +10399,7 @@
       "resource": "m77696e646f77732e75692e76616c7565316e65656473617474656e74696f6e",
       "namespace": "windows.ui",
       "owner": "windows",
-      "tombstone": false,
+      "tombstone": true,
       "replacement": null,
       "format_intent": "text",
       "arguments": [],
@@ -10251,7 +10411,7 @@
       "resource": "m77696e646f77732e75692e76616c75653173637265656e73686f7463616e74636f6d65696e736f69747374617973696e746865666f6c646572",
       "namespace": "windows.ui",
       "owner": "windows",
-      "tombstone": false,
+      "tombstone": true,
       "replacement": null,
       "format_intent": "text",
       "arguments": [],

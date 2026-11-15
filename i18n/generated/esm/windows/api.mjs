@@ -752,6 +752,15 @@ const MESSAGES = {
       { name: "more", type: "string", min: null, max: null, numericStyle: "ungrouped" },
     ],
   },
+  "windows.health.attentioncount": {
+    resourceKey: "m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74",
+    formatIntent: "cardinal",
+    selectorVar: "count",
+    arguments: [
+      { name: "count", type: "cardinal", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
   "windows.logs.availablelogsareshownbelowcheckthe": {
     resourceKey: "m77696e646f77732e6c6f67732e617661696c61626c656c6f677361726573686f776e62656c6f77636865636b746865",
     formatIntent: "text",
@@ -1034,6 +1043,33 @@ const MESSAGES = {
       { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
     ],
   },
+  "windows.screenshots.bringcount": {
+    resourceKey: "m77696e646f77732e73637265656e73686f74732e6272696e67636f756e74",
+    formatIntent: "cardinal",
+    selectorVar: "count",
+    arguments: [
+      { name: "count", type: "cardinal", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.screenshots.cantcount": {
+    resourceKey: "m77696e646f77732e73637265656e73686f74732e63616e74636f756e74",
+    formatIntent: "cardinal",
+    selectorVar: "count",
+    arguments: [
+      { name: "count", type: "cardinal", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.screenshots.unreadablecount": {
+    resourceKey: "m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74",
+    formatIntent: "cardinal",
+    selectorVar: "count",
+    arguments: [
+      { name: "count", type: "cardinal", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
   "windows.time.checkedday": {
     resourceKey: "m77696e646f77732e74696d652e636865636b6564646179",
     formatIntent: "cardinal",
@@ -1067,6 +1103,15 @@ const MESSAGES = {
     arguments: [
       { name: "minutes", type: "string", min: null, max: null, numericStyle: "ungrouped" },
       { name: "seconds", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.time.takenhours": {
+    resourceKey: "m77696e646f77732e74696d652e74616b656e686f757273",
+    formatIntent: "cardinal",
+    selectorVar: "count",
+    arguments: [
+      { name: "count", type: "cardinal", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
     ],
   },
   "windows.tray.hrmin": {
@@ -1339,13 +1384,6 @@ const MESSAGES = {
       { name: "arg0", type: "string", min: null, max: null, numericStyle: "ungrouped" },
     ],
   },
-  "windows.ui.arg0hoursago": {
-    resourceKey: "m77696e646f77732e75692e61726730686f75727361676f",
-    formatIntent: "text",
-    arguments: [
-      { name: "arg0", type: "string", min: null, max: null, numericStyle: "ungrouped" },
-    ],
-  },
   "windows.ui.arg0hr": {
     resourceKey: "m77696e646f77732e75692e617267306872",
     formatIntent: "text",
@@ -1409,13 +1447,6 @@ const MESSAGES = {
       { name: "arg0", type: "string", min: null, max: null, numericStyle: "ungrouped" },
     ],
   },
-  "windows.ui.arg0needattention": {
-    resourceKey: "m77696e646f77732e75692e617267306e656564617474656e74696f6e",
-    formatIntent: "text",
-    arguments: [
-      { name: "arg0", type: "string", min: null, max: null, numericStyle: "ungrouped" },
-    ],
-  },
   "windows.ui.arg0needsattention": {
     resourceKey: "m77696e646f77732e75692e617267306e65656473617474656e74696f6e",
     formatIntent: "text",
@@ -1437,13 +1468,6 @@ const MESSAGES = {
     arguments: [
       { name: "arg0", type: "string", min: null, max: null, numericStyle: "ungrouped" },
       { name: "arg1", type: "string", min: null, max: null, numericStyle: "ungrouped" },
-    ],
-  },
-  "windows.ui.arg0screenshotscantcomeinsotheystayinthefolder": {
-    resourceKey: "m77696e646f77732e75692e6172673073637265656e73686f747363616e74636f6d65696e736f7468657973746179696e746865666f6c646572",
-    formatIntent: "text",
-    arguments: [
-      { name: "arg0", type: "string", min: null, max: null, numericStyle: "ungrouped" },
     ],
   },
   "windows.ui.arg0tb": {
@@ -1518,19 +1542,6 @@ const MESSAGES = {
     resourceKey: "m77696e646f77732e75692e6261636b67726f756e646461746175736572657374726963746564",
     formatIntent: "text",
     arguments: [
-    ],
-  },
-  "windows.ui.bringin1screenshot": {
-    resourceKey: "m77696e646f77732e75692e6272696e67696e3173637265656e73686f74",
-    formatIntent: "text",
-    arguments: [
-    ],
-  },
-  "windows.ui.bringinarg0screenshots": {
-    resourceKey: "m77696e646f77732e75692e6272696e67696e6172673073637265656e73686f7473",
-    formatIntent: "text",
-    arguments: [
-      { name: "arg0", type: "string", min: null, max: null, numericStyle: "ungrouped" },
     ],
   },
   "windows.ui.browsers": {
@@ -1884,19 +1895,6 @@ const MESSAGES = {
     resourceKey: "m77696e646f77732e75692e636f756c646e747265616368796f75726a6f75726e616c6f766572796f7572",
     formatIntent: "text",
     arguments: [
-    ],
-  },
-  "windows.ui.couldntread1screenshot": {
-    resourceKey: "m77696e646f77732e75692e636f756c646e74726561643173637265656e73686f74",
-    formatIntent: "text",
-    arguments: [
-    ],
-  },
-  "windows.ui.couldntreadarg0screenshots": {
-    resourceKey: "m77696e646f77732e75692e636f756c646e74726561646172673073637265656e73686f7473",
-    formatIntent: "text",
-    arguments: [
-      { name: "arg0", type: "string", min: null, max: null, numericStyle: "ungrouped" },
     ],
   },
   "windows.ui.couldntreadimportsonthisdevicenothinghasbeenremo": {
@@ -3797,24 +3795,6 @@ const MESSAGES = {
   },
   "windows.ui.value1hour": {
     resourceKey: "m77696e646f77732e75692e76616c756531686f7572",
-    formatIntent: "text",
-    arguments: [
-    ],
-  },
-  "windows.ui.value1hourago": {
-    resourceKey: "m77696e646f77732e75692e76616c756531686f757261676f",
-    formatIntent: "text",
-    arguments: [
-    ],
-  },
-  "windows.ui.value1needsattention": {
-    resourceKey: "m77696e646f77732e75692e76616c7565316e65656473617474656e74696f6e",
-    formatIntent: "text",
-    arguments: [
-    ],
-  },
-  "windows.ui.value1screenshotcantcomeinsoitstaysinthefolder": {
-    resourceKey: "m77696e646f77732e75692e76616c75653173637265656e73686f7463616e74636f6d65696e736f69747374617973696e746865666f6c646572",
     formatIntent: "text",
     arguments: [
     ],

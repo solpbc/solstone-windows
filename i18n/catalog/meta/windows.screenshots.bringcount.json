@@ -1,0 +1,30 @@
+{
+  "description": "Whole quantity message: windows.screenshots.bringcount",
+  "context": "Windows app display. The catalog owns singular/plural selection. Preserve the existing English in both branches.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "count",
+      "type": "cardinal",
+      "numeric_style": "ungrouped"
+    },
+    {
+      "name": "display",
+      "type": "string"
+    }
+  ],
+  "format_intent": "cardinal",
+  "selector": {
+    "name": "count",
+    "type": "cardinal"
+  },
+  "max_length": 600,
+  "source_revision": "27e2f5299b70f6fdf864c4e5ebe638f738b3c3372fd6ce6443b90013c48715c2",
+  "risk": "routine",
+  "auto_merge": true
+}
