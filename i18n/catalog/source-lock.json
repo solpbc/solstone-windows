@@ -114,6 +114,13 @@
       "locales": []
     },
     {
+      "id": "windows.browser.discarded",
+      "source": "092a1f4ded0eef456180e2cf475a416f2d779c95acc5bc50d89b49fcf6a752c8",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
       "id": "windows.desktop.shared.about.journalunknown",
       "source": "caaa00b4547d0856d52aa3735107d7f3ff6fef60404cd3b854f94e014fc2cb30",
       "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
@@ -1806,6 +1813,13 @@
           "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc"
         }
       ]
+    },
+    {
+      "id": "windows.obsidian.vault",
+      "source": "33f9e7280c0ed1b4c71710ef28808779866fb931a9b7abe662468035cae82b09",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
     },
     {
       "id": "windows.obsidian.warning",

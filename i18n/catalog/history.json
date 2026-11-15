@@ -464,6 +464,18 @@
       "selector": null
     },
     {
+      "id": "windows.browser.discarded",
+      "resource": "m77696e646f77732e62726f777365722e646973636172646564",
+      "namespace": "windows.browser",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
       "id": "windows.desktop.shared.about.journalunknown",
       "resource": "m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6a6f75726e616c756e6b6e6f776e",
       "namespace": "windows.desktop.shared.about",
@@ -2084,6 +2096,18 @@
     {
       "id": "windows.obsidian.chooseobsidianvault",
       "resource": "m77696e646f77732e6f6273696469616e2e63686f6f73656f6273696469616e7661756c74",
+      "namespace": "windows.obsidian",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.obsidian.vault",
+      "resource": "m77696e646f77732e6f6273696469616e2e7661756c74",
       "namespace": "windows.obsidian",
       "owner": "windows",
       "tombstone": false,

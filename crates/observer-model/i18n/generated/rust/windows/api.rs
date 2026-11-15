@@ -43,6 +43,7 @@ pub enum MessageId {
     m77696e646f77732e61626f75742e6c696e6537,
     m77696e646f77732e61626f75742e6d696e75746561676f,
     m77696e646f77732e61626f75742e756e6b6e6f776e,
+    m77696e646f77732e62726f777365722e646973636172646564,
     m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6a6f75726e616c756e6b6e6f776e,
     m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6f70656e736f757263656c6f63616c6669727374,
     m77696e646f77732e6465736b746f702e7368617265642e61626f75742e70656e64696e6773657474696e6773746162,
@@ -165,6 +166,7 @@ pub enum MessageId {
     m77696e646f77732e6e6f746963652e796f75726a6f75726e616c69736261636b696e7265616368,
     m77696e646f77732e6e6f746963652e796f75726a6f75726e616c69736f75746f667265616368,
     m77696e646f77732e6f6273696469616e2e63686f6f73656f6273696469616e7661756c74,
+    m77696e646f77732e6f6273696469616e2e7661756c74,
     m77696e646f77732e6f6273696469616e2e7761726e696e67,
     m77696e646f77732e6f6273696469616e2e7761726e696e6764617465,
     m77696e646f77732e6f6273696469616e2e7761726e696e67646576696365,
@@ -704,6 +706,7 @@ pub fn render_dotted_with_options(locale: &str, dotted_id: &str, args: &[(&str, 
         "windows.about.line7" => MessageId::m77696e646f77732e61626f75742e6c696e6537,
         "windows.about.minuteago" => MessageId::m77696e646f77732e61626f75742e6d696e75746561676f,
         "windows.about.unknown" => MessageId::m77696e646f77732e61626f75742e756e6b6e6f776e,
+        "windows.browser.discarded" => MessageId::m77696e646f77732e62726f777365722e646973636172646564,
         "windows.desktop.shared.about.journalunknown" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6a6f75726e616c756e6b6e6f776e,
         "windows.desktop.shared.about.opensourcelocalfirst" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6f70656e736f757263656c6f63616c6669727374,
         "windows.desktop.shared.about.pendingsettingstab" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e70656e64696e6773657474696e6773746162,
@@ -826,6 +829,7 @@ pub fn render_dotted_with_options(locale: &str, dotted_id: &str, args: &[(&str, 
         "windows.notice.yourjournalisbackinreach" => MessageId::m77696e646f77732e6e6f746963652e796f75726a6f75726e616c69736261636b696e7265616368,
         "windows.notice.yourjournalisoutofreach" => MessageId::m77696e646f77732e6e6f746963652e796f75726a6f75726e616c69736f75746f667265616368,
         "windows.obsidian.chooseobsidianvault" => MessageId::m77696e646f77732e6f6273696469616e2e63686f6f73656f6273696469616e7661756c74,
+        "windows.obsidian.vault" => MessageId::m77696e646f77732e6f6273696469616e2e7661756c74,
         "windows.obsidian.warning" => MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e67,
         "windows.obsidian.warningdate" => MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e6764617465,
         "windows.obsidian.warningdevice" => MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e67646576696365,
@@ -1735,6 +1739,17 @@ pub fn render_with_options(locale: &str, id: MessageId, args: &[(&str, Value)], 
             #[allow(unused_mut)]
             let mut f_args = FluentArgs::new();
             ("m77696e646f77732e61626f75742e756e6b6e6f776e".to_string(), f_args)
+        }
+        MessageId::m77696e646f77732e62726f777365722e646973636172646564 => {
+            const DECLARED: &[&str] = &[];
+            for (name, _) in args {
+                if !DECLARED.contains(name) {
+                    return Err(RenderError::UnknownArgument((*name).to_string()));
+                }
+            }
+            #[allow(unused_mut)]
+            let mut f_args = FluentArgs::new();
+            ("m77696e646f77732e62726f777365722e646973636172646564".to_string(), f_args)
         }
         MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6a6f75726e616c756e6b6e6f776e => {
             const DECLARED: &[&str] = &[];
@@ -3147,6 +3162,17 @@ pub fn render_with_options(locale: &str, id: MessageId, args: &[(&str, Value)], 
             #[allow(unused_mut)]
             let mut f_args = FluentArgs::new();
             ("m77696e646f77732e6f6273696469616e2e63686f6f73656f6273696469616e7661756c74".to_string(), f_args)
+        }
+        MessageId::m77696e646f77732e6f6273696469616e2e7661756c74 => {
+            const DECLARED: &[&str] = &[];
+            for (name, _) in args {
+                if !DECLARED.contains(name) {
+                    return Err(RenderError::UnknownArgument((*name).to_string()));
+                }
+            }
+            #[allow(unused_mut)]
+            let mut f_args = FluentArgs::new();
+            ("m77696e646f77732e6f6273696469616e2e7661756c74".to_string(), f_args)
         }
         MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e67 => {
             const DECLARED: &[&str] = &["vault"];

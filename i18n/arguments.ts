@@ -160,6 +160,7 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
     ]
   ],
   "windows.about.unknown": [],
+  "windows.browser.discarded": [],
   "windows.desktop.shared.about.journalunknown": [],
   "windows.desktop.shared.about.opensourcelocalfirst": [],
   "windows.desktop.shared.about.pendingsettingstab": [],
@@ -333,6 +334,7 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
   "windows.notice.yourjournalisbackinreach": [],
   "windows.notice.yourjournalisoutofreach": [],
   "windows.obsidian.chooseobsidianvault": [],
+  "windows.obsidian.vault": [],
   "windows.obsidian.warning": [
     [
       "vault",

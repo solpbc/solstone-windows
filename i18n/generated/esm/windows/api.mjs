@@ -148,6 +148,12 @@ const MESSAGES = {
     arguments: [
     ],
   },
+  "windows.browser.discarded": {
+    resourceKey: "m77696e646f77732e62726f777365722e646973636172646564",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
   "windows.desktop.shared.about.journalunknown": {
     resourceKey: "m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6a6f75726e616c756e6b6e6f776e",
     formatIntent: "text",
@@ -889,6 +895,12 @@ const MESSAGES = {
   },
   "windows.obsidian.chooseobsidianvault": {
     resourceKey: "m77696e646f77732e6f6273696469616e2e63686f6f73656f6273696469616e7661756c74",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.obsidian.vault": {
+    resourceKey: "m77696e646f77732e6f6273696469616e2e7661756c74",
     formatIntent: "text",
     arguments: [
     ],

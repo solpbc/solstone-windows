@@ -1423,3 +1423,7 @@ windows.ui.nolocaljournaltoconnectto = no local journal to connect to
 windows.ui.failedtoacquiresetuplock = failed to acquire setup lock
 
 windows.ui.setupsequenceisunavailableinthisbuild = setup sequence is unavailable in this build
+
+windows.browser.discarded = discarded
+
+windows.obsidian.vault = vault
