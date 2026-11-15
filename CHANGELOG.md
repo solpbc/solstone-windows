@@ -4,11 +4,11 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.49] - 2026-11-15
 
 ### Added
 
-- journal links from your agent open the place in your journal window.
+- journal links from your agent open what they point to in your journal window.
 
 ### Fixed
 
