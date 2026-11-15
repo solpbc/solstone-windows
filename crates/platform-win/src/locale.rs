@@ -76,6 +76,34 @@ pub fn format_locale() -> String {
 }
 
 #[cfg(windows)]
+fn initialize_webview_apartment() -> windows_core::Result<()> {
+    use std::cell::RefCell;
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+
+    struct Apartment;
+    impl Drop for Apartment {
+        fn drop(&mut self) {
+            // The guard stays on the creating thread until it exits.
+            unsafe { CoUninitialize() };
+        }
+    }
+    thread_local! {
+        static APARTMENT: RefCell<Option<Apartment>> = const { RefCell::new(None) };
+    }
+    APARTMENT.with(|apartment| {
+        let mut apartment = apartment.borrow_mut();
+        if apartment.is_none() {
+            // This factory precedes Wry's own STA initialization. Being on the
+            // UI thread alone does not initialize COM for WebView2.
+            windows_core::HRESULT(unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.0)
+                .ok()?;
+            *apartment = Some(Apartment);
+        }
+        Ok(())
+    })
+}
+
+#[cfg(windows)]
 pub fn webview_environment(
     data_directory: &std::path::Path,
     arguments: &str,
@@ -88,6 +116,7 @@ pub fn webview_environment(
         CoreWebView2EnvironmentOptions, CreateCoreWebView2EnvironmentCompletedHandler,
     };
     use windows_core::{Error, HRESULT, HSTRING, PCWSTR};
+    initialize_webview_apartment()?;
     let options = CoreWebView2EnvironmentOptions::default();
     let (sender, receiver) = std::sync::mpsc::channel();
     // These options mirror Wry's factory. The language is the negotiated catalog
