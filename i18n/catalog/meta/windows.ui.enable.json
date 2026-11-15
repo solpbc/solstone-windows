@@ -1,0 +1,16 @@
+{
+  "description": "enable",
+  "context": "The Windows app: microphone device switch. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "3f7fdc279274db59507edc6bf4f359e46a80f59ee40c8ad5e6380cd625bb698a",
+  "risk": "routine",
+  "auto_merge": true
+}

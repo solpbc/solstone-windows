@@ -1,0 +1,16 @@
+{
+  "description": "choose how far back to start, then bring them in.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 98,
+  "source_revision": "b17f07c0fda259c399f01d16fe0d973e79eb24f6eed797db06e18803e93b7404",
+  "risk": "routine",
+  "auto_merge": true
+}

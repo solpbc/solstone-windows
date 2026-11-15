@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. could not update start at login",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 62,
+  "source_revision": "27b0f47abfdfea126b875acc2318392dc8a34a952fac5adde489520874a4e316",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. confirm your journal's mark to open it",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 76,
+  "source_revision": "6339afebdf108b6a583e97e4e32d7b51d62831e71e07f94f5740ab7afedee88c",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. devices unavailable",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.listunavailabletitle.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "37a0ea2aa9e3485cb7bb09df245721d67909c5a2880d281af039a51431c33b0c",
+  "risk": "routine",
+  "auto_merge": true
+}

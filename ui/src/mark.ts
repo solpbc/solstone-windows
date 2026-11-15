@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
+import { t } from "./i18n";
 // The journal's mark: two tinted glyph chips above two words, in a card. Every
 // mark in this app comes from here, drawn to the same geometry as the journal's
 // own pages, because the owner compares the two by eye. The card stays
@@ -249,19 +250,19 @@ export function renderMarkCard(
     const [first, second] = [mark.words[0].toLowerCase(), mark.words[1].toLowerCase()];
     chips.append(identityChip(mark.icon1), identityChip(mark.icon2));
     words = wordsElement(first, second);
-    name = `${mark.icon1.color.name}, ${mark.icon2.color.name} · ${first} ${second}`;
+    name = t("windows.ui.text3", { "name": String(mark.icon1.color.name), "name2": String(mark.icon2.color.name), "value3": String(first), "value4": String(second) });
   } else if (fallback === "unavailable") {
     chips.append(unavailableChip(), unavailableChip());
-    words = wordsElement("mark", "unavailable");
-    name = "your journal's mark, unavailable right now";
+    words = wordsElement(t("windows.ui.mark"), t("windows.ui.unavailable"));
+    name = t("windows.ui.yourjournalsmarkunavailablerightnow");
   } else if (fallback === "not-presented") {
     chips.append(notPresentedChip(), notPresentedChip());
-    words = wordsElement("not", "presented");
-    name = "no identity presented";
+    words = wordsElement(t("windows.ui.not"), t("windows.ui.presented"));
+    name = t("windows.ui.noidentitypresented");
   } else {
     chips.append(genericChip(GENERIC_CHIPS[0], false), genericChip(GENERIC_CHIPS[1], true));
-    words = wordsElement("your", "journal");
-    name = "your journal, not set up yet";
+    words = wordsElement(t("windows.ui.your"), t("windows.desktop.shared.about.pendingsettingstab"));
+    name = t("windows.ui.yourjournalnotsetupyet");
   }
   words.setAttribute("aria-hidden", "true");
   card.setAttribute("aria-label", name);

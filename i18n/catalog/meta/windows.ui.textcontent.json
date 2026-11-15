@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. another pairing link arrived: use it or dismiss it.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 102,
+  "source_revision": "fbe39fc14102623a619b49bb10aec9c3c7c98425b1d9e9946f740a4e6007dda6",
+  "risk": "routine",
+  "auto_merge": true
+}

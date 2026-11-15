@@ -1,0 +1,16 @@
+{
+  "description": "access was denied.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "8ade6983ef8223b0d85c5f68eb5f15d5b495bad46a6bc3226fc6e1bcb7acb5d9",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "choose the folder your screenshots save to",
+  "context": "The Windows app: native dialogs and imported files. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 84,
+  "source_revision": "4ffc27779cc94d8564a3b7dc910096453a4ce102c1eb99f607cbe3a8b63daec6",
+  "risk": "routine",
+  "auto_merge": true
+}

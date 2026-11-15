@@ -1,0 +1,16 @@
+{
+  "description": "vaults",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "dbdc2c6e4272c47fda6c848f760c038c2d2c341c7a173ce43116ad1708cd499b",
+  "risk": "routine",
+  "auto_merge": true
+}

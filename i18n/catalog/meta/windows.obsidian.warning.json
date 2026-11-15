@@ -1,0 +1,21 @@
+{
+  "description": "Whole message: windows.obsidian.warning",
+  "context": "Windows app display. Preserve the exact English text, arguments and state distinction.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "vault",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "39f2180ec3abe9991e8e3d432d723ac7e7fbbaec458f6ba85274eb0d0d6c727d",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,30 @@
+{
+  "description": "Whole message: windows.quantity.hours",
+  "context": "Windows app display. Preserve the exact English text, arguments and state distinction.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "count",
+      "type": "cardinal",
+      "numeric_style": "ungrouped"
+    },
+    {
+      "name": "display",
+      "type": "string"
+    }
+  ],
+  "format_intent": "cardinal",
+  "max_length": 600,
+  "source_revision": "8e156985010858c5573fe5ac815145597079afe2e76f3a17b94d69017bc5a396",
+  "risk": "routine",
+  "auto_merge": true,
+  "selector": {
+    "name": "count",
+    "type": "cardinal"
+  }
+}

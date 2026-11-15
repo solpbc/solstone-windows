@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. paused with the rest of the solstone app. pausing doesn't hold back what's already take\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 184,
+  "source_revision": "4e6da5380e291f855a170e668a4a4cc481838f4a7fd5ad62e2403fc4e2e39d9e",
+  "risk": "routine",
+  "auto_merge": true
+}

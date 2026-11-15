@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. esc to cancel",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "00cfab8cf6569c371a8facf8108f3b45d1b8c60bc9ddb8aa4c284c8e6d2e0ee9",
+  "risk": "routine",
+  "auto_merge": true
+}

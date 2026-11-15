@@ -1,0 +1,16 @@
+{
+  "description": "could not save turning this off. it is off now, but may turn on again after a restart. try again.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 194,
+  "source_revision": "494f7b8c90d567cec7c3f83b2850495d66f7469f040fae4adff03e363730f9bd",
+  "risk": "routine",
+  "auto_merge": true
+}

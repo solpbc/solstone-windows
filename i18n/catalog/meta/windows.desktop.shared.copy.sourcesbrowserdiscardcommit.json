@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. discard pages",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.sourcesbrowserdiscardcommit.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "0de4d54b7a8dbad60b20ab8d71d5bc54f7ad73763fd798dc56ec0a98822d1286",
+  "risk": "routine",
+  "auto_merge": true
+}

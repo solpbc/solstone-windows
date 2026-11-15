@@ -1,0 +1,21 @@
+{
+  "description": "{arg0} hours ago",
+  "context": "The Windows app: ui/src/shell/derive.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "eb89707e7f2cf7a8ae70857500696c56d080c3780999508ab3c8a374bcdaa591",
+  "risk": "routine",
+  "auto_merge": true
+}

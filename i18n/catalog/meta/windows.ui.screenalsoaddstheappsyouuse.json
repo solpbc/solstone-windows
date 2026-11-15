@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. screen also adds the apps you use, with window titles and page addresses, to your journ\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 250,
+  "source_revision": "465c14a777f2842e41036ec2bfc3344cff35c24ddc4fd00d2ef6091c8ed2e0de",
+  "risk": "routine",
+  "auto_merge": true
+}

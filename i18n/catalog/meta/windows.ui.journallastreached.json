@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. journal last reached",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "687e28400c7fa6461ff99c0faea294f741ff6ba3e3d6827d01c60c31de469432",
+  "risk": "routine",
+  "auto_merge": true
+}

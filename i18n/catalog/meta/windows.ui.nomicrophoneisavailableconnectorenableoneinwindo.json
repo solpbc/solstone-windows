@@ -1,0 +1,16 @@
+{
+  "description": "no microphone is available. connect or enable one in windows sound settings. the solstone app starts using it on its own.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 242,
+  "source_revision": "6cecd27ccea7bf3c7df913d825edf4e81350606d6118ea34883d220efce2e892",
+  "risk": "routine",
+  "auto_merge": true
+}

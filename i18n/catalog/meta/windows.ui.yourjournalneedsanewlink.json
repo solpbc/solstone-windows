@@ -1,0 +1,16 @@
+{
+  "description": "your journal needs a new link",
+  "context": "The Windows app: ui/src/shell/derive.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "26ab0891dfb49acd5245319b8921937cc111b493e2fc2fb101c821a6680685fa",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. download deferred on a metered connection",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 82,
+  "source_revision": "df58778fabc52295366d5424371844369721b51f1285d16a5c10337505ecadd7",
+  "risk": "routine",
+  "auto_merge": true
+}

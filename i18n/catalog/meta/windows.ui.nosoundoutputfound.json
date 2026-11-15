@@ -1,0 +1,16 @@
+{
+  "description": "no sound output found.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "ab8e42a01d0c7d932181091e26f6e452f3d552cbf1ef5b3627aff173de6693de",
+  "risk": "routine",
+  "auto_merge": true
+}

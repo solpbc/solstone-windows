@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. dismiss",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.updates.dismiss.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "9dbaf882187a75810fa21e17d2e888e82f540e910cf17ef6b8524ba577ad9149",
+  "risk": "routine",
+  "auto_merge": true
+}

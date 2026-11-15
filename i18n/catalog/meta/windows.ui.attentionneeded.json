@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. attention needed",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "88ce691fb553d3affe7cf8832111f5691442d8dea92458cc8f93cf4778f0fa93",
+  "risk": "routine",
+  "auto_merge": true
+}

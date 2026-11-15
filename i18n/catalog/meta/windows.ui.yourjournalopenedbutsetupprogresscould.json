@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. your journal opened, but setup progress could not be saved. try again.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 140,
+  "source_revision": "9d48148c1b18f390b4c0035c8e91a9a14154f4fd485b0f015651cb4a58052fee",
+  "risk": "routine",
+  "auto_merge": true
+}

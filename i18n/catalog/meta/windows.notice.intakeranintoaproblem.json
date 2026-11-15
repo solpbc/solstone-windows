@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. intake ran into a problem",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 50,
+  "source_revision": "21c62f1deb1a38b737ba9eb6fdf11ce243b8f8d4fb4b88d24feabcb24ae672df",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. connect your journal",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "754340537133ed6755e88f42c46cbbf3c12fe6c633a11dc2d90a98096edd2c85",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "from before today",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "76c6b4ec1145483d287ac6ebbb6152bc87840fe035bd96719e14583b818cc958",
+  "risk": "routine",
+  "auto_merge": true
+}

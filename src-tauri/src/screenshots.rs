@@ -8,6 +8,8 @@
 //! Everything scanned, held or scheduled lives in `screenshots-source`. What
 //! is here carries no journal identity into anything it holds.
 
+use observer_model::i18n::message;
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -25,7 +27,6 @@ use tauri::Manager;
 static HANDLE: OnceLock<ScreenshotsHandle> = OnceLock::new();
 
 /// The folder dialog's title: D8's second sentence, without its period.
-const D8_CHOOSER_TITLE: &str = "choose the folder your screenshots save to";
 
 type LoadClient = Arc<
     dyn Fn() -> Pin<Box<dyn Future<Output = Option<Arc<ObserverClient>>> + Send>> + Send + Sync,
@@ -249,7 +250,10 @@ pub async fn choose_folder(
         .map_err(|_| "screenshots_window_unavailable")?
         .0 as isize;
     let chosen = tauri::async_runtime::spawn_blocking(move || {
-        platform_win::folder_picker::choose_folder(owner, D8_CHOOSER_TITLE)
+        platform_win::folder_picker::choose_folder(
+            owner,
+            &message("windows.ui.choosethefolderyourscreenshotssaveto", &[]),
+        )
     })
     .await
     .map_err(|_| "screenshots_dialog_failed")?

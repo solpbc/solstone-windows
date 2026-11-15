@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. if you haven't yet, add the solstone extension to a browser on this PC. what you share \u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 220,
+  "source_revision": "e86e1aefbf07983c0e38acc0bf18f14ea0f82cbb1ec07b3023ef9f4fe35cf177",
+  "risk": "routine",
+  "auto_merge": true
+}

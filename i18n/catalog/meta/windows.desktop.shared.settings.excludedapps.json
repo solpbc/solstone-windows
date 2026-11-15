@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. excluded apps",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.settings.excludedapps.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "4da894c05505f37fc65e6beeb14852c7933862dbd4c53477455e668b499188d6",
+  "risk": "routine",
+  "auto_merge": true
+}

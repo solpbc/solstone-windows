@@ -3,6 +3,8 @@
 
 //! The linked-device import contract: streamed save, then idempotent start.
 
+use observer_model::i18n::message;
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -165,7 +167,7 @@ pub(crate) fn classify(
             ImportReply::Retry
         } else {
             ImportReply::Refused {
-                sentence: "your journal couldn't accept this.".into(),
+                sentence: message("windows.ui.yourjournalcouldntacceptthis", &[]),
                 retryable: false,
                 clear_saved: false,
             }
@@ -205,7 +207,7 @@ pub(crate) fn classify(
     let Some((sentence, reason)) = nonempty(&value, "error").zip(nonempty(&value, "reason_code"))
     else {
         return ImportReply::Refused {
-            sentence: "your journal couldn't accept this.".into(),
+            sentence: message("windows.ui.yourjournalcouldntacceptthis", &[]),
             retryable: false,
             clear_saved: false,
         };

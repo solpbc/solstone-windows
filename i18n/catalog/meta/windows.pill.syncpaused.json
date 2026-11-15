@@ -1,0 +1,16 @@
+{
+  "description": "Whole message: windows.pill.syncPaused",
+  "context": "Windows app display. Preserve the exact English text, arguments and state distinction.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "4e63fb8d11f55cacc35cb295dcd50fa83c3babda589cbfb417bbb8758a4c89e0",
+  "risk": "routine",
+  "auto_merge": true
+}

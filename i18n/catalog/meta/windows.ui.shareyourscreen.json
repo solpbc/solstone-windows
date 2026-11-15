@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. share your screen",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "af4431956f95b6866c092a33c016f5a0776cc81495e1aa34a4a43c600e774b44",
+  "risk": "routine",
+  "auto_merge": true
+}

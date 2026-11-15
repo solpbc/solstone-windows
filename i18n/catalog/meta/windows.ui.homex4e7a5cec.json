@@ -1,0 +1,16 @@
+{
+  "description": "\u2039 home",
+  "context": "The Windows app: ui/src/shell/view.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "5d065415ad873799519185ca30e3f17fa68ea4ee49fe67ad2f3f120ab21eaf4c",
+  "risk": "routine",
+  "auto_merge": true
+}

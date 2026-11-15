@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. paused, \u2026 left",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "29c2221193882ea2f131e69135c60c178f59a83738ff1234520a09ecbdad214e",
+  "risk": "routine",
+  "auto_merge": true
+}

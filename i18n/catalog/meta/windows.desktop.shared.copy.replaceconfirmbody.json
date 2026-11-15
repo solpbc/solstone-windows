@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this PC continues its name and history. the selected device will lose access to your jo\u2026",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.replaceconfirmbody.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 186,
+  "source_revision": "cefa0d26be9388d429d6aabdc9205e13752f3067dc6f5957ec2d6d969a1cc4fe",
+  "risk": "routine",
+  "auto_merge": true
+}

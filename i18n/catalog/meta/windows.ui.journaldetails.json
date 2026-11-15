@@ -1,0 +1,16 @@
+{
+  "description": "journal details",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "fbea24266c1b92f97cc38883c3a2f7fe12734188115054f88e6266d30efba256",
+  "risk": "routine",
+  "auto_merge": true
+}

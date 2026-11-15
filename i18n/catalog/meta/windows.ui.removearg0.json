@@ -1,0 +1,21 @@
+{
+  "description": "remove {arg0}?",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "dc6ce125ab9d884cebc31999c0e2aaab4db74af63ab37ec2436e332b469e8ee7",
+  "risk": "routine",
+  "auto_merge": true
+}

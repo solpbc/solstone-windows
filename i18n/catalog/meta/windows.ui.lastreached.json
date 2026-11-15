@@ -1,0 +1,16 @@
+{
+  "description": "last reached",
+  "context": "The Windows app: ui/src/shell/derive.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "d95c294a172fd6fc32b9ffee7b29a322a9972bcaa37905b6b060caa4bc5958f2",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. read the full notes online",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.updates.textcontent.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 52,
+  "source_revision": "6c00ea2138f58f2fed1896aa39167b0d55c9b31684cde7b50ea0c6d2dbe97605",
+  "risk": "routine",
+  "auto_merge": true
+}

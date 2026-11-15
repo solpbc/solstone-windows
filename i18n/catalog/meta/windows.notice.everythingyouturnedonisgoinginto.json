@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. everything you turned on is going into your journal again.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 116,
+  "source_revision": "95ee03d73d64d4b774083cdfda383df2d42ddcf7bb279bb55821612fdcc191b1",
+  "risk": "routine",
+  "auto_merge": true
+}

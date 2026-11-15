@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. check now",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.updates.checknow.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "b05a174ef7667abfc07de6ca8da426907b89d7384d84fa603b8d54a79b5661d7",
+  "risk": "routine",
+  "auto_merge": true
+}

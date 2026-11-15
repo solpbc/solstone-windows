@@ -1,0 +1,16 @@
+{
+  "description": "turn it on any time.",
+  "context": "The Windows app: ui/src/shell/derive.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "0c37b1ad747673591574ca6e6aed61a52317627c5b1f9f8855d3f1b1242f2ad9",
+  "risk": "routine",
+  "auto_merge": true
+}

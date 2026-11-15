@@ -1,0 +1,21 @@
+{
+  "description": "Whole message: windows.pill.syncPausedwaiting",
+  "context": "Windows app display. Preserve the exact English text, arguments and state distinction.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "waiting",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "935ec9643c6fbbf9f43615ef70f64c8d8820399bf4b588c84a81ff19b7d7d94c",
+  "risk": "routine",
+  "auto_merge": true
+}

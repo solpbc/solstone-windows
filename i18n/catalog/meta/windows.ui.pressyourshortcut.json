@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. press your shortcut\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "5512852b022b3f2acd44bd1f5a07723682c9507cd9f2719cbec04a049b8c11b8",
+  "risk": "routine",
+  "auto_merge": true
+}

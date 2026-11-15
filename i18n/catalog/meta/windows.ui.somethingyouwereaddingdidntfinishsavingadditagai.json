@@ -1,0 +1,16 @@
+{
+  "description": "something you were adding didn't finish saving. add it again.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 122,
+  "source_revision": "dfc221838695e852d3111d51823151e73b38348437a254bddb821acddb4b8ad3",
+  "risk": "routine",
+  "auto_merge": true
+}

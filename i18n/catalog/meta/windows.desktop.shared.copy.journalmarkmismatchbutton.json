@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. that doesn't match",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.journalmarkmismatchbutton.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "311b20cc6dbaa380b062357ea4dd033a4f96abe34cc86c296d2cf7b8a15349c5",
+  "risk": "routine",
+  "auto_merge": true
+}

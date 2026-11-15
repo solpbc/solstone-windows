@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. the solstone icon in the taskbar says what's wrong.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 102,
+  "source_revision": "95bf083d045a09c3e5c6dcc17b297563f62c49880760d58b33d6a2128067d225",
+  "risk": "routine",
+  "auto_merge": true
+}

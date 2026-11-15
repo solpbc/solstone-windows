@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. couldn't verify",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.journalmarkunverifiedtitle.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "aa6e7152a854a3961902434044a9def3936433e0aaf787a07211e11baf8e9990",
+  "risk": "routine",
+  "auto_merge": true
+}

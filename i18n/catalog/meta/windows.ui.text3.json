@@ -1,0 +1,33 @@
+{
+  "description": "Windows app. \u2026, \u2026 \u00b7 \u2026 \u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "name",
+      "type": "string"
+    },
+    {
+      "name": "name2",
+      "type": "string"
+    },
+    {
+      "name": "value3",
+      "type": "string"
+    },
+    {
+      "name": "value4",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 70,
+  "source_revision": "73433ae7d2fc238106d4dfc4fad4e95647449c2377d35873933110deb73fe6e1",
+  "risk": "routine",
+  "auto_merge": true
+}

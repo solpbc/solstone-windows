@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this build can't update itself",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 60,
+  "source_revision": "4a1c036917ae5cd7e86792f1b8fc1c67dfe29bc5766480ccec495590091d5a31",
+  "risk": "routine",
+  "auto_merge": true
+}

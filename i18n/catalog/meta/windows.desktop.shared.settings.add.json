@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. add",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.settings.add.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "719486b47950597897ae38e2be369ba7411603aad3e9197652e2873c81ba65e6",
+  "risk": "routine",
+  "auto_merge": true
+}

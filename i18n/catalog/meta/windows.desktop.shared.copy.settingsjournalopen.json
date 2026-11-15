@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. open journal",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.settingsjournalopen.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "0f03674b07ace94a85538ca980cde831b289ddc6f13b1f46878e1b1e3eadd799",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,23 @@
+{
+  "description": " \u00b7 the download did not finish",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "ccd4d7a43a33352c69e3f73fa3cd578aee56a35864d2185950d5fb1e35069f71",
+  "risk": "routine",
+  "auto_merge": true,
+  "protected_slots": [
+    {
+      "name": "leading",
+      "kind": "whitespace",
+      "value": " "
+    }
+  ]
+}

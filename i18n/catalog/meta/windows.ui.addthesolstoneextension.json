@@ -1,0 +1,16 @@
+{
+  "description": "add the solstone extension.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "fe8a9f918b5a9f0241e137a872a03bdcbdd4bc75c2144ce87e74e5acfe0201da",
+  "risk": "routine",
+  "auto_merge": true
+}

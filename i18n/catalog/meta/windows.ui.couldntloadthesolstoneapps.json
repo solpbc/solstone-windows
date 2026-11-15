@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. couldn't load the solstone app's status just now.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 98,
+  "source_revision": "b110bc617ac03a768a68f77738f3f02cd8ff92041a8bf1887455caa318166cd2",
+  "risk": "routine",
+  "auto_merge": true
+}

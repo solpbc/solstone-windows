@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. couldn't copy. select the text and copy it.",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.about.textcontent2.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 86,
+  "source_revision": "98e024791b2e15644f81ca3862fc412aafdaba561887b76289994d96c8781699",
+  "risk": "routine",
+  "auto_merge": true
+}

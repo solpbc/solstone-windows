@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. add to \u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "cb4835a0270a3fe9c7a492fa60096362d780680c682393bfef6cecea88e5a801",
+  "risk": "routine",
+  "auto_merge": true
+}

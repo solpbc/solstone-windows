@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. save a copy\u2026",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.settingslogexportsave.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "2dcee12d74c02c98d48ee4f44dc76ebc8920536463d3c48cdc7e7ee925400e33",
+  "risk": "routine",
+  "auto_merge": true
+}

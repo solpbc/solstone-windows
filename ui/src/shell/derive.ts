@@ -1,3 +1,4 @@
+import { t, formatLocale, locale, number } from "../i18n";
 // Pure decisions for the desktop shell. No DOM and no commands.
 
 export type StateWord =
@@ -38,10 +39,10 @@ export function deckColumns(width: WidthClass): 2 | 3 {
   return 2;
 }
 
-export function greeting(hour: number): "good morning" | "good afternoon" | "good evening" {
-  if (hour >= 5 && hour <= 11) return "good morning";
-  if (hour >= 12 && hour <= 16) return "good afternoon";
-  return "good evening";
+export function greeting(hour: number): string {
+  if (hour >= 5 && hour <= 11) return t("windows.ui.goodmorning");
+  if (hour >= 12 && hour <= 16) return t("windows.ui.goodafternoon");
+  return t("windows.ui.goodevening");
 }
 
 /** Stored bit when present. Otherwise the live computer-sound key if the microphone is on, else true. */
@@ -348,7 +349,7 @@ export function audioSubline(input: {
   microphone: string | null;
 }): string {
   if ((input.word === "on" || input.word === "paused") && input.systemAudioOn) {
-    return "with computer sound";
+    return t("windows.ui.withcomputersound");
   }
   if (input.word === "on" && input.microphone) return input.microphone;
   return "";
@@ -366,11 +367,11 @@ export function sourceSubline(input: {
 }): string {
   if (input.word === "needs attention") return input.attention;
   if (input.word === "off") {
-    return "turn it on any time.";
+    return t("windows.ui.turnitonanytime");
   }
   if (input.word === "setting up") {
     if (input.settingUp) return input.settingUp;
-    return input.paired ? "getting ready. connecting to your journal." : "getting ready…";
+    return input.paired ? t("windows.ui.gettingreadyconnectingtoyourjournal") : t("windows.ui.gettingready");
   }
   if (input.word === "ready to set up") return input.setup;
   return input.companion;
@@ -378,22 +379,21 @@ export function sourceSubline(input: {
 
 /** The about row's value. The unknown line does not repeat the word journal. */
 export function aboutJournalValue(line: string): string {
-  return line === "journal unknown" ? "unknown" : line;
+  return line === t("windows.about.unknown") ? t("windows.ui.unknown") : line;
 }
 
 /** Journal words only. `sourceNeedsAttention` is ignored on purpose. */
 export function journalPill(input: JournalPillInput): string {
   const n = input.waiting;
-  const count = n === 0 ? "" : ` · ${n} waiting`;
-  if (!input.paired) return "not paired";
-  if (input.needsNewLink) return "your journal needs a new link";
-  if (input.refused) return n === 0 ? "pair again" : `pair again${count}`;
-  if (input.syncPaused) return n === 0 ? "sync paused" : `sync paused${count}`;
-  if (input.held) return n === 0 ? "confirm the mark" : `confirm the mark${count}`;
-  if (input.offline) return `offline${count}`;
-  if (input.connecting) return "connecting…";
-  if (input.waitingToSync) return "waiting to sync";
-  return "connected";
+  if (!input.paired) return t("windows.desktop.shared.app.notpaired");
+  if (input.needsNewLink) return t("windows.ui.yourjournalneedsanewlink");
+  if (input.refused) return n === 0 ? t("windows.pill.refused") : t("windows.pill.refusedwaiting", { waiting: String(number(n, {useGrouping:false})) });
+  if (input.syncPaused) return n === 0 ? t("windows.pill.syncpaused") : t("windows.pill.syncpausedwaiting", { waiting: String(number(n, {useGrouping:false})) });
+  if (input.held) return n === 0 ? t("windows.pill.held") : t("windows.pill.heldwaiting", { waiting: String(number(n, {useGrouping:false})) });
+  if (input.offline) return n === 0 ? t("windows.pill.offline") : t("windows.pill.offlinewaiting", { waiting: String(number(n, {useGrouping:false})) });
+  if (input.connecting) return t("windows.ui.connecting");
+  if (input.waitingToSync) return t("windows.ui.waitingtosync");
+  return t("windows.ui.connected");
 }
 
 export type StatusLead = {
@@ -418,16 +418,16 @@ export function statusLead(input: JournalPillInput): StatusLead {
     !input.waitingToSync &&
     !input.importsNeedOwner;
   if (caughtUp) {
-    return { headline: "all caught up", lines: ["everything is in your journal"] };
+    return { headline: t("windows.ui.allcaughtup"), lines: [t("windows.ui.everythingisinyourjournal")] };
   }
   if (input.paired && input.offline) {
     if (input.waiting > 0) {
-      return { headline: `offline · ${input.waiting} waiting`, lines: ["on this device"] };
+      return { headline: t("windows.ui.offlinearg0waiting", { "arg0": String(input.waiting) }), lines: [t("windows.ui.onthisdevice")] };
     }
-    return { headline: "offline", lines: [] };
+    return { headline: t("windows.ui.offline"), lines: [] };
   }
   if (input.paired && input.waitingToSync) {
-    return { headline: "waiting to sync", lines: ["on this device"] };
+    return { headline: t("windows.ui.waitingtosync"), lines: [t("windows.ui.onthisdevice")] };
   }
   return { headline: "", lines: [] };
 }
@@ -435,7 +435,7 @@ export function statusLead(input: JournalPillInput): StatusLead {
 export type JournalLinkWord = "connected" | "connecting" | "offline";
 
 export type JournalFact = {
-  label: "connection" | "last reached";
+  label: string;
   value: string;
 };
 
@@ -447,10 +447,10 @@ export function journalFacts(input: {
 }): JournalFact[] {
   if (!input.paired) return [];
   const facts: JournalFact[] = [];
-  if (input.link === "connected") facts.push({ label: "connection", value: "connected" });
-  if (input.link === "connecting") facts.push({ label: "connection", value: "connecting…" });
-  if (input.link === "offline") facts.push({ label: "connection", value: "not reaching your journal right now" });
-  if (input.lastReached) facts.push({ label: "last reached", value: input.lastReached });
+  if (input.link === "connected") facts.push({ label: t("windows.ui.connection"), value: t("windows.ui.connected") });
+  if (input.link === "connecting") facts.push({ label: t("windows.ui.connection"), value: t("windows.ui.connecting") });
+  if (input.link === "offline") facts.push({ label: t("windows.ui.connection"), value: t("windows.ui.notreachingyourjournalrightnow") });
+  if (input.lastReached) facts.push({ label: t("windows.ui.lastreached"), value: input.lastReached });
   return facts;
 }
 
@@ -592,18 +592,18 @@ export type SourceFacts = {
 };
 
 const MONTHS = [
-  "january",
-  "february",
-  "march",
-  "april",
-  "may",
-  "june",
-  "july",
-  "august",
-  "september",
-  "october",
-  "november",
-  "december",
+  t("windows.ui.january"),
+  t("windows.ui.february"),
+  t("windows.ui.march"),
+  t("windows.ui.april"),
+  t("windows.ui.may"),
+  t("windows.ui.june"),
+  t("windows.ui.july"),
+  t("windows.ui.august"),
+  t("windows.ui.september"),
+  t("windows.ui.october"),
+  t("windows.ui.november"),
+  t("windows.ui.december"),
 ] as const;
 
 /** A stored date, month and day, with the year only when it is not `nowYear`. */
@@ -614,23 +614,23 @@ export function startedLabel(isoDate: string, nowYear: number): string {
   const month = MONTHS[Number(match[2]) - 1];
   const day = Number(match[3]);
   if (!month || !day) return isoDate;
-  return year === nowYear ? `${month} ${day}` : `${month} ${day}, ${year}`;
+  if (locale !== "en-US") return new Intl.DateTimeFormat(formatLocale, {month:"long",day:"numeric", ...(year === nowYear ? {} : {year:"numeric"})}).format(new Date(year, Number(match[2])-1, day));
+  return year === nowYear ? t("windows.tray.text", { "tooltip": String(month), "notice": String(day) }) : t("windows.ui.arg0arg1arg2", { "arg0": String(month), "arg1": String(day), "arg2": String(year) });
 }
 
 /** Hours, or minutes under an hour, or the under-a-minute band. */
 export function durationTotal(seconds: number): string {
-  if (seconds < 60) return "less than a minute";
-  if (seconds < 3600) {
-    const minutes = Math.floor(seconds / 60);
-    return minutes === 1 ? "1 minute" : `${minutes.toLocaleString("en-US")} minutes`;
-  }
-  const hours = Math.floor(seconds / 3600);
-  return hours === 1 ? "1 hour" : `${hours.toLocaleString("en-US")} hours`;
+  if (seconds < 60) return t("windows.tray.lessthanaminute");
+  return seconds < 3600 ? quantity("minutes", Math.floor(seconds / 60)) : quantity("hours", Math.floor(seconds / 3600));
 }
 
 /** A counted total. One uses `one`, any other count uses `many`. */
+export function quantity(kind: "pages" | "notes" | "screenshots" | "minutes" | "hours", count: number): string {
+  return t(`windows.quantity.${kind}`, { count, display: number(count) });
+}
+
 export function countTotal(count: number, one: string, many: string): string {
-  return count === 1 ? `1 ${one}` : `${count.toLocaleString("en-US")} ${many}`;
+  return `${number(count)} ${count === 1 ? one : many}`;
 }
 
 /**
@@ -639,16 +639,16 @@ export function countTotal(count: number, one: string, many: string): string {
  */
 export function relativeTaken(unixSecs: number, nowSecs: number): string {
   const delta = Math.max(0, nowSecs - unixSecs);
-  if (delta < 60) return "just now";
+  if (delta < 60) return t("windows.desktop.shared.app.justnow");
   if (delta < 3600) {
     const minutes = Math.floor(delta / 60);
-    return `${minutes} min ago`;
+    return t("windows.ui.arg0minago", { "arg0": String(minutes) });
   }
   if (delta < 86_400) {
     const hours = Math.floor(delta / 3600);
-    return hours === 1 ? "1 hour ago" : `${hours} hours ago`;
+    return hours === 1 ? t("windows.ui.value1hourago") : t("windows.ui.arg0hoursago", { "arg0": String(hours) });
   }
-  if (delta < 172_800) return "yesterday";
+  if (delta < 172_800) return t("windows.ui.yesterday");
   return startedLabel(new Date(unixSecs * 1000).toISOString().slice(0, 10), new Date(nowSecs * 1000).getUTCFullYear());
 }
 

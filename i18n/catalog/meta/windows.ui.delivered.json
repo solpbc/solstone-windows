@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. \u2026 delivered",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "702a21475939e47011f0d196bb6ed92fbeea518c9ce217bae20710801e10b697",
+  "risk": "routine",
+  "auto_merge": true
+}

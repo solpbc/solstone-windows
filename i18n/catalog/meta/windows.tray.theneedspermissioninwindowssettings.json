@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. the \u2026 needs permission in windows settings",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 96,
+  "source_revision": "54bdccdeaac064c48703231d65a93b1c1114b2b27815dd2c2aae10c2c34ce42c",
+  "risk": "consent",
+  "auto_merge": false
+}

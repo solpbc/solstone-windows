@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. add app names, window titles and page addresses, and whether you're active or idle, or \u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 478,
+  "source_revision": "575935272fe8ff147c88eba636b4e41b20e052b8de3fc9b49c0f9e6cf7364d53",
+  "risk": "routine",
+  "auto_merge": true
+}

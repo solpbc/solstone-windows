@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. recent logs",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.settingslogexporttitle.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "103a741e1ab2ac12836aa27026a0987df11109687a6ec82ff008940b4319dc3e",
+  "risk": "routine",
+  "auto_merge": true
+}

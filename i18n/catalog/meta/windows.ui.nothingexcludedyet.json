@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. nothing excluded yet",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "f921fbcffffe6072caaaa2f9d5488c63a253ef41281d9e169e5b2380261bfe86",
+  "risk": "routine",
+  "auto_merge": true
+}

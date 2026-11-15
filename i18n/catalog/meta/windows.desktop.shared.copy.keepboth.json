@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. keep both",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.keepboth.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "f28628bc9366c20b18084178d2f1aaefc9547e6b70706c5175f4528eba3f16a4",
+  "risk": "routine",
+  "auto_merge": true
+}

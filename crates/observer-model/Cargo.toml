@@ -16,6 +16,9 @@ serde.workspace = true
 serde_json.workspace = true
 strum.workspace = true
 url = "2"
+fluent-bundle = "=0.16.0"
+fluent-langneg = { version = "=0.13.1", features = ["cldr"] }
+unic-langid = "=0.9.6"
 
 [dev-dependencies]
 sha2.workspace = true

@@ -1,0 +1,16 @@
+{
+  "description": "save a copy of recent logs",
+  "context": "The Windows app: native dialogs and imported files. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "0438f56ac68fa460d011ecb655281b128c16bf888f826ea8b78b13bc96cf89c0",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. these rules are active now but couldn't be saved, so they may not survive a restart.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 168,
+  "source_revision": "4be6638c58ebbde8173b80dd3b3546def91b9f8c4b9f4ebb54e08365f4ec2178",
+  "risk": "routine",
+  "auto_merge": true
+}

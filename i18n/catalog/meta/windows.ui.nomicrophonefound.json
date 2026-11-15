@@ -1,0 +1,16 @@
+{
+  "description": "no microphone found.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "a0358cd3470d548be608160d10da53b00704804b52eb18d8b94e3ef81b38fab5",
+  "risk": "routine",
+  "auto_merge": true
+}

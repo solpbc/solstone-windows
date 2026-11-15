@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. page addresses (Edge and Chrome)",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 64,
+  "source_revision": "5ed9a2f789ac1328b9ab42f96e619cf453fd9d7437dd25336c1f4b348e009a66",
+  "risk": "routine",
+  "auto_merge": true
+}

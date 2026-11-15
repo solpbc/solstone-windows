@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. on, saved on this PC",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "be966b9efcdf3efaaac28545ec24972e77c271b16e2886171bcb3bf5846418cc",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. solstone is up to date",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.settingstabupdatesdonea11y.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "a752794143924da537a34c4ebc0f45e2feed7176fc6dddc8e5c59d783f648789",
+  "risk": "routine",
+  "auto_merge": true
+}

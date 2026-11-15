@@ -1,0 +1,16 @@
+{
+  "description": "good morning",
+  "context": "The Windows app: ui/src/shell/derive.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "c180bf9673aed66e7278450e60e3d47cc8ee14de6b937edcdcef493f62d0f207",
+  "risk": "routine",
+  "auto_merge": true
+}

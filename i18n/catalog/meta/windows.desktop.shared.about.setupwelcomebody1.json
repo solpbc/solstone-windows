@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. the solstone app takes in what you share with it, and all of it goes into your journal.",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.about.setupwelcomebody1.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 174,
+  "source_revision": "3cad74fd1f0dee4b9f1b2429a347722fff8e231a2721a20ecd42b34484c7ce09",
+  "risk": "routine",
+  "auto_merge": true
+}

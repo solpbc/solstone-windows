@@ -231,7 +231,7 @@ pub fn render_journal_line(
             now_epoch_secs,
         }
     };
-    render_line(
+    render_display_line(
         "journal",
         version,
         facts.and_then(|facts| facts.build.as_deref()),
@@ -320,7 +320,7 @@ pub fn windows_arch(native_machine: Option<u16>) -> Option<&'static str> {
 pub fn render_windows_app_line(package_version: &str, observation: &WindowsObservation) -> String {
     let os_version = windows_os_version(observation.build_number.as_deref());
     let arch = windows_arch(observation.native_machine);
-    render_line(
+    render_display_line(
         "windows app",
         Some(package_version),
         None,
@@ -476,6 +476,170 @@ fn form_encode(value: &str) -> String {
         }
     }
     encoded
+}
+
+/// Render display facts separately from the native protocol's English base line.
+fn render_display_line(
+    name: &str,
+    version: Option<&str>,
+    build: Option<&str>,
+    os: Option<&str>,
+    os_version: Option<&str>,
+    arch: Option<&str>,
+    freshness: Freshness,
+) -> String {
+    let Some(version) = version.map(normalize_version).filter(|v| !v.is_empty()) else {
+        return if name == "journal" {
+            localized_unknown_journal_line()
+        } else {
+            name.to_string()
+        };
+    };
+    let label = if name == "journal" {
+        crate::i18n::message("windows.about.journal", &[])
+    } else {
+        crate::i18n::message("windows.about.app", &[])
+    };
+    let platform = [os, os_version]
+        .into_iter()
+        .flatten()
+        .filter(|v| !v.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let build = build.filter(|v| !v.is_empty());
+    let arch = arch.filter(|v| !v.is_empty()).map(normalize_arch);
+    let mask = usize::from(build.is_some())
+        + 2 * usize::from(!platform.is_empty())
+        + 4 * usize::from(arch.is_some());
+    let line = match mask {
+        0 => crate::i18n::message(
+            "windows.about.line0",
+            &[
+                ("label", crate::i18n::Value::String(&label)),
+                ("version", crate::i18n::Value::String(version)),
+            ],
+        ),
+        1 => crate::i18n::message(
+            "windows.about.line1",
+            &[
+                ("label", crate::i18n::Value::String(&label)),
+                ("version", crate::i18n::Value::String(version)),
+                (
+                    "build",
+                    crate::i18n::Value::String(build.unwrap_or_default()),
+                ),
+            ],
+        ),
+        2 => crate::i18n::message(
+            "windows.about.line2",
+            &[
+                ("label", crate::i18n::Value::String(&label)),
+                ("version", crate::i18n::Value::String(version)),
+                ("platform", crate::i18n::Value::String(&platform)),
+            ],
+        ),
+        3 => crate::i18n::message(
+            "windows.about.line3",
+            &[
+                ("label", crate::i18n::Value::String(&label)),
+                ("version", crate::i18n::Value::String(version)),
+                (
+                    "build",
+                    crate::i18n::Value::String(build.unwrap_or_default()),
+                ),
+                ("platform", crate::i18n::Value::String(&platform)),
+            ],
+        ),
+        4 => crate::i18n::message(
+            "windows.about.line4",
+            &[
+                ("label", crate::i18n::Value::String(&label)),
+                ("version", crate::i18n::Value::String(version)),
+                ("arch", crate::i18n::Value::String(arch.unwrap_or_default())),
+            ],
+        ),
+        5 => crate::i18n::message(
+            "windows.about.line5",
+            &[
+                ("label", crate::i18n::Value::String(&label)),
+                ("version", crate::i18n::Value::String(version)),
+                (
+                    "build",
+                    crate::i18n::Value::String(build.unwrap_or_default()),
+                ),
+                ("arch", crate::i18n::Value::String(arch.unwrap_or_default())),
+            ],
+        ),
+        6 => crate::i18n::message(
+            "windows.about.line6",
+            &[
+                ("label", crate::i18n::Value::String(&label)),
+                ("version", crate::i18n::Value::String(version)),
+                ("platform", crate::i18n::Value::String(&platform)),
+                ("arch", crate::i18n::Value::String(arch.unwrap_or_default())),
+            ],
+        ),
+        7 => crate::i18n::message(
+            "windows.about.line7",
+            &[
+                ("label", crate::i18n::Value::String(&label)),
+                ("version", crate::i18n::Value::String(version)),
+                (
+                    "build",
+                    crate::i18n::Value::String(build.unwrap_or_default()),
+                ),
+                ("platform", crate::i18n::Value::String(&platform)),
+                ("arch", crate::i18n::Value::String(arch.unwrap_or_default())),
+            ],
+        ),
+        _ => unreachable!(),
+    };
+    if let Freshness::Stale {
+        seen_at_epoch_secs: Some(seen),
+        now_epoch_secs: now,
+    } = freshness
+    {
+        if seen <= now {
+            let age = display_relative_age(now - seen);
+            return crate::i18n::message(
+                "windows.about.lastseen",
+                &[
+                    ("line", crate::i18n::Value::String(&line)),
+                    ("age", crate::i18n::Value::String(&age)),
+                ],
+            );
+        }
+    }
+    line
+}
+
+pub fn localized_unknown_journal_line() -> String {
+    crate::i18n::message("windows.about.unknown", &[])
+}
+
+fn display_relative_age(secs: u64) -> String {
+    if secs < 60 {
+        return crate::i18n::message("windows.about.justnow", &[]);
+    }
+    let (id, count) = if secs < 3600 {
+        ("minute", secs / 60)
+    } else if secs < 86400 {
+        ("hour", secs / 3600)
+    } else {
+        ("day", secs / 86400)
+    };
+    let key = match id {
+        "minute" => "windows.about.minuteago",
+        "hour" => "windows.about.hourago",
+        _ => "windows.about.dayago",
+    };
+    crate::i18n::message(
+        key,
+        &[(
+            "count",
+            crate::i18n::Value::Cardinal(count.min(i32::MAX as u64) as i64),
+        )],
+    )
 }
 
 #[cfg(test)]

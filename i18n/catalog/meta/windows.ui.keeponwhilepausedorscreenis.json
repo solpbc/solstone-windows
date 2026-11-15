@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. keep on while paused or screen is off",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 74,
+  "source_revision": "3d166d9921bb5f9e77b1c8065e7b8242fb3320a83c6f5f5f664e68891c73f72c",
+  "risk": "routine",
+  "auto_merge": true
+}

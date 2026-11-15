@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. read the logs below, then choose whether to save a copy.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 112,
+  "source_revision": "98e5f6f38420fe9c17d0ca1b926408ae59d8883a04e65beca4a56f2735a39793",
+  "risk": "routine",
+  "auto_merge": true
+}

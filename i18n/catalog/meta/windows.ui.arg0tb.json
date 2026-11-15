@@ -1,0 +1,21 @@
+{
+  "description": "{arg0} tb",
+  "context": "The Windows app: UI storage facts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "79e18a80ea42eb109b5f245509c62d1629259ab8894cadf8732f50a6ea95b8ca",
+  "risk": "routine",
+  "auto_merge": true
+}

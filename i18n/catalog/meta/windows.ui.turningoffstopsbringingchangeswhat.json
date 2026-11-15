@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. turning this off stops bringing in changes. what's already in your journal stays there,\u2026",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 314,
+  "source_revision": "55ba4dc07e32c9830a053f93b6dfbf376bbc6161fea315198cd182febc9bfeda",
+  "risk": "routine",
+  "auto_merge": true
+}

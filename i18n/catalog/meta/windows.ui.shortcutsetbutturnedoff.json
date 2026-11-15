@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. shortcut set but turned off",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 54,
+  "source_revision": "b81b2bd8e82ccd342076e0a828f0757b126a37d9aacd6ddd9a4c5d7d46ff3e68",
+  "risk": "routine",
+  "auto_merge": true
+}

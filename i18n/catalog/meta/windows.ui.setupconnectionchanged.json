@@ -1,0 +1,16 @@
+{
+  "description": "setup connection changed",
+  "context": "The Windows app: setup action error display. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "6b8f2976a7c8f97455093810a112c58d2b2566bd240615e8c7b752ff68ea99e9",
+  "risk": "routine",
+  "auto_merge": true
+}

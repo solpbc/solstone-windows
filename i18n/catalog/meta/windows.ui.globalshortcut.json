@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. global shortcut",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "3c2a7e1fb561c3f19baf6be1e71062614a3ffc095eb630a94354618d52af373c",
+  "risk": "routine",
+  "auto_merge": true
+}

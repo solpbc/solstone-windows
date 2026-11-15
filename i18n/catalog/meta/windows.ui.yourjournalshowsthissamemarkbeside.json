@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. your journal shows this same mark beside the pairing link. it should match, exactly.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 168,
+  "source_revision": "9838bcb15ce4116edd7787beeb875b097dbbf153e7f7b897c7fac390114fc32c",
+  "risk": "routine",
+  "auto_merge": true
+}

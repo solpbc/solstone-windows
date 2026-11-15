@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this connection could not finish. try again, or paste a new pairing link from your jour\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 182,
+  "source_revision": "b0f776426ea3a7df7f5723f490d4d2a34d9b0760cf18ae64e989876e5a8eb889",
+  "risk": "routine",
+  "auto_merge": true
+}

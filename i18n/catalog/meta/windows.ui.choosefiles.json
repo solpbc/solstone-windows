@@ -1,0 +1,16 @@
+{
+  "description": "choose files\u2026",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "4ed2a940f578c3117575f2f607ae63806602b573aa501bbaa7534f8ec56fae2d",
+  "risk": "routine",
+  "auto_merge": true
+}

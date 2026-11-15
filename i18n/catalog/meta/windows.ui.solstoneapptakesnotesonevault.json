@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. the solstone app takes in the notes in one vault on this computer. all of them go into \u2026",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 312,
+  "source_revision": "9fd1e62b84dbd35ee015b016b893cc607fb15e712b6b666453c4e0b90fd0c046",
+  "risk": "routine",
+  "auto_merge": true
+}

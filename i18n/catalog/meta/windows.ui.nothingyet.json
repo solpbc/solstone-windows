@@ -1,0 +1,16 @@
+{
+  "description": "nothing yet",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "b8cc78a7cc82212e26afce2688cfe848b0036c57f7125fd147e407388862783b",
+  "risk": "routine",
+  "auto_merge": true
+}

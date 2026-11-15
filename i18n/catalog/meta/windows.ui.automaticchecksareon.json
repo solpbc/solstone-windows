@@ -1,0 +1,16 @@
+{
+  "description": "automatic checks are on",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "bb5cf8ffc94a9a1b51cffd0f0f03eb7c0b4170b2ccbef06bf469760fd9aa84c8",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this PC couldn't read its saved connection. anything waiting to send hasn't been removed.",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.storageunavailablebody.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 178,
+  "source_revision": "9ca225129cd2b5ef04f3e5ac29a5e715b1a85115448c91378159fc3c696dd191",
+  "risk": "routine",
+  "auto_merge": true
+}

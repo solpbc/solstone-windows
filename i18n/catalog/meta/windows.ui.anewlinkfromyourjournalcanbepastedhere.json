@@ -1,0 +1,16 @@
+{
+  "description": "a new link from your journal can be pasted here.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 96,
+  "source_revision": "71d2fa9cd685f8c8ea6528928ce1c829597c1b0188a037fd948592c0414be8a7",
+  "risk": "routine",
+  "auto_merge": true
+}

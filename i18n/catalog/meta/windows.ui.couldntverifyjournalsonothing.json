@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. couldn't verify your journal, so nothing connected. try again, or paste a pairing link.",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 174,
+  "source_revision": "fda39567f60d2750c2a0d2c71155ba021bcd24861ffc79f4d3c75f16d044c648",
+  "risk": "routine",
+  "auto_merge": true
+}

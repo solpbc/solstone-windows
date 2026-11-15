@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this setup link could not be used. return to your journal for a new link, or paste a pa\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 206,
+  "source_revision": "97b5fd88d0c4ef7562d8915a6e2026885824429572129be9d8166d0e91900b53",
+  "risk": "routine",
+  "auto_merge": true
+}

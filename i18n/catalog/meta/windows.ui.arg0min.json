@@ -1,0 +1,21 @@
+{
+  "description": "{arg0} min",
+  "context": "The Windows app: crates/observer-model/src/tray_status.rs. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "a7683ea9e40233b04d02b222e06a0613c436562a50eec3ef9eb242e16fb59148",
+  "risk": "routine",
+  "auto_merge": true
+}

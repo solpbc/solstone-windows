@@ -1,0 +1,16 @@
+{
+  "description": "not",
+  "context": "The Windows app: ui/src/mark.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "035af29aa4ec6e1877c44b30f5882837cf6cad855b68438e45b9e0a60dbb6d2c",
+  "risk": "routine",
+  "auto_merge": true
+}

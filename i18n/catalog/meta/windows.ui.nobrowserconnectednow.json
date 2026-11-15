@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. no browser connected now",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "b8fb7202213e6a3f263c51a56b9339384f3b32b2fbdb93ebf53ac8228a9dc9c3",
+  "risk": "routine",
+  "auto_merge": true
+}

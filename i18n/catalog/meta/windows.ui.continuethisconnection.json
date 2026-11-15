@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. continue this connection",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "4d8914e5b50a0387efb61c2a04ff4fd09117c87fe3fa4003f2287f23963f6ba2",
+  "risk": "routine",
+  "auto_merge": true
+}

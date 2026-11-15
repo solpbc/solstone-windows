@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. can't save on this PC",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "493ca130fe38e6fc4aba316fb89f02dfd834b5c8c425e6f0a483b20e65826959",
+  "risk": "routine",
+  "auto_merge": true
+}

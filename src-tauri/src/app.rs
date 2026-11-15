@@ -868,7 +868,7 @@ pub fn run(
             if let Ok(mut snapshot) = sync.lock() {
                 snapshot.about_app_line = about_app_line;
                 if snapshot.journal_display_line.is_empty() {
-                    snapshot.journal_display_line = observer_model::about::unknown_journal_line();
+                    snapshot.journal_display_line = observer_model::about::localized_unknown_journal_line();
                 }
                 snapshot.about_block = observer_model::about::compose_about_block(
                     &snapshot.about_app_line,

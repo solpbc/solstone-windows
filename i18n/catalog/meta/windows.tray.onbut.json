@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. on, but \u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "needs",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "3bcce019697836e1ad6ccc6c7ca45ddd6cb30f58a20a5c6d4c797964d12b9a40",
+  "risk": "routine",
+  "auto_merge": true
+}

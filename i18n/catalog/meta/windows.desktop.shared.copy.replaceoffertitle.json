@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. is this replacing one of your devices?",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.replaceoffertitle.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 76,
+  "source_revision": "fd0babad8682ccd12546c8baa5bd57c964602bb27d7275cdd204d3b21940e4dc",
+  "risk": "routine",
+  "auto_merge": true
+}

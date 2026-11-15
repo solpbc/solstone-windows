@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this PC can't connect to your journal with its saved pairing. get a new pairing link fr\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 236,
+  "source_revision": "48862927275a79fdd68165332d889f917037071b5f40eea9ea55809f6f043fc7",
+  "risk": "routine",
+  "auto_merge": true
+}

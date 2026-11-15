@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. getting this PC ready",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "4b3f1095f2ad16d2a5ba39ca56b5d95c29b9f981db057f4ee991d731db679770",
+  "risk": "routine",
+  "auto_merge": true
+}

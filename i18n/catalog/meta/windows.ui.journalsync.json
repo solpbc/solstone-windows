@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. journal sync",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "99708d9f0aa6d5b6e26ebfc95e92b54853493b79a59bd8abfaadab0accd0618b",
+  "risk": "routine",
+  "auto_merge": true
+}

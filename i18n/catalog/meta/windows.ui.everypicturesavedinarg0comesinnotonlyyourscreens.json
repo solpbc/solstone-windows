@@ -1,0 +1,21 @@
+{
+  "description": "every picture saved in {arg0} comes in, not only your screenshots.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 132,
+  "source_revision": "780425aa70e4afc90c876cfafbcc7334a2e6c2032701c9e02f3686d503b91fe3",
+  "risk": "routine",
+  "auto_merge": true
+}

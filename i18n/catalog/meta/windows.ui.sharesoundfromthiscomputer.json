@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. share sound from this PC",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "d64ddb88db778e4ed2db9af21c522474e89f7d2a99d4381a522e9daacb203c80",
+  "risk": "routine",
+  "auto_merge": true
+}

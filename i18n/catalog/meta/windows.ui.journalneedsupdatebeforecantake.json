@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. your journal needs an update before it can take these notes. they're waiting on this co\u2026",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 188,
+  "source_revision": "610354926763ccfaf45844e5e66ebe7ebe720ef915df4bbca5e0c8e656f82359",
+  "risk": "routine",
+  "auto_merge": true
+}

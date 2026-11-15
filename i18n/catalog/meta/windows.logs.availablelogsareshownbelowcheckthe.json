@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. available logs are shown below. check the notes for gaps before saving a copy.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 156,
+  "source_revision": "7d35c7e549bc4f97c602028886816e011992ed125bd289e6f1ef91d5d87ff53e",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,21 @@
+{
+  "description": "Whole message: windows.pill.heldwaiting",
+  "context": "Windows app display. Preserve the exact English text, arguments and state distinction.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "waiting",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "2b1eb8d29e26d6aa79c60efabf8fa0fcb191bb2309d4aa24097b7bbda0362338",
+  "risk": "routine",
+  "auto_merge": true
+}

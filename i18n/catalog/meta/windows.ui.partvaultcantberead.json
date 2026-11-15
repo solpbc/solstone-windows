@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. part of this vault can't be read. check the permissions on the folders inside it. the r\u2026",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 268,
+  "source_revision": "ba558d54cb92a7c2e9077594bbf545cdfe3a15aa7c826f4fb29d3303d61d8970",
+  "risk": "consent",
+  "auto_merge": false
+}

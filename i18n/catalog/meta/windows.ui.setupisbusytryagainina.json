@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. setup is busy. try again in a moment.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 74,
+  "source_revision": "8048af1662fcc8721efbc100c04dbc90fff63f8c0a63f526445ad4312c012041",
+  "risk": "routine",
+  "auto_merge": true
+}

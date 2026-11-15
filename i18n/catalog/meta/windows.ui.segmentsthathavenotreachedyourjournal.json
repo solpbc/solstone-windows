@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. segments that have not reached your journal yet are never deleted.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 132,
+  "source_revision": "f8b43ac0a450c39166e73746d097425856f8af872876aad400ed5d2f07c13df0",
+  "risk": "routine",
+  "auto_merge": true
+}

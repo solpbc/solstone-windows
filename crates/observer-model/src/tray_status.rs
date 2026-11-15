@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
+use crate::i18n::{message, Value};
 use crate::{
     AppPhase, ErrorReason, HealthDump, JournalLink, MarkColor, MarkIconSpec, MarkRenderSpec,
     PairingPhase, PauseSnapshot, SourceKind, SourceReport, SourceState, StorageHealth,
@@ -112,9 +113,14 @@ pub fn menu_status_line(dump: &crate::HealthDump) -> String {
             .as_ref()
             .and_then(|pause| pause.seconds_remaining);
         return match paused_menu_status(seconds) {
-            PausedMenuStatus::UntilResume => "paused until you resume".to_string(),
-            PausedMenuStatus::LessThanAMinute => "paused, less than a minute left".to_string(),
-            PausedMenuStatus::Minutes(mins) => format!("paused, {mins} min left"),
+            PausedMenuStatus::UntilResume => message("windows.ui.pauseduntilyouresume", &[]),
+            PausedMenuStatus::LessThanAMinute => {
+                message("windows.ui.pausedlessthanaminuteleft", &[])
+            }
+            PausedMenuStatus::Minutes(mins) => message(
+                "windows.ui.pausedarg0minleft",
+                &[("arg0", Value::String(&(mins).to_string()))],
+            ),
         };
     }
     let waiting = dump
@@ -122,25 +128,34 @@ pub fn menu_status_line(dump: &crate::HealthDump) -> String {
         .upload
         .pending_segments
         .saturating_add(dump.sync.imports_waiting);
-    let count = if waiting == 0 {
-        String::new()
-    } else {
-        format!(" · {waiting} waiting")
-    };
     match dump.sync.pairing.phase {
-        PairingPhase::NotPaired | PairingPhase::Failed => "not paired".to_string(),
-        PairingPhase::Pairing => "connecting…".to_string(),
+        PairingPhase::NotPaired | PairingPhase::Failed => {
+            message("windows.desktop.shared.app.notpaired", &[])
+        }
+        PairingPhase::Pairing => message("windows.ui.connecting", &[]),
         PairingPhase::AwaitingConfirmation => {
             if waiting == 0 {
-                "confirm the mark".to_string()
+                message("windows.ui.confirmthemark", &[])
             } else {
-                format!("confirm the mark{count}")
+                message(
+                    "windows.ui.confirmthemarkarg0waiting",
+                    &[("arg0", Value::String(&(waiting).to_string()))],
+                )
             }
         }
         PairingPhase::Paired => match dump.sync.journal_link {
-            Some(crate::JournalLink::Offline) => format!("offline{count}"),
-            Some(crate::JournalLink::Connected) => "connected".to_string(),
-            Some(crate::JournalLink::Connecting) | None => "connecting…".to_string(),
+            Some(crate::JournalLink::Offline) => {
+                if waiting == 0 {
+                    message("windows.ui.offline", &[])
+                } else {
+                    message(
+                        "windows.ui.offlinearg0waiting",
+                        &[("arg0", Value::String(&(waiting).to_string()))],
+                    )
+                }
+            }
+            Some(crate::JournalLink::Connected) => message("windows.ui.connected", &[]),
+            Some(crate::JournalLink::Connecting) | None => message("windows.ui.connecting", &[]),
         },
     }
 }
@@ -221,8 +236,6 @@ fn frame_chip(name: &str, hex: &str) -> MarkIconSpec {
     }
 }
 
-const STORAGE_FAULT_FOR_OWNER: &str = "can't save on this PC";
-
 /// What the tray says stopped, in owner words. A fault's detail is a diagnostic
 /// for the logs and the health dump, never shown here.
 pub fn owner_fault_detail(
@@ -231,7 +244,7 @@ pub fn owner_fault_detail(
     is_enabled: impl Fn(crate::SourceKind) -> bool,
 ) -> Option<String> {
     if storage.is_some() {
-        return Some(STORAGE_FAULT_FOR_OWNER.to_string());
+        return Some(message("windows.tray.storagefaultforowner", &[]));
     }
 
     sources
@@ -239,9 +252,12 @@ pub fn owner_fault_detail(
         .filter(|source| is_enabled(source.kind))
         .find_map(|source| match &source.state {
             SourceState::Faulted { reason, .. } if *reason != ErrorReason::AccessDenied => {
-                Some(format!(
-                    "the {} stopped going into your journal",
-                    source_owner_name(source.kind)
+                Some(message(
+                    "windows.tray.thestoppedgoingintoyourjournal",
+                    &[(
+                        "value",
+                        Value::String(&(source_owner_name(source.kind)).to_string()),
+                    )],
                 ))
             }
             _ => None,
@@ -269,12 +285,12 @@ pub fn permission_blocked(
 }
 
 /// How a source is named in owner-visible copy.
-pub fn source_owner_name(kind: SourceKind) -> &'static str {
+pub fn source_owner_name(kind: SourceKind) -> String {
     match kind {
-        SourceKind::Screen => "screen",
-        SourceKind::SystemAudio => "system audio",
-        SourceKind::Mic => "microphone",
-        SourceKind::DesktopActivity => "desktop activity",
+        SourceKind::Screen => message("windows.ui.screen", &[]),
+        SourceKind::SystemAudio => message("windows.desktop.shared.copy.audiosourcesystem", &[]),
+        SourceKind::Mic => message("windows.ui.microphone", &[]),
+        SourceKind::DesktopActivity => message("windows.ui.desktopactivity", &[]),
     }
 }
 
@@ -292,12 +308,18 @@ pub fn classify_tray(
         (AppPhase::Idle | AppPhase::Starting | AppPhase::Observing, Some(kind))
             if !deliberate_off =>
         {
-            let needs = format!(
-                "the {} needs permission in windows settings",
-                source_owner_name(kind)
+            let needs = message(
+                "windows.tray.theneedspermissioninwindowssettings",
+                &[(
+                    "value",
+                    Value::String(&(source_owner_name(kind)).to_string()),
+                )],
             );
             let tooltip = if app == AppPhase::Observing {
-                format!("on, but {needs}")
+                message(
+                    "windows.tray.onbut",
+                    &[("needs", Value::String(&(needs).to_string()))],
+                )
             } else {
                 needs
             };
@@ -314,10 +336,22 @@ pub fn classify_tray(
     match sync.unknown_journals.first() {
         Some(sighting) => {
             let notice = match &sighting.address {
-                Some(address) => format!("unknown journal seen at {address}"),
-                None => "unknown journal seen through the relay".to_string(),
+                Some(address) => message(
+                    "windows.tray.unknownjournalseenat",
+                    &[("name", Value::String(&(address).to_string()))],
+                ),
+                None => message("windows.tray.unknownjournalseenthroughtherelay", &[]),
             };
-            (visual, format!("{tooltip}\n{notice}"))
+            (
+                visual,
+                message(
+                    "windows.ui.arg0arg1",
+                    &[
+                        ("arg0", Value::String(&(tooltip).to_string())),
+                        ("arg1", Value::String(&(notice).to_string())),
+                    ],
+                ),
+            )
         }
         None => (visual, tooltip),
     }
@@ -333,49 +367,72 @@ fn classify_phase(
     match app {
         AppPhase::Idle => {
             if deliberate_off {
-                (TrayVisual::Off, "off".to_string())
+                (
+                    TrayVisual::Off,
+                    message("windows.desktop.shared.app.microphonemodeoff", &[]),
+                )
             } else {
-                (TrayVisual::Connecting, "connecting".to_string())
+                (
+                    TrayVisual::Connecting,
+                    message("windows.ui.connectingx3d6df245", &[]),
+                )
             }
         }
-        AppPhase::Starting => (TrayVisual::Connecting, "starting…".to_string()),
+        AppPhase::Starting => (
+            TrayVisual::Connecting,
+            message("windows.tray.starting", &[]),
+        ),
         AppPhase::Paused => {
             let tooltip = match pause.and_then(|p| p.seconds_remaining) {
-                Some(secs) => format!("paused, {} left", format_remaining(secs)),
-                None => "paused".to_string(),
+                Some(secs) => message(
+                    "windows.tray.pausedleft",
+                    &[(
+                        "value",
+                        Value::String(&(format_remaining(secs)).to_string()),
+                    )],
+                ),
+                None => message("windows.ui.pausedxa7a9dc5b", &[]),
             };
             (TrayVisual::Paused, tooltip)
         }
         AppPhase::Error => match fault_detail.filter(|detail| !detail.is_empty()) {
             Some(detail) => (TrayVisual::Error, detail.to_string()),
-            None => (TrayVisual::Error, "needs a restart".to_string()),
+            None => (
+                TrayVisual::Error,
+                message("windows.tray.needsarestart", &[]),
+            ),
         },
         AppPhase::Observing => match sync.pairing.phase {
-            PairingPhase::Pairing => (TrayVisual::Connecting, "connecting".to_string()),
+            PairingPhase::Pairing => (
+                TrayVisual::Connecting,
+                message("windows.ui.connectingx3d6df245", &[]),
+            ),
             PairingPhase::AwaitingConfirmation if sync.pairing.finish_connecting => (
                 TrayVisual::Paused,
-                "finish connecting to your journal".to_string(),
+                message("windows.ui.finishconnectingtoyourjournal", &[]),
             ),
             PairingPhase::AwaitingConfirmation => (
                 TrayVisual::Paused,
-                "solstone · waiting for you to confirm your journal's mark".to_string(),
+                message("windows.tray.solstonewaitingforyoutoconfirmyour", &[]),
             ),
             PairingPhase::NotPaired | PairingPhase::Failed => (
                 TrayVisual::Paused,
-                "on, not connected to a journal".to_string(),
+                message("windows.tray.onnotconnectedtoajournal", &[]),
             ),
             // The presented link, never the upload counters: see `journal_link`.
             PairingPhase::Paired => match sync.journal_link {
                 Some(JournalLink::Connected) => (
                     TrayVisual::Healthy,
-                    "on, connected to your journal".to_string(),
+                    message("windows.tray.onconnectedtoyourjournal", &[]),
                 ),
-                Some(JournalLink::Offline) => {
-                    (TrayVisual::Offline, "on, saved on this PC".to_string())
-                }
-                Some(JournalLink::Connecting) | None => {
-                    (TrayVisual::Connecting, "connecting".to_string())
-                }
+                Some(JournalLink::Offline) => (
+                    TrayVisual::Offline,
+                    message("windows.tray.onsavedonthispc", &[]),
+                ),
+                Some(JournalLink::Connecting) | None => (
+                    TrayVisual::Connecting,
+                    message("windows.ui.connectingx3d6df245", &[]),
+                ),
             },
         },
     }
@@ -386,15 +443,27 @@ fn classify_phase(
 fn format_remaining(secs: u64) -> String {
     let mins = secs / 60;
     if mins == 0 {
-        "less than a minute".to_string()
+        message("windows.tray.lessthanaminute", &[])
     } else if mins < 60 {
-        format!("{mins} min")
+        message(
+            "windows.ui.arg0min",
+            &[("arg0", Value::String(&(mins).to_string()))],
+        )
     } else {
         let (h, m) = (mins / 60, mins % 60);
         if m == 0 {
-            format!("{h} hr")
+            message(
+                "windows.ui.arg0hr",
+                &[("arg0", Value::String(&(h).to_string()))],
+            )
         } else {
-            format!("{h} hr {m} min")
+            message(
+                "windows.tray.hrmin",
+                &[
+                    ("count", Value::Cardinal((h) as i64)),
+                    ("count2", Value::Cardinal((m) as i64)),
+                ],
+            )
         }
     }
 }
@@ -590,7 +659,7 @@ mod tests {
             false,
         );
         assert_eq!(visual, TrayVisual::Error);
-        assert!(tooltip.contains(source_owner_name(SourceKind::Screen)));
+        assert!(tooltip.contains(&source_owner_name(SourceKind::Screen)));
         assert!(!tooltip.contains("graphics capture"));
     }
 
@@ -830,7 +899,7 @@ mod tests {
         ];
         // Screen is disabled, mic is enabled -> names the mic
         let detail = owner_fault_detail(&sources, None, |k| k == SourceKind::Mic).unwrap();
-        assert!(detail.contains(source_owner_name(SourceKind::Mic)));
+        assert!(detail.contains(&source_owner_name(SourceKind::Mic)));
 
         // All disabled -> returns None
         let detail_none = owner_fault_detail(&sources, None, |_| false);

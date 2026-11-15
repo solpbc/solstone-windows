@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. pause",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.setup.wizardpausefailure.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "cd1ef0bb5f547aa6f4c366af08d82b1801ca8eb1a9c32b4de5bbd91dbad7f42a",
+  "risk": "routine",
+  "auto_merge": true
+}

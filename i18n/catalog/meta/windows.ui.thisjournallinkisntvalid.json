@@ -1,0 +1,16 @@
+{
+  "description": "this journal link isn't valid.",
+  "context": "The Windows app: src-tauri/src/journal_links.rs. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "ca0b1de6a6ac7c4c2fa541354811de9169154fe3a5d3095fbd6e1aca48eacc35",
+  "risk": "routine",
+  "auto_merge": true
+}

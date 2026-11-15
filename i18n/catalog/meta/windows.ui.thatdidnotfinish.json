@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. that did not finish",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "b48e48b4df68967b588cae12ed663264cb21e7d5f6f2b7e5900a3b010d901112",
+  "risk": "routine",
+  "auto_merge": true
+}

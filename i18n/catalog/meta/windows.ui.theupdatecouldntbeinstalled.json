@@ -1,0 +1,23 @@
+{
+  "description": " \u00b7 the update couldn't be installed",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "48352533d20acaaa96b22a859591890814feb671cce6d1736fec37d8d65fcec8",
+  "risk": "routine",
+  "auto_merge": true,
+  "protected_slots": [
+    {
+      "name": "leading",
+      "kind": "whitespace",
+      "value": " "
+    }
+  ]
+}

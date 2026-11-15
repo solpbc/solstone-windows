@@ -1,0 +1,16 @@
+{
+  "description": "setup unavailable",
+  "context": "The Windows app: setup action error display. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "b7f23b04d82982e9534f56be9b12f1604fb535a2499fc2827f31555dcbba1d20",
+  "risk": "routine",
+  "auto_merge": true
+}

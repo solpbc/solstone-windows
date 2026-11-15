@@ -3,6 +3,9 @@
 
 //! The native multiple-file dialog for import.
 
+#[cfg(windows)]
+use observer_model::i18n::message;
+
 use std::path::PathBuf;
 
 #[cfg(windows)]
@@ -47,7 +50,7 @@ pub fn choose_files(owner: isize) -> std::io::Result<Vec<PathBuf>> {
                     | FOS_NOCHANGEDIR,
             )
             .map_err(io_error)?;
-        let label = HSTRING::from("files");
+        let label = HSTRING::from(message("windows.ui.files", &[]));
         let pattern = HSTRING::from("*.pdf;*.txt;*.md;*.markdown;*.log;*.png;*.jpg;*.jpeg;*.gif;*.webp;*.mp3;*.m4a;*.aac;*.ogg;*.oga;*.opus;*.flac;*.wav;*.amr;*.aif;*.aiff");
         dialog
             .SetFileTypes(&[COMDLG_FILTERSPEC {

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. couldn't read the log files. try again.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 78,
+  "source_revision": "dc75d880b69d8be8041bbb261c29c864cbd21f50b63652f0a78aa0dc44510877",
+  "risk": "routine",
+  "auto_merge": true
+}

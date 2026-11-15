@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. a keyword, e.g. banking",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "a188e362de39a4d50b21ea86e7b00f9d78982ee6d21a06ec5b088824c34091b9",
+  "risk": "routine",
+  "auto_merge": true
+}

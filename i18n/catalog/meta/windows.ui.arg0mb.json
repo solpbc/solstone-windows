@@ -1,0 +1,21 @@
+{
+  "description": "{arg0} MB",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "7ebf73a80ce6ac9e016c44e1f05b0ee7d70f7727545b6d2e9c0e20cc64e9d441",
+  "risk": "routine",
+  "auto_merge": true
+}

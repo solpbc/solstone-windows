@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. paired with \u2026",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "126e52ad4ef9ad7fa7c95d67ebd1a55cf45532d0ea3eb78526160347e01d68ba",
+  "risk": "routine",
+  "auto_merge": true
+}

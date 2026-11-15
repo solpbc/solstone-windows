@@ -1,0 +1,21 @@
+{
+  "description": "Whole message: windows.pill.refusedwaiting",
+  "context": "Windows app display. Preserve the exact English text, arguments and state distinction.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "waiting",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "6b659b51700b9fc6bb9c5d18a007dd36500d2f69b743eebdfca6310cd940055d",
+  "risk": "routine",
+  "auto_merge": true
+}

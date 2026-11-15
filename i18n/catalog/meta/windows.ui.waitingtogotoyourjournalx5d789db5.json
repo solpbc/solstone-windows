@@ -1,0 +1,16 @@
+{
+  "description": "waiting to go to your journal.",
+  "context": "The Windows app: native dialogs and imported files. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "fa4f1e681e4d94e0046c73c89b464ebe14ea41310561d129d87a23cfcc765f8d",
+  "risk": "routine",
+  "auto_merge": true
+}

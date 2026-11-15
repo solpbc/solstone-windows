@@ -1,0 +1,16 @@
+{
+  "description": "failed to acquire setup lock",
+  "context": "The Windows app: setup action error display. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "b539940dbdb041e1bb9623e6ec37f657a949f78a9c8ce418af5bf43b236e6f23",
+  "risk": "routine",
+  "auto_merge": true
+}

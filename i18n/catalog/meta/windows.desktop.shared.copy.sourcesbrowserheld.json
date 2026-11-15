@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. new browser pages aren't being taken in right now.",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.sourcesbrowserheld.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 100,
+  "source_revision": "7f82a2d33f5cbb461d2847579110afeb66b709e7b86382d10e142c0e38a1ee70",
+  "risk": "routine",
+  "auto_merge": true
+}

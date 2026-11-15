@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. copy",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.about.textcontent.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "7080b571d8e9a243e0f5ee2d250e53b9578ef07310d7a048d070b490cf45621c",
+  "risk": "routine",
+  "auto_merge": true
+}

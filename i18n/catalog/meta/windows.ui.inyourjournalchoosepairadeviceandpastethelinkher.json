@@ -1,0 +1,16 @@
+{
+  "description": "in your journal, choose \"pair a device\" and paste the link here.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 128,
+  "source_revision": "4b0a34a37df7c7d64d68fcc1aa5ec7cf363062ed875e97ef3a1eabe2cec45525",
+  "risk": "routine",
+  "auto_merge": true
+}

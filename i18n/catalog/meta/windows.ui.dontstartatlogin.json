@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. don't start at login",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "abf62bb6aa0ace02210cca7b89777f9904ff20b52cfd2d49bbd6187f0c7f7d61",
+  "risk": "routine",
+  "auto_merge": true
+}

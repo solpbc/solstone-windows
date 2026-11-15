@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. windows from these apps never reach your journal.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 98,
+  "source_revision": "9562b45a036bf07f4a0d7e6c81cb79b8e8d224f662806d481e0aa1f4384adfc7",
+  "risk": "routine",
+  "auto_merge": true
+}

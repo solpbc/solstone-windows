@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. another pairing link could not be added.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "f544a4dc64868d69a92c88d7b6138889ea7209f7f1bb57c55df24f8f4122b03b",
+  "risk": "routine",
+  "auto_merge": true
+}

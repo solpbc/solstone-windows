@@ -1,0 +1,25 @@
+{
+  "description": "{arg0} of {arg1} screenshots in your journal",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    },
+    {
+      "name": "arg1",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 88,
+  "source_revision": "7a9e7f3a61bd55fdfd1f77e53f15edd4b60d38deae231374f78b51cdf444ad8d",
+  "risk": "routine",
+  "auto_merge": true
+}

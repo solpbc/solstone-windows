@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. every month",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.updates.everymonth.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "c26f646d455b3a81d5ecf13a6ea6c7348b89f7dab62b5851843cbd95facaefe0",
+  "risk": "routine",
+  "auto_merge": true
+}

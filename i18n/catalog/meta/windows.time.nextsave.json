@@ -1,0 +1,25 @@
+{
+  "description": "Whole message: windows.time.nextsave",
+  "context": "Windows app display. Preserve the exact English text, arguments and state distinction.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "minutes",
+      "type": "string"
+    },
+    {
+      "name": "seconds",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "33a178ad2d5036e7c3192b3ea0a5342ea4bee5e1070771c944fb7bee899f43bb",
+  "risk": "routine",
+  "auto_merge": true
+}

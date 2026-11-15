@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. no input device",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "07d88dd029e8d1f8716aeb5a79580fa802da107cb0256c823f99a7a29ddbb7b2",
+  "risk": "routine",
+  "auto_merge": true
+}

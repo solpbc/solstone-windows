@@ -1,0 +1,16 @@
+{
+  "description": "august",
+  "context": "The Windows app: ui/src/shell/derive.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "77c204ed67a4b5b533cbce211c6ff73fc21f9f24615b7cf6d78b98028781a860",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this reads the window title and matches private windows in Edge and Firefox. that was c\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 1006,
+  "source_revision": "1bc229469dbd85b53e7ea9f872cebe30d33245f744090d01b258cb1b1c36b19a",
+  "risk": "routine",
+  "auto_merge": true
+}

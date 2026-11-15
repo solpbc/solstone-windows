@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. open source, local-first.",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.about.opensourcelocalfirst.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 50,
+  "source_revision": "c6dd9a4ea9f7ee0cc0622978e3c65dc1bc4de0c163bfa1d0eaa6ba76c6f321ff",
+  "risk": "routine",
+  "auto_merge": true
+}

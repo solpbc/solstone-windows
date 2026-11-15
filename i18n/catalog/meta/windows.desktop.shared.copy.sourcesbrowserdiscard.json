@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. discard waiting browser pages",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.sourcesbrowserdiscard.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 58,
+  "source_revision": "1dcc5d3596ee8e00a0c4ee69f5add4d39b7445460131de0cfcb1098bf89c55d5",
+  "risk": "routine",
+  "auto_merge": true
+}

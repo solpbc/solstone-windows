@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. screen preview",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "103d1afa10b62392a682ba44f56cadaa44daad82286f2c47efc7ee14052f019a",
+  "risk": "routine",
+  "auto_merge": true
+}

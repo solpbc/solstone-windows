@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. relaunch to install",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "57295b849e5c24f07553f326241121ce1fba015e405dd6b3361747c61f6c3ad5",
+  "risk": "routine",
+  "auto_merge": true
+}

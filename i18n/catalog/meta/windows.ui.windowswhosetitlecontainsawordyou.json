@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. windows whose title contains a word you choose never reach your journal.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 144,
+  "source_revision": "573381264f5ecdc444b6ba785647128edf6e9e4d30552b1b6fb8ce14faf0676d",
+  "risk": "routine",
+  "auto_merge": true
+}

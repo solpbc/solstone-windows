@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. that folder isn't an Obsidian vault, so nothing was sent.",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 114,
+  "source_revision": "524889deaa619deaaa5ecea49222b82dbb255fa811085a60f2b628c24e08b7a9",
+  "risk": "routine",
+  "auto_merge": true
+}

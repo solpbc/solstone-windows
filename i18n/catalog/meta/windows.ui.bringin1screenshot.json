@@ -1,0 +1,16 @@
+{
+  "description": "bring in 1 screenshot",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "5cc400dfd7d01885ba316a933981aacf758fdb28d8719828f2f9f4c42a57d045",
+  "risk": "routine",
+  "auto_merge": true
+}

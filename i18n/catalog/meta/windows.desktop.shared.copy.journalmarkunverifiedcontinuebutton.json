@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. continue anyway",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.journalmarkunverifiedcontinuebutton.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "4d7fc01c5b267830aaac9620b91dff8e45170e63af3b624cd03d614fe1587419",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. use this vault",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "7e057da9bd9cf14c1e5007f933e1e32931dce9104c02bd397e6a5f7df122865a",
+  "risk": "routine",
+  "auto_merge": true
+}

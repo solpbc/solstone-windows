@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. you said this mark doesn't match the one your journal shows, so this PC isn't paired. y\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 462,
+  "source_revision": "852b438ac96102afa6413a1dddbf3b7b6cdf990a8fa3b35e087e4dcb114cafbc",
+  "risk": "routine",
+  "auto_merge": true
+}

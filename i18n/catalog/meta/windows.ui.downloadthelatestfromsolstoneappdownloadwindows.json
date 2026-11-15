@@ -1,0 +1,16 @@
+{
+  "description": "download the latest from solstone.app/download/windows",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 108,
+  "source_revision": "eba994147bce516fdbf4328102890078eb63e58f47172147f8179db9369e8850",
+  "risk": "routine",
+  "auto_merge": true
+}

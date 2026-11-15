@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. kept on this PC, not reaching your journal right now",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 104,
+  "source_revision": "4b3bca6134c4f1600b510894d5479d0157690aa0a075008fc41a471bdf830c06",
+  "risk": "routine",
+  "auto_merge": true
+}

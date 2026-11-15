@@ -1,0 +1,25 @@
+{
+  "description": "Windows app. \u2026 \u00b7 \u2026",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.text.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    },
+    {
+      "name": "value2",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "9e28cce038890f9edddea8ad826e0071ffcfcb912b83418da417d7a1ba52f664",
+  "risk": "routine",
+  "auto_merge": true
+}

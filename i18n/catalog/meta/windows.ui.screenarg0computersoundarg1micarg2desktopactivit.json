@@ -1,0 +1,33 @@
+{
+  "description": "screen: {arg0} \u00b7 computer sound: {arg1} \u00b7 mic: {arg2} \u00b7 desktop activity: {arg3}",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    },
+    {
+      "name": "arg1",
+      "type": "string"
+    },
+    {
+      "name": "arg2",
+      "type": "string"
+    },
+    {
+      "name": "arg3",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 160,
+  "source_revision": "e7e9ababb30a7d6787d18dc53d9e996e6ab4adf0b29d1e36c59fbacecc84a790",
+  "risk": "routine",
+  "auto_merge": true
+}

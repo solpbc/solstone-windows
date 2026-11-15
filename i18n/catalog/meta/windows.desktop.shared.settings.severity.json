@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. ok",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.settings.severity.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "7215fe69aa21a2b073c5e6c8c18daaa73b91c9d619b7e8fb38d01d84f8d53a3f",
+  "risk": "routine",
+  "auto_merge": true
+}

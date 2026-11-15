@@ -1,0 +1,21 @@
+{
+  "description": "couldn't read {arg0} screenshots.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "27e08ddcb4cce1d6190c67abec34c31886617a1109992c446627ea72ee36769d",
+  "risk": "routine",
+  "auto_merge": true
+}

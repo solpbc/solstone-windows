@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. download deferred: connection status unknown",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 88,
+  "source_revision": "8fb810c54e1764227d7832cd08084aaa4362e52576975d820f8dd65ec9f16362",
+  "risk": "routine",
+  "auto_merge": true
+}

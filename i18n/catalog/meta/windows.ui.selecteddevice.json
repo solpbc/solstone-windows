@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. selected device",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "acbf8ef8a70d4cdce9ce63876a81e853d6698232e6d605b086f4a78606933d20",
+  "risk": "routine",
+  "auto_merge": true
+}

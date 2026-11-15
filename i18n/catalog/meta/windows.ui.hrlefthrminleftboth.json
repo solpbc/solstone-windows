@@ -1,0 +1,27 @@
+{
+  "description": "Windows app. \u2026 hr left",
+  "context": "the solstone app, speaking to the owner, in the Windows pause control. The code shows hours alone, or hours and minutes. Two units each pluralize. The portable profile allows one cardinal select. Split into an hours message and a minutes message, or format the duration before the string is translated.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "count",
+      "type": "cardinal",
+      "numeric_style": "ungrouped"
+    },
+    {
+      "name": "count2",
+      "type": "cardinal",
+      "numeric_style": "ungrouped"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 56,
+  "source_revision": "6249160a2e02f127cb792c4afdd79e900fe5cf602a67f566ea1a0c9d8cac4eb1",
+  "risk": "routine",
+  "auto_merge": true
+}

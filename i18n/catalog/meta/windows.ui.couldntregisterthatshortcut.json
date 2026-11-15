@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. couldn't register that shortcut",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 62,
+  "source_revision": "a6b6821869ee9e580381a808dc885630293a69d5368ddb316d264472336f8fef",
+  "risk": "routine",
+  "auto_merge": true
+}

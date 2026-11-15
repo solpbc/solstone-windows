@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. no shortcut set",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "34c619b78fe183de53447adf518136f78a462d9be8eecde5aa274f5c678ab9c1",
+  "risk": "routine",
+  "auto_merge": true
+}

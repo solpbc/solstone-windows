@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. the \u2026 stopped going into your journal",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 86,
+  "source_revision": "c768a1c158f4b61ca0819e17aed08c77d03d09e01bbbda70c261bdd82394e1b7",
+  "risk": "routine",
+  "auto_merge": true
+}

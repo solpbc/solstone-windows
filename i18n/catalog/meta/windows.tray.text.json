@@ -1,0 +1,25 @@
+{
+  "description": "Windows app. \u2026 \u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "tooltip",
+      "type": "string"
+    },
+    {
+      "name": "notice",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "6f0afbd24838077c7a64727f9a2aa7532ec2c6665421b794de012bda3b9356ce",
+  "risk": "routine",
+  "auto_merge": true
+}

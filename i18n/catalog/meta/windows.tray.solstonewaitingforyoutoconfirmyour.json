@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. solstone \u00b7 waiting for you to confirm your journal's mark",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 114,
+  "source_revision": "153b1627f6c025d5742353cfd5741278f5649cbe2ac8f3fc66add7218ac67ca8",
+  "risk": "routine",
+  "auto_merge": true
+}

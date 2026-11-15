@@ -1,0 +1,16 @@
+{
+  "description": "offline",
+  "context": "The Windows app: ui/src/shell/derive.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "26c08223707237777e26074e31b245efb7421c2db12eedce46ec68e1784ab3b4",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "while this is on, the solstone app takes in what's on your screen, and all of it goes into your journal.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 208,
+  "source_revision": "f1b6d88cfad6c09e7a9019dc6291ea4d474e1196302d05c0af9ded104e8df9fb",
+  "risk": "routine",
+  "auto_merge": true
+}

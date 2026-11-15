@@ -1,0 +1,16 @@
+{
+  "description": "there isn't enough room on this device",
+  "context": "The Windows app: native dialogs and imported files. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "f777ce5f6cb034722ed3c9240fc3ffb1d20a394ea9afa1d85964135c2516607d",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. connected to \u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "8ba992f9516f69a02ab5d4aa59283e5ba89f038b7a4e2ba72fc29e7f57247828",
+  "risk": "routine",
+  "auto_merge": true
+}

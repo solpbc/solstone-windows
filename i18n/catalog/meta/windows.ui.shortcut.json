@@ -1,0 +1,16 @@
+{
+  "description": "shortcut",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "46681c8ddcae01317d71072f2149e4520e8b809bb5e4590e8ca82cd153e3deac",
+  "risk": "routine",
+  "auto_merge": true
+}

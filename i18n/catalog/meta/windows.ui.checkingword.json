@@ -1,0 +1,16 @@
+{
+  "description": "checking\u2026",
+  "context": "Displayed source state; keep distinct from every other state. The code token stays untranslated.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "source_revision": "83b64f0c6dd04c120aa94a05a8730e94e84e78ae40e51a28cebcd4943e53b278",
+  "risk": "routine",
+  "auto_merge": true,
+  "max_length": 120
+}

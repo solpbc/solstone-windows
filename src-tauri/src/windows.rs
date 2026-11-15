@@ -29,12 +29,31 @@ const JOURNAL_READY_TIMEOUT: Duration = Duration::from_secs(45);
 /// Every window here shares one WebView2 user data folder, and WebView2 refuses to
 /// start a webview whose environment options differ from a webview already running
 /// in that folder. Every window takes its options from here so they always match.
-fn shared_webview_environment(
-    builder: WebviewWindowBuilder<'_, tauri::Wry, tauri::AppHandle>,
-) -> WebviewWindowBuilder<'_, tauri::Wry, tauri::AppHandle> {
-    builder
+fn shared_webview_environment<'a>(
+    app: &tauri::AppHandle,
+    builder: WebviewWindowBuilder<'a, tauri::Wry, tauri::AppHandle>,
+) -> tauri::Result<WebviewWindowBuilder<'a, tauri::Wry, tauri::AppHandle>> {
+    let builder = builder
         .additional_browser_args(WEBVIEW_ARGS)
-        .scroll_bar_style(ScrollBarStyle::FluentOverlay)
+        .scroll_bar_style(ScrollBarStyle::FluentOverlay);
+    let bootstrap = serde_json::json!({
+        "locale": observer_model::i18n::locale(),
+        "formatLocale": platform_win::locale::format_locale(),
+    });
+    let builder =
+        builder.initialization_script(format!("globalThis.__SOLSTONE_LOCALE__ = {bootstrap};"));
+    #[cfg(windows)]
+    let builder = {
+        // Tauri's default WebView2 UDF is appLocalDataDir. Keep it shared by all
+        // windows, matching the prior factory's profile and browser flags.
+        let directory = app.path().app_local_data_dir()?;
+        let environment = platform_win::locale::webview_environment(&directory, WEBVIEW_ARGS)
+            .map_err(|error| tauri::Error::Io(std::io::Error::other(error.to_string())))?;
+        builder.with_environment(environment)
+    };
+    #[cfg(not(windows))]
+    let _ = app;
+    Ok(builder)
 }
 
 fn caption_is_dark(window: &WebviewWindow) -> bool {
@@ -167,6 +186,27 @@ impl OpenJournalError {
 }
 
 fn open_settings_internal(app: &tauri::AppHandle, destination: &str) -> tauri::Result<()> {
+    let destination = destination.to_string();
+    on_ui_thread(app, move |app| build_settings(&app, &destination))
+}
+
+fn on_ui_thread(
+    app: &tauri::AppHandle,
+    build: impl FnOnce(tauri::AppHandle) -> tauri::Result<()> + Send + 'static,
+) -> tauri::Result<()> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let handle = app.clone();
+    // Tauri executes this inline when already on its main thread. Otherwise
+    // only the worker waits; WebView2 creation pumps callbacks on the UI STA.
+    app.run_on_main_thread(move || {
+        let _ = sender.send(build(handle));
+    })?;
+    receiver
+        .recv()
+        .map_err(|_| tauri::Error::FailedToReceiveMessage)?
+}
+
+fn build_settings(app: &tauri::AppHandle, destination: &str) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("settings") {
         window.set_focus()?;
         // Focus alone is not navigation. The same event opens the deck or a source page.
@@ -190,7 +230,7 @@ fn open_settings_internal(app: &tauri::AppHandle, destination: &str) -> tauri::R
 
     // Native decorations stay. This window is opaque, so the webview's ground
     // is the ground. About uses this same caption.
-    let window = shared_webview_environment(WebviewWindowBuilder::new(app, "settings", url))
+    let window = shared_webview_environment(app, WebviewWindowBuilder::new(app, "settings", url))?
         .title("solstone")
         .inner_size(1180.0, 760.0)
         .min_inner_size(360.0, 480.0)
@@ -694,11 +734,10 @@ fn build_journal_window(
     // wry Navigates during build, before with_webview; construct on about:blank,
     // then navigate the bootstrap URL only after comprehensive filtering is installed.
     let placeholder = tauri::Url::parse("about:blank").expect("valid placeholder URL");
-    let builder = shared_webview_environment(WebviewWindowBuilder::new(
+    let builder = shared_webview_environment(
         app,
-        label,
-        WebviewUrl::External(placeholder),
-    ))
+        WebviewWindowBuilder::new(app, label, WebviewUrl::External(placeholder)),
+    )?
     .title(title)
     .inner_size(1100.0, 800.0)
     .min_inner_size(640.0, 480.0)
@@ -969,6 +1008,10 @@ fn log_journal_handoff(url: &tauri::Url, outcome: &'static str) {
 
 /// Open (or focus) the About window.
 pub fn open_about(app: &tauri::AppHandle) -> tauri::Result<()> {
+    on_ui_thread(app, |app| build_about(&app))
+}
+
+fn build_about(app: &tauri::AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("about") {
         window.set_focus()?;
         tracing::info!(
@@ -982,12 +1025,14 @@ pub fn open_about(app: &tauri::AppHandle) -> tauri::Result<()> {
 
     // Same caption as settings: native buttons, no caption text, color from the
     // sun-arc ground. Opaque, so that ground is the page and not Mica.
-    let window = shared_webview_environment(WebviewWindowBuilder::new(
+    let window = shared_webview_environment(
         app,
-        "about",
-        WebviewUrl::App("index.html".into()),
+        WebviewWindowBuilder::new(app, "about", WebviewUrl::App("index.html".into())),
+    )?
+    .title(observer_model::i18n::message(
+        "windows.desktop.shared.app.aboutsolstone",
+        &[],
     ))
-    .title("about solstone")
     .inner_size(360.0, 480.0)
     .visible(true)
     .build()?;

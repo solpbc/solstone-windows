@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. needs a restart",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "b970eb0fa342049479e243f7936c149b326a30d326b2309224a4cc2c709b94e0",
+  "risk": "routine",
+  "auto_merge": true
+}

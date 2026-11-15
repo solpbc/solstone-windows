@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. pauses all sources.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "5dd97ae5e7ffec33d57c17fe9abcb60f626575447ee934d958c2f4ed4776f2b5",
+  "risk": "routine",
+  "auto_merge": true
+}

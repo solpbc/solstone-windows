@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this only takes a moment",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "309a708765bf49be74963fb9f43c7bb8b0720fddca74b3b6a024446ca41cf9bd",
+  "risk": "routine",
+  "auto_merge": true
+}

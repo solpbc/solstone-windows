@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. browser pages",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.sourcesbrowserpages.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "1d44e534666fbe9f2dd8fb0f5a80e8fecb937c140c8507c7711990aafeb21fdf",
+  "risk": "routine",
+  "auto_merge": true
+}

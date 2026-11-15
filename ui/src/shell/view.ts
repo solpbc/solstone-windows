@@ -1,3 +1,4 @@
+import { t, stateWord } from "../i18n";
 // The desktop shell's document. Decisions live in derive.ts. This only paints.
 
 import { glyph, glyphForTile, type GlyphName } from "./glyphs";
@@ -90,11 +91,11 @@ export interface DeskActions {
 }
 
 const SHELF: readonly { row: DeskRow; label: string; mark: GlyphName }[] = [
-  { row: "home", label: "home", mark: "home" },
-  { row: "journal", label: "your journal", mark: "journal" },
-  { row: "thisPc", label: "this PC", mark: "device" },
-  { row: "updates", label: "updates", mark: "updates" },
-  { row: "help", label: "help", mark: "help" },
+  { row: "home", label: t("windows.ui.home"), mark: "home" },
+  { row: "journal", label: t("windows.desktop.shared.copy.setupjournalcardheading"), mark: "journal" },
+  { row: "thisPc", label: t("windows.ui.thispc"), mark: "device" },
+  { row: "updates", label: t("windows.desktop.shared.settings.updates"), mark: "updates" },
+  { row: "help", label: t("windows.desktop.shared.settings.help"), mark: "help" },
 ];
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -134,7 +135,7 @@ export function renderDesk(view: DeskView, parts: DeskParts, actions: DeskAction
 function renderShelf(view: DeskView, actions: DeskActions): HTMLElement {
   const rail = el("nav", "settings-rail");
   rail.id = "settings-nav";
-  rail.setAttribute("aria-label", "settings");
+  rail.setAttribute("aria-label", t("windows.desktop.shared.app.frontendorigin"));
   for (const item of SHELF) {
     const button = el("button", "settings-nav-item");
     button.type = "button";
@@ -152,9 +153,9 @@ function renderShelf(view: DeskView, actions: DeskActions): HTMLElement {
 }
 
 function backHome(actions: DeskActions): HTMLButtonElement {
-  const back = el("button", "desk-back", "‹ home");
+  const back = el("button", "desk-back", t("windows.ui.homex4e7a5cec"));
   back.type = "button";
-  back.setAttribute("aria-label", "home");
+  back.setAttribute("aria-label", t("windows.ui.home"));
   back.onclick = () => actions.onBackHome();
   return back;
 }
@@ -168,7 +169,7 @@ function renderDeck(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
   if (view.width !== "full") {
     const opener = el("button", "desk-shelf-button");
     opener.type = "button";
-    opener.setAttribute("aria-label", "home");
+    opener.setAttribute("aria-label", t("windows.ui.home"));
     opener.append(glyph("side"));
     opener.onclick = () => actions.onShelfToggle();
     head.append(opener);
@@ -186,7 +187,7 @@ function renderDeck(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
 
   if (view.pausedLine) {
     deck.append(el("p", "desk-paused", view.pausedLine));
-    const resume = el("button", "desk-resume", "resume");
+    const resume = el("button", "desk-resume", t("windows.desktop.shared.setup.wizardpausefailure2"));
     resume.type = "button";
     resume.onclick = () => actions.onResume();
     deck.append(resume);
@@ -237,7 +238,7 @@ function renderTile(tile: DeskTile, actions: DeskActions): HTMLElement {
   open.append(glyph(glyphForTile(tile.id)));
   open.append(el("span", "desk-tile-name", tile.name));
   if (tile.word) {
-    const word = el("span", "desk-tile-word", tile.word);
+    const word = el("span", "desk-tile-word", stateWord(tile.word));
     word.dataset.word = tile.word;
     open.append(word);
   }
@@ -281,7 +282,7 @@ function renderPane(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
   if (!view.paneIsStatus && view.width !== "phone") {
     const close = el("button", "desk-close", "×");
     close.type = "button";
-    close.setAttribute("aria-label", "status");
+    close.setAttribute("aria-label", t("windows.ui.status"));
     close.onclick = () => actions.onClosePane();
     titleRow.append(close);
   }
@@ -290,7 +291,7 @@ function renderPane(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
 
   if (view.pageVerdict) {
     const verdict = el("div", "desk-verdict");
-    const word = el("span", "desk-tile-word", view.pageVerdict.word);
+    const word = el("span", "desk-tile-word", stateWord(view.pageVerdict.word));
     word.dataset.word = view.pageVerdict.word;
     verdict.append(word);
     if (view.pageVerdict.switchOn !== null) {
@@ -320,7 +321,7 @@ function renderPane(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
       pane.append(lead);
     }
     if (view.showConnect) {
-      const connect = el("button", "desk-connect", "connect a journal");
+      const connect = el("button", "desk-connect", t("windows.ui.connectajournal"));
       connect.type = "button";
       connect.onclick = () => actions.onShelf("journal");
       pane.append(connect);
@@ -328,23 +329,23 @@ function renderPane(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
     const labels = el("div", "desk-status-labels");
     labels.append(
       el("span", "desk-status-glyph"),
-      el("span", "", "sources"),
-      el("span", "", "so far"),
-      el("span", "", "last taken in"),
+      el("span", "", t("windows.desktop.shared.app.sourcestitle")),
+      el("span", "", t("windows.ui.sofar")),
+      el("span", "", t("windows.ui.lasttakenin")),
     );
     pane.append(labels);
     for (const row of view.rows) {
       pane.append(renderStatusRow(row, actions));
     }
     const journal = el("div", "desk-journal-facts");
-    journal.append(el("h3", "desk-section", "your journal"));
+    journal.append(el("h3", "desk-section", t("windows.desktop.shared.copy.setupjournalcardheading")));
     if (view.kept) journal.append(factRow(view.kept.label, view.kept.value));
     for (const fact of view.facts) journal.append(factRow(fact.label, fact.value));
     pane.append(journal);
     if (view.showTechnical) {
       const technical = el("button", "desk-technical");
       technical.type = "button";
-      technical.append(el("span", "", "technical details"), el("span", "desk-chevron", "\u203A"));
+      technical.append(el("span", "", t("windows.desktop.shared.copy.technicaldetails")), el("span", "desk-chevron", "\u203A"));
       technical.onclick = () => actions.onTechnical();
       pane.append(technical);
     }
@@ -370,7 +371,7 @@ function renderStatusRow(row: DeskStatusRow, actions: DeskActions): HTMLElement 
   if (!row.hasFacts) {
     // A missing read is not a fact. The row still opens the page.
   } else if (row.nothingYet) {
-    button.append(el("span", "desk-status-empty", "nothing yet"));
+    button.append(el("span", "desk-status-empty", t("windows.ui.nothingyet")));
   } else {
     button.append(el("span", "desk-status-total", row.total));
     button.append(el("span", "desk-status-relative", row.relative));

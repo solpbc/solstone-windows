@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
+import { t } from "./i18n";
 import { invoke } from "@tauri-apps/api/core";
 import { automationContract } from "./lib/contract";
 
@@ -18,14 +19,14 @@ export function createLogHelp(): HTMLElement {
   const pane = document.createElement("section");
   pane.className = "log-help";
   const heading = document.createElement("h2");
-  heading.textContent = "recent logs";
+  heading.textContent = t("windows.desktop.shared.copy.settingslogexporttitle");
   heading.className = "settings-card-title";
   const caption = document.createElement("p");
-  caption.textContent = "read the solstone app's recent logs before saving a copy for a support report. nothing is sent from here.";
+  caption.textContent = t("windows.logs.textcontent");
   const read = document.createElement("button");
   read.type = "button";
   read.className = "fluent-control";
-  read.textContent = "read recent logs";
+  read.textContent = t("windows.logs.textcontent2");
   read.dataset.automationId = ids["settings.logs.read"];
   const readStatus = document.createElement("p");
   readStatus.setAttribute("role", "status");
@@ -34,13 +35,13 @@ export function createLogHelp(): HTMLElement {
   body.spellcheck = false;
   body.wrap = "off";
   body.hidden = true;
-  body.setAttribute("aria-label", "recent logs");
+  body.setAttribute("aria-label", t("windows.desktop.shared.copy.settingslogexporttitle"));
   body.dataset.automationId = ids["settings.logs.preview"];
   body.style.cssText = "width:100%;height:360px;box-sizing:border-box;font:12px Consolas,monospace;white-space:pre;resize:vertical;";
   const save = document.createElement("button");
   save.type = "button";
   save.className = "fluent-control";
-  save.textContent = "save a copy…";
+  save.textContent = t("windows.desktop.shared.copy.settingslogexportsave");
   save.hidden = true;
   save.disabled = true;
   save.dataset.automationId = ids["settings.logs.save"];
@@ -56,15 +57,15 @@ export function createLogHelp(): HTMLElement {
     save.disabled = true;
     saveStatus.textContent = "";
     read.disabled = true;
-    readStatus.textContent = "reading logs…";
+    readStatus.textContent = t("windows.logs.textcontent3");
     try {
       const next = await invoke<LogPreview>("read_recent_logs");
       const messages = {
-        ready: "read the logs below, then choose whether to save a copy.",
-        partial: "available logs are shown below. check the notes for gaps before saving a copy.",
-        empty: "no recent logs are available yet. try again after using the app.",
-        missing: "no log files are available yet. try again after using the app.",
-        unreadable: "couldn't read the log files. try again.",
+        ready: t("windows.logs.readthelogsbelowthenchoosewhether"),
+        partial: t("windows.logs.availablelogsareshownbelowcheckthe"),
+        empty: t("windows.logs.norecentlogsareavailableyettry"),
+        missing: t("windows.logs.nologfilesareavailableyettry"),
+        unreadable: t("windows.logs.couldntreadthelogfilestry"),
       };
       readStatus.textContent = messages[next.state];
       if (next.entries > 0) {
@@ -75,7 +76,7 @@ export function createLogHelp(): HTMLElement {
         save.disabled = false;
       }
     } catch {
-      readStatus.textContent = "couldn't read the logs. try again.";
+      readStatus.textContent = t("windows.logs.textcontent4");
     } finally {
       read.disabled = false;
     }
@@ -88,9 +89,9 @@ export function createLogHelp(): HTMLElement {
     saveStatus.textContent = "";
     try {
       const saved = await invoke<boolean>("save_recent_logs", { previewId: preview.id });
-      saveStatus.textContent = saved ? "copy saved." : "";
+      saveStatus.textContent = saved ? t("windows.logs.copysaved") : "";
     } catch {
-      saveStatus.textContent = "couldn't save the copy. try saving to another folder.";
+      saveStatus.textContent = t("windows.logs.textcontent5");
     } finally {
       read.disabled = false;
       save.disabled = false;

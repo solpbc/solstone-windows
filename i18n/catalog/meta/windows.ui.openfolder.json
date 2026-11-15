@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. open folder",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "cd627b3d50671722e46b8b9d0843ef2c26d87e4a285e221b411f68fc0ec69774",
+  "risk": "routine",
+  "auto_merge": true
+}

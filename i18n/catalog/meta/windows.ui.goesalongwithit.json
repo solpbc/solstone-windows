@@ -1,0 +1,16 @@
+{
+  "description": "goes along with it",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "874c149c59a6061e7b0a47e3aac7d60b8824d6ae908af3180163e4eb39c9803c",
+  "risk": "routine",
+  "auto_merge": true
+}

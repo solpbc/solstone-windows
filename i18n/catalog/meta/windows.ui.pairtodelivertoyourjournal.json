@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. pair to deliver to your journal",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 62,
+  "source_revision": "2ce6b4d203ee06f694461c42f836207d63fa54986bb800bfc9ab6b78caa279c5",
+  "risk": "routine",
+  "auto_merge": true
+}

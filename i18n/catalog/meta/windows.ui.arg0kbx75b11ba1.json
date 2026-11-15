@@ -1,0 +1,21 @@
+{
+  "description": "{arg0} kb",
+  "context": "The Windows app: UI storage facts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "a67eebf972b50bf8e3ffe81358049d1186110567fb0cccaafde723c2d22ff691",
+  "risk": "routine",
+  "auto_merge": true
+}

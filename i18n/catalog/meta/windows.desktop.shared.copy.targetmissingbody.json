@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. that device is no longer listed in your journal. choose another device, or keep both.",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.targetmissingbody.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 170,
+  "source_revision": "5db3e79d359a4824feaffd5844aed87649bfb70ed54e02349e83f72b4c78a687",
+  "risk": "routine",
+  "auto_merge": true
+}

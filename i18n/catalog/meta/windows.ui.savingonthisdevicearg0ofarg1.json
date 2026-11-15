@@ -1,0 +1,25 @@
+{
+  "description": "saving on this device: {arg0} of {arg1}",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    },
+    {
+      "name": "arg1",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "80c519bb181cdf768a8c64c22f9106cb12d5550cbe2dc0a243b32e2c6d8e629b",
+  "risk": "routine",
+  "auto_merge": true
+}

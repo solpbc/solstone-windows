@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. check for updates automatically",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.updates.checkforupdatesautomatically.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 62,
+  "source_revision": "60ab51cbccf911ffbe7468d675575f6ffb352cc58f8125bdf48b1eadf87489f4",
+  "risk": "routine",
+  "auto_merge": true
+}

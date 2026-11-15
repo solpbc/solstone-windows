@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. pair",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.setup.pair.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "f33950c3b423936f0d95d53ff109a3cdf1fd950c2efb34a8faebcca4d6b453e7",
+  "risk": "routine",
+  "auto_merge": true
+}

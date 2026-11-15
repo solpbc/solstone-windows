@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this link could not be used. try again.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 78,
+  "source_revision": "73dd7657b47e90f1555877b8341a1a373d0092cf90f8e5bb068540b7035e44af",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. couldn't finish discarding. what's left is still on this PC.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 120,
+  "source_revision": "ba3a8631d3e8275b76935160d032783a0ff6d2af7edd9ba6f8071365117e3d82",
+  "risk": "routine",
+  "auto_merge": true
+}

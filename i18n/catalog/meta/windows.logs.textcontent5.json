@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. couldn't save the copy. try saving to another folder.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 106,
+  "source_revision": "60001db9e4f8a461762017ab8f3e80535d9f6708694715d3dc69a73dcd42bcc0",
+  "risk": "routine",
+  "auto_merge": true
+}

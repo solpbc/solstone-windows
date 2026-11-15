@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. title keywords",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "0bdb9f92904a20491db6e15b4d368f6bab50aff331965eee481624bcb1a3c6ea",
+  "risk": "routine",
+  "auto_merge": true
+}

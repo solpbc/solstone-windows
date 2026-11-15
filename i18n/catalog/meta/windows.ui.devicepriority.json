@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. device priority",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "ede05bd1f1f590143476a71eef6673515a544d63db3ba3feb80e169a9615d568",
+  "risk": "routine",
+  "auto_merge": true
+}

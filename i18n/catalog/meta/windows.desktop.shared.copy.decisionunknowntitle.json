@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. checking your choice",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.decisionunknowntitle.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "6231c63527d14e7517a538a2ca18baae3d26bc781596e094279ad9964193e492",
+  "risk": "routine",
+  "auto_merge": true
+}

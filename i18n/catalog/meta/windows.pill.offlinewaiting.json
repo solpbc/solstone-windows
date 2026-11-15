@@ -1,0 +1,21 @@
+{
+  "description": "Whole message: windows.pill.offlinewaiting",
+  "context": "Windows app display. Preserve the exact English text, arguments and state distinction.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "waiting",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "23304beb2406fba048fd1c4fd0d85b514f22e27d8482e9f84abd8f6a62f1d88d",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. anything waiting to send stays on this PC. try again when your journal is reachable.",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.offlinebody.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 168,
+  "source_revision": "fa2bfa9efe0315ca283ff98bb0df93fa7aebab9991b2723692f7109c92410176",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "your \u00b7 journal",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "25b2673bdb53e00718ccd322fb3a70a06d5595d984eeda039aa8227c4bb47421",
+  "risk": "routine",
+  "auto_merge": true
+}

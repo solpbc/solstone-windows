@@ -9,6 +9,7 @@
 //! problem is announced once, a pause (owner or system) is never announced, and
 //! a recovery is announced only after its problem was.
 
+use crate::i18n::{message, Value};
 use std::time::Duration;
 
 use crate::{source_owner_name, SourceKind, TrayVisual};
@@ -62,37 +63,56 @@ pub enum Notice {
 impl Notice {
     pub fn title(self) -> String {
         match self {
-            Self::Problem(Problem::Offline) => "your journal is out of reach".to_string(),
-            Self::Problem(Problem::Stopped) => "intake ran into a problem".to_string(),
-            Self::Problem(Problem::NeedsPermission(kind)) => {
-                format!("the {} needs your permission", source_owner_name(kind))
+            Self::Problem(Problem::Offline) => {
+                message("windows.notice.yourjournalisoutofreach", &[])
             }
-            Self::Recovered(Problem::Offline) => "your journal is back in reach".to_string(),
-            Self::Recovered(Problem::Stopped) => "intake is running again".to_string(),
-            Self::Recovered(Problem::NeedsPermission(kind)) => {
-                format!("the {} is back", source_owner_name(kind))
+            Self::Problem(Problem::Stopped) => message("windows.notice.intakeranintoaproblem", &[]),
+            Self::Problem(Problem::NeedsPermission(kind)) => message(
+                "windows.notice.theneedsyourpermission",
+                &[(
+                    "value",
+                    Value::String(&(source_owner_name(kind)).to_string()),
+                )],
+            ),
+            Self::Recovered(Problem::Offline) => {
+                message("windows.notice.yourjournalisbackinreach", &[])
             }
+            Self::Recovered(Problem::Stopped) => {
+                message("windows.notice.intakeisrunningagain", &[])
+            }
+            Self::Recovered(Problem::NeedsPermission(kind)) => message(
+                "windows.notice.theisback",
+                &[(
+                    "value",
+                    Value::String(&(source_owner_name(kind)).to_string()),
+                )],
+            ),
         }
     }
 
     pub fn body(self) -> String {
         match self {
-            Self::Problem(Problem::Offline) => "solstone is still on. everything is saved on this PC and goes into your journal once it's back in reach.".to_string(),
-            Self::Problem(Problem::Stopped) => {
-                "the solstone icon in the taskbar says what's wrong.".to_string()
+            Self::Problem(Problem::Offline) => {
+                message("windows.notice.solstoneisstilloneverythingissaved", &[])
             }
-            Self::Problem(Problem::NeedsPermission(kind)) => format!(
-                "windows privacy settings are blocking it. turn on {} access for desktop apps, and it goes into your journal again.",
-                source_owner_name(kind)
+            Self::Problem(Problem::Stopped) => {
+                message("windows.notice.thesolstoneiconinthetaskbarsays", &[])
+            }
+            Self::Problem(Problem::NeedsPermission(kind)) => message(
+                "windows.notice.windowsprivacysettingsareblockingitturn",
+                &[(
+                    "value",
+                    Value::String(&(source_owner_name(kind)).to_string()),
+                )],
             ),
             Self::Recovered(Problem::Offline) => {
-                "everything saved on this PC is going into your journal now.".to_string()
+                message("windows.notice.everythingsavedonthispcisgoing", &[])
             }
             Self::Recovered(Problem::Stopped) => {
-                "everything you turned on is going into your journal again.".to_string()
+                message("windows.notice.everythingyouturnedonisgoinginto", &[])
             }
             Self::Recovered(Problem::NeedsPermission(_)) => {
-                "it's going into your journal again.".to_string()
+                message("windows.notice.itsgoingintoyourjournalagain", &[])
             }
         }
     }

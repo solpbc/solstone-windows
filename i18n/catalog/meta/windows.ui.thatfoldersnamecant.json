@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. that folder's name can't be a vault's name in your journal. rename the folder and try a\u2026",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 184,
+  "source_revision": "d43715128fd055eab4a40179f20159acfe47278f7ad4145786b20feb7549cc9f",
+  "risk": "routine",
+  "auto_merge": true
+}

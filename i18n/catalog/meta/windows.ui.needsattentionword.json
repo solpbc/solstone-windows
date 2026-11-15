@@ -1,0 +1,16 @@
+{
+  "description": "needs attention",
+  "context": "Displayed source state; keep distinct from every other state. The code token stays untranslated.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "source_revision": "45cab31c4ee6314bb387731f0a8cec71ce70686b35352a27dab6f2ac88280859",
+  "risk": "routine",
+  "auto_merge": true,
+  "max_length": 120
+}

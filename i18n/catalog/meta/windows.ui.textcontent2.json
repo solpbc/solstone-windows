@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. pairing\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "ddda87a775a0c9164dfa1e809e44ac398c574e4c259f2809f41843e905fdaaab",
+  "risk": "routine",
+  "auto_merge": true
+}

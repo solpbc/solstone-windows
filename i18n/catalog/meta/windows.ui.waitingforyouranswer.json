@@ -1,0 +1,16 @@
+{
+  "description": "waiting for your answer",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "a0dad46ca88faf463bea5dee96e35b5d5629c3c15c1c7f57b48ecf93c4724551",
+  "risk": "routine",
+  "auto_merge": true
+}

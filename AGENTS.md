@@ -426,3 +426,17 @@ generated files, scaffolding configuration, or docs.
 ## 11. License
 
 AGPL-3.0-only.
+
+## 12. String catalog
+
+Owner-visible copy belongs in `i18n/catalog/source/en-US.ftl`, with its metadata
+sidecar. This includes labels, errors, tray text, notifications, native dialog
+text and accessible names. Use whole messages and named arguments; keep state
+and AutomationId tokens separate from their display text. Do not put source
+English in TypeScript, Rust or HTML, or edit generated resources by hand.
+
+Read `i18n/README.md` before changing copy. Regenerate with the pinned compiler
+in `i18n/compiler.json`, commit the catalog and generated resources together,
+and run the existing review and landing checks. The generated-byte check in
+`make ci` checks synchronization; it does not review wording. Only approved
+locales belong in production resources.

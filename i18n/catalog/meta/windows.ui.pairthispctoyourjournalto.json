@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. pair this PC to your journal to open it",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 78,
+  "source_revision": "e9667b6794ff93e83355c3e60b6cb063d44a6bbc7573c8b22fac80ef3b266225",
+  "risk": "routine",
+  "auto_merge": true
+}

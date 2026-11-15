@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. help",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.settings.help.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "415751cbf18016f4c7489c82d0ce79d737f2fa01c17a285f4b51320ebb3aac66",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. how often to check for updates",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 60,
+  "source_revision": "325876111dc25ec81854f7823b6e873ddb1fe3968bb5ce75da92fbbb54edcb68",
+  "risk": "routine",
+  "auto_merge": true
+}

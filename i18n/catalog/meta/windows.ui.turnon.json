@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. turn on \u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "accessiblename",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "c970a3b90d130d344240e0ab14246713a96c06fa4b867a6f35278e8a2ef60f0d",
+  "risk": "routine",
+  "auto_merge": true
+}

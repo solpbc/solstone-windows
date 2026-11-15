@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. the solstone app couldn't save its place for this vault. check that this computer has f\u2026",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 194,
+  "source_revision": "7c6f062c1815a3abe91dcf8db6ecb48d00d67578ea747e08bf83b1a132b39152",
+  "risk": "routine",
+  "auto_merge": true
+}

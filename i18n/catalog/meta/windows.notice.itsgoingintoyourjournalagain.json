@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. it's going into your journal again.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 70,
+  "source_revision": "1e921045a2a3c828222231bed97a2ecd1574aa53fd86e9e53851ed0d095d9471",
+  "risk": "routine",
+  "auto_merge": true
+}

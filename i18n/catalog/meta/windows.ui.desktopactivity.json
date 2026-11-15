@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. desktop activity",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "904a75187655bb56b861230985dbc890cd38f5313c75509417bb09126008e276",
+  "risk": "routine",
+  "auto_merge": true
+}

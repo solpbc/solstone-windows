@@ -1,0 +1,16 @@
+{
+  "description": "couldn't open your journal.",
+  "context": "The Windows app: src-tauri/src/journal_links.rs. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "9c2e3a1470994c9b1e13885d1b96519d4585d58cc5f08ef7042016b8e7673f5b",
+  "risk": "routine",
+  "auto_merge": true
+}

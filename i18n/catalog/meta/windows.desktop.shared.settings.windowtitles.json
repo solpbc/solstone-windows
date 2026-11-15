@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. window titles",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.settings.windowtitles.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "958f10758456cc73a6e0006a8ff1c7a654b03a8e6a1c2a4fd9cb21bb844694d1",
+  "risk": "routine",
+  "auto_merge": true
+}

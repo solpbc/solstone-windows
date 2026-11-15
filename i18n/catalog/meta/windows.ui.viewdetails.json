@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. view details",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "be7afc21274527bfee987d63deefe0a61b610927ca5e56abc658d7382ef92982",
+  "risk": "routine",
+  "auto_merge": true
+}

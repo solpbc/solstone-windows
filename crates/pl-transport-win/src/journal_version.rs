@@ -359,7 +359,7 @@ impl JournalVersionController {
         state.journal_name = None;
         state.host_facts = None;
         state.host_facts_accepted_at_epoch_secs = None;
-        state.journal_display_line = about::unknown_journal_line();
+        state.journal_display_line = about::localized_unknown_journal_line();
         state.journal_base_line = about::unknown_journal_line();
         state.fresh = false;
         state.in_flight_token = None;

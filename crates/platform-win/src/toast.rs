@@ -46,7 +46,8 @@ fn escape_xml(text: &str) -> String {
 /// The toast document: a title line and a body line.
 pub fn toast_xml(title: &str, body: &str) -> String {
     format!(
-        "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual></toast>",
+        "<toast><visual><binding template=\"ToastGeneric\" lang=\"{}\"><text>{}</text><text>{}</text></binding></visual></toast>",
+        escape_xml(observer_model::i18n::locale()),
         escape_xml(title),
         escape_xml(body)
     )

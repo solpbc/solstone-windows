@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. less than a minute left",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "552858ee91f85d8787ddf8d20d44df2b0d5f2de4c73e37e6093ded5edfa1d0bc",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "in your journal.",
+  "context": "The Windows app: native dialogs and imported files. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "5207c25de2fae7ad0229a409681c7a3e02853cbbe3ca8b079b5472d38a34fa90",
+  "risk": "routine",
+  "auto_merge": true
+}

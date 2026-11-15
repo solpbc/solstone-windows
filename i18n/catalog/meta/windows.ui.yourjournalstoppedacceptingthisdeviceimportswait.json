@@ -1,0 +1,16 @@
+{
+  "description": "your journal stopped accepting this device. imports wait here until you pair again.",
+  "context": "The Windows app: native dialogs and imported files. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 166,
+  "source_revision": "cea99f832598070e0233a06b3da37ae43727c0405cab4dfe92aec26ebaa91fc9",
+  "risk": "routine",
+  "auto_merge": true
+}

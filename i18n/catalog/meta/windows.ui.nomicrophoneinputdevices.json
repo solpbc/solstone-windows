@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. no microphone input devices",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 54,
+  "source_revision": "248f4ae823747eed04a98b90a3c83f39b4582cf8d84f2a33fe29e366d2d7eeb8",
+  "risk": "routine",
+  "auto_merge": true
+}

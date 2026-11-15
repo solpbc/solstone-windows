@@ -14,6 +14,7 @@
 //! macOS parity. A bounded pause auto-resumes when it elapses (the engine owns
 //! the timer); the tray tooltip shows the live time remaining while paused.
 
+use observer_model::i18n::{message, Value};
 use std::sync::{Arc, Mutex};
 
 use capture_engine::EngineCommand;
@@ -66,45 +67,74 @@ pub fn init(
     app: &mut App,
     cmd_tx: mpsc::UnboundedSender<EngineCommand>,
 ) -> tauri::Result<TrayMenu> {
-    let mi_pause_15 =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_PAUSE_15M, "15 minutes")
-            .build(app)?;
-    let mi_pause_30 =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_PAUSE_30M, "30 minutes")
-            .build(app)?;
-    let mi_pause_1h =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_PAUSE_1H, "1 hour").build(app)?;
+    let mi_pause_15 = MenuItemBuilder::with_id(
+        observer_contract::tray::MENU_PAUSE_15M,
+        &message("windows.ui.value15minutes", &[]),
+    )
+    .build(app)?;
+    let mi_pause_30 = MenuItemBuilder::with_id(
+        observer_contract::tray::MENU_PAUSE_30M,
+        &message("windows.ui.value30minutes", &[]),
+    )
+    .build(app)?;
+    let mi_pause_1h = MenuItemBuilder::with_id(
+        observer_contract::tray::MENU_PAUSE_1H,
+        &message("windows.ui.value1hour", &[]),
+    )
+    .build(app)?;
     let mi_pause_indef = MenuItemBuilder::with_id(
         observer_contract::tray::MENU_PAUSE_INDEFINITE,
-        "until I resume",
+        &message("windows.ui.untiliresume", &[]),
     )
     .build(app)?;
 
-    let pause = SubmenuBuilder::with_id(app, observer_contract::tray::MENU_PAUSE, "pause")
-        .item(&mi_pause_15)
-        .item(&mi_pause_30)
-        .item(&mi_pause_1h)
-        .item(&mi_pause_indef)
-        .build()?;
+    let pause = SubmenuBuilder::with_id(
+        app,
+        observer_contract::tray::MENU_PAUSE,
+        &message("windows.desktop.shared.setup.wizardpausefailure", &[]),
+    )
+    .item(&mi_pause_15)
+    .item(&mi_pause_30)
+    .item(&mi_pause_1h)
+    .item(&mi_pause_indef)
+    .build()?;
 
-    let resume =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_RESUME, "resume").build(app)?;
-    let attention =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_ATTENTION, "needs attention")
-            .build(app)?;
-    let status = MenuItemBuilder::with_id(observer_contract::tray::MENU_STATUS, "connecting…")
-        .enabled(false)
-        .build(app)?;
-    let journal =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_OPEN_JOURNAL, "open journal")
-            .build(app)?;
-    let open_settings =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_OPEN_SETTINGS, "open settings")
-            .build(app)?;
-    let about = MenuItemBuilder::with_id(observer_contract::tray::MENU_ABOUT, "about solstone")
-        .build(app)?;
-    let quit =
-        MenuItemBuilder::with_id(observer_contract::tray::MENU_QUIT, "quit solstone").build(app)?;
+    let resume = MenuItemBuilder::with_id(
+        observer_contract::tray::MENU_RESUME,
+        &message("windows.desktop.shared.setup.wizardpausefailure2", &[]),
+    )
+    .build(app)?;
+    let attention = MenuItemBuilder::with_id(
+        observer_contract::tray::MENU_ATTENTION,
+        &message("windows.desktop.shared.copy.settingstabattentiona11y", &[]),
+    )
+    .build(app)?;
+    let status = MenuItemBuilder::with_id(
+        observer_contract::tray::MENU_STATUS,
+        &message("windows.ui.connecting", &[]),
+    )
+    .enabled(false)
+    .build(app)?;
+    let journal = MenuItemBuilder::with_id(
+        observer_contract::tray::MENU_OPEN_JOURNAL,
+        &message("windows.desktop.shared.copy.settingsjournalopen", &[]),
+    )
+    .build(app)?;
+    let open_settings = MenuItemBuilder::with_id(
+        observer_contract::tray::MENU_OPEN_SETTINGS,
+        &message("windows.ui.opensettings", &[]),
+    )
+    .build(app)?;
+    let about = MenuItemBuilder::with_id(
+        observer_contract::tray::MENU_ABOUT,
+        &message("windows.desktop.shared.app.aboutsolstone", &[]),
+    )
+    .build(app)?;
+    let quit = MenuItemBuilder::with_id(
+        observer_contract::tray::MENU_QUIT,
+        &message("windows.ui.quitsolstone", &[]),
+    )
+    .build(app)?;
 
     // Status, pause, settings, about, quit. Attention, resume, and the journal
     // are inserted when the state calls for them. Pause and resume are never both here.
@@ -307,7 +337,13 @@ pub fn apply_state(menu: &mut TrayMenu, dump: &HealthDump) -> (TrayVisual, Optio
         let attention = &menu.attention;
         show(
             &mut menu.attention_text_shown,
-            format!("{name} needs attention"),
+            message(
+                "windows.ui.arg0needsattention",
+                &[(
+                    "arg0",
+                    Value::String(&(owner_attention_name(name)).to_string()),
+                )],
+            ),
             |text| attention.set_text(text).is_ok(),
         );
         if let Ok(mut slot) = menu.attention_target.lock() {
@@ -435,5 +471,15 @@ mod tests {
         });
         assert_eq!(sets, 2);
         assert_eq!(shown, Some(TrayVisual::Healthy));
+    }
+}
+
+fn owner_attention_name(name: &str) -> String {
+    match name {
+        "audio" => message("windows.ui.audio", &[]),
+        "screen" => message("windows.ui.screen", &[]),
+        "browsers" => message("windows.ui.browsers", &[]),
+        "screenshots" => message("windows.ui.screenshots", &[]),
+        _ => name.to_string(),
     }
 }

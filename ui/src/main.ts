@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
+import { t, stateWord, applyDocumentLocale, formatLocale, number } from "./i18n";
 // The webview is a pure renderer. It subscribes to `health://changed` and paints
 // the honest state it receives; it has no other input and cannot mint status.
 // AutomationIds are stamped from the generated contract (see ./lib/contract.ts).
@@ -25,7 +26,7 @@ import {
   sourceSubline,
   audioTile,
   browsersTile,
-  countTotal,
+  quantity,
   counterFacts,
   deckTiles,
   derivedComputerSoundWanted,
@@ -179,56 +180,56 @@ interface MigrationDevice {
 type MigrationFlow = "replace_offer" | "picker" | "confirm" | null;
 
 const MIGRATION_COPY = {
-  "migration.replace_offer.title": "is this replacing one of your devices?",
+  "migration.replace_offer.title": t("windows.desktop.shared.copy.replaceoffertitle"),
   "migration.replace_offer.body":
-    "you can keep both, or choose a device for this one to replace.",
-  "migration.replace_offer.pick": "choose a device",
-  "migration.replace_offer.keep": "keep both",
-  "migration.replace_offer.defer": "not now",
-  "migration.picker.title": "choose a device",
-  "migration.picker.empty": "no other paired devices",
-  "migration.picker.cancel": "cancel",
-  "migration.replace_confirm.title": 'replace "{selected_device_label}"?',
+    t("windows.desktop.shared.copy.replaceofferbody"),
+  "migration.replace_offer.pick": t("windows.desktop.shared.copy.choosedevice"),
+  "migration.replace_offer.keep": t("windows.desktop.shared.copy.keepboth"),
+  "migration.replace_offer.defer": t("windows.desktop.shared.copy.deferchoice"),
+  "migration.picker.title": t("windows.desktop.shared.copy.choosedevice"),
+  "migration.picker.empty": t("windows.desktop.shared.copy.pickerempty"),
+  "migration.picker.cancel": t("windows.desktop.shared.setup.cancel"),
+  "migration.replace_confirm.title": "",
   "migration.replace_confirm.body":
-    "this PC continues its name and history. the selected device will lose access to your journal.",
-  "migration.replace_confirm.replace": "replace device",
-  "migration.replace_confirm.cancel": "cancel",
-  "migration.pending.row": "device choice",
-  "migration.pending.value": "not answered",
-  "migration.preparing.title": "getting this PC ready",
-  "migration.offline.title": "can't reach your journal",
+    t("windows.desktop.shared.copy.replaceconfirmbody"),
+  "migration.replace_confirm.replace": t("windows.desktop.shared.copy.replacedevice"),
+  "migration.replace_confirm.cancel": t("windows.desktop.shared.setup.cancel"),
+  "migration.pending.row": t("windows.ui.devicechoice"),
+  "migration.pending.value": t("windows.ui.notanswered"),
+  "migration.preparing.title": t("windows.ui.gettingthisdeviceready"),
+  "migration.offline.title": t("windows.desktop.shared.app.offlinetitle"),
   "migration.offline.body":
-    "anything waiting to send stays on this PC. try again when your journal is reachable.",
-  "migration.offline.action": "try again",
-  "migration.unsupported.title": "journal update needed",
+    t("windows.desktop.shared.copy.offlinebody"),
+  "migration.offline.action": t("windows.desktop.shared.copy.tryagain"),
+  "migration.unsupported.title": t("windows.ui.journalupdateneeded"),
   "migration.unsupported.body":
-    "your journal doesn't support this move yet. anything waiting to send stays on this PC. update your journal, then try again.",
-  "migration.unsupported.action": "try again",
-  "migration.storage_unavailable.title": "saved connection unavailable",
+    t("windows.ui.yourjournaldoesntsupportthismove"),
+  "migration.unsupported.action": t("windows.desktop.shared.copy.tryagain"),
+  "migration.storage_unavailable.title": t("windows.desktop.shared.copy.storageunavailabletitle"),
   "migration.storage_unavailable.body":
-    "this PC couldn't read its saved connection. anything waiting to send hasn't been removed.",
-  "migration.storage_unavailable.action": "technical details",
-  "migration.deciding.title": "saving your choice",
-  "migration.decision_unknown.title": "checking your choice",
-  "migration.decision_unknown.body": "your journal hasn't confirmed the result yet.",
-  "migration.decision_unknown.action": "check again",
-  "migration.list_unavailable.title": "devices unavailable",
+    t("windows.desktop.shared.copy.storageunavailablebody"),
+  "migration.storage_unavailable.action": t("windows.desktop.shared.copy.technicaldetails"),
+  "migration.deciding.title": t("windows.desktop.shared.copy.decidingtitle"),
+  "migration.decision_unknown.title": t("windows.desktop.shared.copy.decisionunknowntitle"),
+  "migration.decision_unknown.body": t("windows.desktop.shared.copy.decisionunknownbody"),
+  "migration.decision_unknown.action": t("windows.desktop.shared.copy.checkagain"),
+  "migration.list_unavailable.title": t("windows.desktop.shared.copy.listunavailabletitle"),
   "migration.list_unavailable.body":
-    "couldn't load the devices in your journal. try again when your journal is reachable.",
-  "migration.list_unavailable.action": "try again",
-  "migration.target_missing.title": "device no longer available",
+    t("windows.desktop.shared.copy.listunavailablebody"),
+  "migration.list_unavailable.action": t("windows.desktop.shared.copy.tryagain"),
+  "migration.target_missing.title": t("windows.desktop.shared.copy.targetmissingtitle"),
   "migration.target_missing.body":
-    "that device is no longer listed in your journal. choose another device, or keep both.",
-  "migration.target_missing.action": "choose a device",
-  "migration.decision_refused.title": "choice needs attention",
+    t("windows.desktop.shared.copy.targetmissingbody"),
+  "migration.target_missing.action": t("windows.desktop.shared.copy.choosedevice"),
+  "migration.decision_refused.title": t("windows.desktop.shared.copy.decisionrefusedtitle"),
   "migration.decision_refused.body":
-    "your journal couldn't apply this choice. your current connection still works.",
-  "migration.decision_refused.action": "technical details",
-  "migration.key_refused.title": "pair again",
+    t("windows.desktop.shared.copy.decisionrefusedbody"),
+  "migration.decision_refused.action": t("windows.desktop.shared.copy.technicaldetails"),
+  "migration.key_refused.title": t("windows.ui.pairagain"),
   "migration.key_refused.body":
-    "this PC couldn't open its saved connection to your journal. anything waiting to send is still here. pair again to reconnect.",
-  "migration.key_refused.action": "pair again",
-  "migration.replace_confirm.title_fallback": "replace the selected device?",
+    t("windows.ui.thisdevicecouldntopenitssaved"),
+  "migration.key_refused.action": t("windows.ui.pairagain"),
+  "migration.replace_confirm.title_fallback": t("windows.desktop.shared.copy.replaceconfirmtitlefallback"),
 } as const;
 
 interface UploadStatus {
@@ -440,7 +441,7 @@ type ExclusionEdit =
 
 const SELF_EXE = "solstone-windows-app.exe";
 const STORE_APPS_LABEL =
-  "store apps (all). apps from the Microsoft Store share one entry, so excluding it excludes all of them";
+  t("windows.ui.storeappsallappsfromthemicrosoft");
 
 // ── Updater (observer-update) ────────────────────────────────────────────────
 // Update state arrives on its own `update://changed` event, separate from the
@@ -596,16 +597,26 @@ let foundJournalConnectedAt: number | null = null;
 let pairingStatusEl: HTMLElement | null = null;
 
 const SETUP_LINK_ERRORS: Record<string, string> = {
-  setup_connect_failed: "this connection could not finish. try again, or paste a new pairing link from your journal.",
-  setup_finish_failed: "this connection could not finish. try again.",
-  setup_browser_failed: "this step could not finish. try again.",
-  setup_browser_completion_failed: "your journal opened, but setup progress could not be saved. try again.",
-  setup_link_use_failed: "this link could not be used. try again.",
-  setup_link_dismiss_failed: "this link could not be dismissed. try again.",
-  handoff_persist_failed: "this connection could not be saved. try again, or paste a pairing link from your journal.",
-  handoff_busy: "setup is busy. try again in a moment.",
-  handoff_rejected: "this setup link could not be used. return to your journal for a new link, or paste a pairing link here.",
-  handoff_deferred: "finish the current connection, then try again.",
+  "no credential access": t("windows.ui.nocredentialaccess"),
+  "setup connection changed": t("windows.ui.setupconnectionchanged"),
+  "not paired": t("windows.desktop.shared.app.notpaired"),
+  "setup unavailable": t("windows.ui.setupunavailable"),
+  "source setup is unfinished": t("windows.ui.sourcesetupisunfinished"),
+  "browser state unavailable": t("windows.ui.browserstateunavailable"),
+  "setup progress could not be saved": t("windows.ui.setupprogresscouldnotbesaved"),
+  "no local journal to connect to": t("windows.ui.nolocaljournaltoconnectto"),
+  "failed to acquire setup lock": t("windows.ui.failedtoacquiresetuplock"),
+  "setup sequence is unavailable in this build": t("windows.ui.setupsequenceisunavailableinthisbuild"),
+  setup_connect_failed: t("windows.ui.thisconnectioncouldnotfinishtryagain"),
+  setup_finish_failed: t("windows.ui.thisconnectioncouldnotfinishtryagain2"),
+  setup_browser_failed: t("windows.ui.thisstepcouldnotfinishtryagain"),
+  setup_browser_completion_failed: t("windows.ui.yourjournalopenedbutsetupprogresscould"),
+  setup_link_use_failed: t("windows.ui.thislinkcouldnotbeusedtry"),
+  setup_link_dismiss_failed: t("windows.ui.thislinkcouldnotbedismissedtry"),
+  handoff_persist_failed: t("windows.ui.thisconnectioncouldnotbesavedtry"),
+  handoff_busy: t("windows.ui.setupisbusytryagainina"),
+  handoff_rejected: t("windows.ui.thissetuplinkcouldnotbeused"),
+  handoff_deferred: t("windows.ui.finishthecurrentconnectionthentryagain"),
 };
 
 function errorText(error: unknown): string {
@@ -615,7 +626,7 @@ function errorText(error: unknown): string {
   if (typeof error === "string" && error) {
     return SETUP_LINK_ERRORS[error] ?? error;
   }
-  return "that did not finish";
+  return t("windows.ui.thatdidnotfinish");
 }
 
 function appendSetupError(
@@ -743,7 +754,7 @@ function pairingStatusLabel(dump: HealthDump): string {
   if (foundJournalConnected && presented.phase === "paired") {
     const link = dump.sync.journal_link ?? null;
     if (link === "connected" || (link === null && foundJournalPressHolds())) {
-      return `connected to ${markTextForm(presented.mark)}`;
+      return t("windows.ui.connectedto", { "value": String(markTextForm(presented.mark)) });
     }
   }
   return pairingPhaseLabel(presented);
@@ -766,11 +777,11 @@ function renderFoundJournal(found: FoundJournal): HTMLElement {
   panel.style.alignItems = "flex-start";
   panel.style.gap = "10px";
   panel.style.padding = "7px 0 12px";
-  const heading = text("div", "found your journal on this PC");
+  const heading = text("div", t("windows.ui.foundjournalpc"));
   heading.style.fontWeight = "600";
   heading.style.fontSize = "14px";
   const connect = actionButton(
-    foundJournalConnecting ? "connecting…" : "connect to your journal",
+    foundJournalConnecting ? t("windows.ui.connecting") : t("windows.ui.connecttoyourjournal"),
     ids["settings.pairing.foundConnect"],
     !foundJournalConnecting,
     () => void connectFoundJournal(found),
@@ -803,6 +814,9 @@ let journalOpenError = false;
 type MigrationCopyKey = keyof typeof MIGRATION_COPY;
 
 function migrationCopy(key: MigrationCopyKey, values: Record<string, string> = {}): string {
+  if (key === "migration.replace_confirm.title") {
+    return t("windows.desktop.shared.copy.replaceconfirmtitle", { selecteddevicelabel: values.selected_device_label ?? "" });
+  }
   return MIGRATION_COPY[key].replace(/\{([^}]+)\}/g, (_match, name: string) => values[name] ?? "");
 }
 
@@ -1030,14 +1044,14 @@ let narrowNav!: MediaQueryList;
 let label = "settings";
 
 const ROUTES: ReadonlyArray<{ route: Route; label: string; glyph: string }> = [
-  { route: "home", label: "home", glyph: "\uE80F" },
-  { route: "sources", label: "sources", glyph: "\uE8B3" },
-  { route: "privacy", label: "privacy", glyph: "\uEA18" },
-  { route: "journal", label: "journal", glyph: "\uE753" },
-  { route: "shortcut", label: "shortcut", glyph: "\uE765" },
-  { route: "storage", label: "storage", glyph: "\uE8B7" },
-  { route: "updates", label: "updates", glyph: "\uE777" },
-  { route: "help", label: "help", glyph: "\uE897" },
+  { route: "home", label: t("windows.ui.home"), glyph: "\uE80F" },
+  { route: "sources", label: t("windows.desktop.shared.app.sourcestitle"), glyph: "\uE8B3" },
+  { route: "privacy", label: t("windows.ui.privacy"), glyph: "\uEA18" },
+  { route: "journal", label: t("windows.desktop.shared.about.pendingsettingstab"), glyph: "\uE753" },
+  { route: "shortcut", label: t("windows.ui.shortcut"), glyph: "\uE765" },
+  { route: "storage", label: t("windows.ui.storage"), glyph: "\uE8B7" },
+  { route: "updates", label: t("windows.desktop.shared.settings.updates"), glyph: "\uE777" },
+  { route: "help", label: t("windows.desktop.shared.settings.help"), glyph: "\uE897" },
 ];
 
 let logHelp: HTMLElement | null = null;
@@ -1503,7 +1517,7 @@ function openNavOverlay(): void {
   const hamburger = document.querySelector<HTMLElement>(".settings-hamburger");
   if (hamburger) {
     hamburger.setAttribute("aria-expanded", "true");
-    hamburger.setAttribute("aria-label", "close navigation");
+    hamburger.setAttribute("aria-label", t("windows.ui.closenavigation"));
   }
   document.querySelector<HTMLElement>(".settings-rail .settings-nav-item")?.focus();
 }
@@ -1518,7 +1532,7 @@ function closeNavOverlay(returnFocusToHamburger = false): void {
   const hamburger = document.querySelector<HTMLElement>(".settings-hamburger");
   if (hamburger) {
     hamburger.setAttribute("aria-expanded", "false");
-    hamburger.setAttribute("aria-label", "open navigation");
+    hamburger.setAttribute("aria-label", t("windows.ui.opennavigation"));
   }
   if (returnFocusToHamburger && wasOpen) {
     hamburger?.focus();
@@ -1660,15 +1674,15 @@ function pill(label: string, severity: Severity): HTMLElement {
 function phaseLabel(phase: AppPhase): string {
   switch (phase) {
     case "idle":
-      return "idle";
+      return t("windows.ui.idle");
     case "starting":
-      return "starting…";
+      return t("windows.tray.starting");
     case "observing":
-      return "on";
+      return t("windows.desktop.shared.app.settingsdiagnosticson");
     case "paused":
-      return "paused";
+      return t("windows.ui.pausedxa7a9dc5b");
     case "error":
-      return "needs attention";
+      return t("windows.desktop.shared.copy.settingstabattentiona11y");
   }
 }
 
@@ -1677,15 +1691,15 @@ function isAccessDenied(report: SourceReport | undefined): boolean {
 }
 
 const NO_MICROPHONE_LINE =
-  "no microphone is available. connect or enable one in windows sound settings. the solstone app starts using it on its own.";
+  t("windows.ui.nomicrophoneisavailableconnectorenableoneinwindo");
 const NO_OUTPUT_LINE =
-  "no sound output is available. connect or enable one in windows sound settings. the solstone app starts using it on its own.";
-const ACCESS_DENIED_LINE = "access was denied. check windows permissions for this source, then retry.";
-const NO_MICROPHONE_TILE = "no microphone found.";
-const NO_OUTPUT_TILE = "no sound output found.";
-const ACCESS_DENIED_TILE = "access was denied.";
-const BROWSER_TILE_SETUP = "add the solstone extension.";
-const OBSIDIAN_TILE_SETUP = "choose a folder.";
+  t("windows.ui.nosoundoutputisavailableconnectorenableoneinwind");
+const ACCESS_DENIED_LINE = t("windows.ui.accesswasdeniedcheckwindowspermissionsfor");
+const NO_MICROPHONE_TILE = t("windows.ui.nomicrophonefound");
+const NO_OUTPUT_TILE = t("windows.ui.nosoundoutputfound");
+const ACCESS_DENIED_TILE = t("windows.ui.accesswasdenied");
+const BROWSER_TILE_SETUP = t("windows.ui.addthesolstoneextension");
+const OBSIDIAN_TILE_SETUP = t("windows.ui.chooseafolder");
 
 // A source's raw fault detail is a diagnostic for logs and the health dump;
 // the pill carries only the status word.
@@ -1700,8 +1714,8 @@ function sourcePill(
   }
   const severity: Severity =
     status === "on" ? "ok" : status === "error" || status === "unavailable" ? "attention" : "neutral";
-  const word = status === "unavailable" && needsPermission ? "needs permission" : status;
-  const el = pill(word, severity);
+  const word = status === "unavailable" && needsPermission ? t("windows.ui.needspermission") : stateWord(status);
+  const el = pill(stateWord(word), severity);
   el.style.flexShrink = "0";
   el.style.whiteSpace = "nowrap";
   el.style.maxWidth = "100%";
@@ -1711,8 +1725,8 @@ function sourcePill(
 
 function sourceSaveFailureMessage(failure: FailedSourceWrite): string {
   return failure.attempted
-    ? "could not save turning this on. it stays off. try again."
-    : "could not save turning this off. it is off now, but may turn on again after a restart. try again.";
+    ? t("windows.ui.couldnotsaveturningthisonitstaysofftryagain")
+    : t("windows.ui.couldnotsaveturningthisoffitisoffnowbutmayturnon");
 }
 
 function sourceByKind(dump: HealthDump, kind: SourceKind): SourceReport | undefined {
@@ -1722,25 +1736,25 @@ function sourceByKind(dump: HealthDump, kind: SourceKind): SourceReport | undefi
 function failedPairingLabel(detail: string | null | undefined): string {
   switch (detail) {
     case "pair_link":
-      return "that pairing link isn't one the solstone app can read. get a new pairing link from your journal and try again.";
+      return t("windows.ui.thatpairinglinkisntonethe");
     case "relay_pair_window_closed":
-      return "the pairing window closed. get a new pairing link from your journal, then try again.";
+      return t("windows.ui.thepairingwindowclosedgetanew");
     case "io":
-      return "this PC isn't on a network. pairing needs to reach your journal directly, so join the same wi-fi as your journal and try again. everything the solstone app has taken in is on this PC and syncs once you reconnect.";
+      return t("windows.ui.thisdeviceisntonanetwork");
     case "relay_unpaid":
-      return "couldn't reach your journal over your private network. join the same wi-fi as your journal, then try again with a new pairing link from your journal.";
+      return t("windows.ui.couldntreachyourjournaloveryour");
     case "journal_refused":
-      return "this PC can't connect to your journal with its saved pairing. get a new pairing link from your journal and pair again.";
+      return t("windows.ui.thispccantconnecttoyour");
     case "storage_unavailable":
-      return `${MIGRATION_COPY["migration.storage_unavailable.title"]}. ${MIGRATION_COPY["migration.storage_unavailable.body"]}`;
+      return t("windows.ui.text", { "name": String(MIGRATION_COPY["migration.storage_unavailable.title"]), "value2": String(MIGRATION_COPY["migration.storage_unavailable.body"]) });
     default:
-      return "pairing didn't go through. get a new pairing link from your journal and try again.";
+      return t("windows.ui.pairingdidntgothroughgeta");
   }
 }
 
 function markTextForm(mark: MarkRenderSpec | null | undefined): string {
   if (!mark) {
-    return "mark\u00B7unavailable";
+    return t("windows.ui.markunavailable");
   }
   return `${mark.words[0].toLowerCase()}\u00B7${mark.words[1].toLowerCase()}`;
 }
@@ -1749,15 +1763,15 @@ function markTextForm(mark: MarkRenderSpec | null | undefined): string {
 function pairingPhaseLabel(pairing: PairingState): string {
   switch (pairing.phase) {
     case "not_paired":
-      return "not paired";
+      return t("windows.desktop.shared.app.notpaired");
     case "pairing":
-      return "pairing…";
+      return t("windows.ui.textcontent2");
     case "awaiting_confirmation":
       return pairing.finish_connecting
-        ? "finish connecting to your journal"
-        : "waiting for you to confirm your journal's mark";
+        ? t("windows.ui.finishconnectingtoyourjournal")
+        : t("windows.ui.waitingforyoutoconfirmyourjournalsmark");
     case "paired":
-      return `paired with ${markTextForm(pairing.mark)}`;
+      return t("windows.ui.pairedwith", { "value": String(markTextForm(pairing.mark)) });
     case "failed":
       return failedPairingLabel(pairing.detail);
   }
@@ -1775,16 +1789,16 @@ function quarantinedCount(upload: UploadStatus): number {
 }
 
 function needsAttentionLabel(count: number): string {
-  return count === 1 ? "1 needs attention" : `${count} need attention`;
+  return count === 1 ? t("windows.ui.value1needsattention") : t("windows.ui.arg0needattention", { "arg0": String(count) });
 }
 
 function uploadLabel(upload: UploadStatus): string {
   const parts = [
-    `${upload.uploaded_segments} delivered`,
-    `${upload.pending_segments} pending`,
+    t("windows.ui.delivered", { "value": String(upload.uploaded_segments) }),
+    t("windows.ui.pending", { "value": String(upload.pending_segments) }),
   ];
   if (upload.failed_segments > 0) {
-    parts.push(`${upload.failed_segments} retrying`);
+    parts.push(t("windows.ui.retrying", { "value": String(upload.failed_segments) }));
   }
   const quarantined = quarantinedCount(upload);
   if (quarantined > 0) {
@@ -1802,7 +1816,14 @@ function formatStorageBytes(bytes: number): string {
     unit += 1;
   }
   const rendered = unit === 0 ? String(Math.floor(value)) : value.toFixed(1);
-  return `${rendered} ${units[unit]}`;
+  switch (unit) {
+    case 0: return t("windows.ui.arg0bytes", { "arg0": rendered });
+    case 1: return t("windows.ui.arg0kbx75b11ba1", { "arg0": rendered });
+    case 2: return t("windows.ui.arg0mbxff882f00", { "arg0": rendered });
+    case 3: return t("windows.ui.arg0gb", { "arg0": rendered });
+    case 4: return t("windows.ui.arg0tb", { "arg0": rendered });
+    default: return rendered;
+  }
 }
 
 function storageRow(storage: StorageInfo | null): HTMLElement {
@@ -1817,20 +1838,20 @@ function storageRow(storage: StorageInfo | null): HTMLElement {
   pathWrap.append(
     selectable(
       automation(
-        text("div", storage ? storage.root : "not available"),
+        text("div", storage ? storage.root : t("windows.ui.notavailable")),
         ids["settings.status.segmentDir"],
       ),
     ),
   );
   if (storage && storage.bytes !== null) {
-    pathWrap.append(microCaption(`${formatStorageBytes(storage.bytes)} stored locally`));
+    pathWrap.append(microCaption(t("windows.ui.storedlocally", { "value": String(formatStorageBytes(storage.bytes)) })));
   }
 
   value.append(
     pathWrap,
-    actionButton("open folder", undefined, true, () => void invoke("open_storage_folder")),
+    actionButton(t("windows.ui.openfolder"), undefined, true, () => void invoke("open_storage_folder")),
   );
-  return valueRow("stored on this PC", value);
+  return valueRow(t("windows.ui.storedonthispc"), value);
 }
 
 function syncRow(sync: SyncSnapshot): HTMLElement {
@@ -1838,7 +1859,7 @@ function syncRow(sync: SyncSnapshot): HTMLElement {
   let label: string;
   switch (pairing.phase) {
     case "not_paired":
-      label = "not paired. pair to sync your journal";
+      label = t("windows.ui.label");
       break;
     case "pairing":
     case "awaiting_confirmation":
@@ -1851,19 +1872,19 @@ function syncRow(sync: SyncSnapshot): HTMLElement {
   }
 
   return valueRow(
-    "journal sync",
+    t("windows.ui.journalsync"),
     selectable(automation(text("div", label), ids["settings.status.upload.state"])),
   );
 }
 
 function renderJournalOpenSection(dump: HealthDump): HTMLElement {
-  const pane = section("your journal");
+  const pane = section(t("windows.desktop.shared.copy.setupjournalcardheading"));
   const pairing = presentedPairing(dump.sync.pairing);
 
   if (pairing.phase === "awaiting_confirmation") {
     pane.append(
       automation(
-        text("div", pairing.finish_connecting ? pairingPhaseLabel(pairing) : "confirm your journal's mark to open it"),
+        text("div", pairing.finish_connecting ? pairingPhaseLabel(pairing) : t("windows.ui.confirmyourjournalsmarktoopen")),
         ids["settings.journal.unavailable"],
       ),
     );
@@ -1874,7 +1895,7 @@ function renderJournalOpenSection(dump: HealthDump): HTMLElement {
     journalOpenError = false;
     pane.append(
       automation(
-        text("div", "pair this PC to your journal to open it"),
+        text("div", t("windows.ui.pairthispctoyourjournalto")),
         ids["settings.journal.unavailable"],
       ),
     );
@@ -1888,12 +1909,12 @@ function renderJournalOpenSection(dump: HealthDump): HTMLElement {
   row.style.gap = "10px";
   row.style.padding = "7px 0";
 
-  const error = text("div", "couldn't open your journal — try again");
+  const error = text("div", t("windows.ui.couldntopenyourjournaltryagain"));
   error.style.color = "var(--danger)";
   error.style.fontSize = "12px";
   error.hidden = !journalOpenError;
 
-  const button = actionButton("open journal", ids["settings.journal.open"], true, async () => {
+  const button = actionButton(t("windows.desktop.shared.copy.settingsjournalopen"), ids["settings.journal.open"], true, async () => {
     try {
       await invoke("open_journal");
       journalOpenError = false;
@@ -2165,12 +2186,12 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
   // Once setup's connect step has paired, opening the journal is the only action
   // left there; pasting another link stays available from the journal page.
   const connectedInSetup = options.setupStep === true && pairing.phase === "paired";
-  const pane = section("pairing");
+  const pane = section(t("windows.ui.pairing"));
   if (!connectedInSetup) {
     pairingStatusEl = text("div", pairingStatusLabel(dump));
     pane.append(
       valueRow(
-        "status",
+        t("windows.ui.status"),
         selectable(automation(pairingStatusEl, ids["settings.pairing.state"])),
       ),
     );
@@ -2181,7 +2202,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
       const card = document.createElement("div");
       card.style.marginTop = "12px";
       const finishBtn = actionButton(
-        "finish connecting",
+        t("windows.ui.finishconnecting"),
         ids["settings.pairing.finishConnecting"],
         !finishInFlight,
         async () => {
@@ -2212,7 +2233,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
     if (displayableMark(pairing.mark)) {
       const markRow = renderConfirmCard(pairing.mark);
 
-      const emphasis = text("div", "does this match your journal?");
+      const emphasis = text("div", t("windows.desktop.shared.copy.journalmarkconfirmquestion"));
       emphasis.style.fontWeight = "600";
       emphasis.style.fontSize = "14px";
       emphasis.style.marginBottom = "4px";
@@ -2220,7 +2241,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
 
       const subtle = text(
         "div",
-        "your journal shows this same mark beside the pairing link. it should match, exactly.",
+        t("windows.ui.yourjournalshowsthissamemarkbeside"),
       );
       subtle.style.fontSize = "12px";
       subtle.style.color = "var(--fg-subtle)";
@@ -2234,7 +2255,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
       btnRow.style.marginTop = "8px";
 
       const rejectBtn = actionButton(
-        "that doesn't match",
+        t("windows.desktop.shared.copy.journalmarkmismatchbutton"),
         ids["settings.pairing.confirmReject"],
         true,
         async () => {
@@ -2253,7 +2274,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
       );
 
       const confirmBtn = actionButton(
-        "yes, this is my journal",
+        t("windows.desktop.shared.copy.journalmarkconfirmbutton"),
         ids["settings.pairing.confirmYes"],
         true,
         async () => {
@@ -2276,7 +2297,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
     } else {
       const markRow = renderConfirmCard(null);
 
-      const emphasis = text("div", "couldn't verify");
+      const emphasis = text("div", t("windows.desktop.shared.copy.journalmarkunverifiedtitle"));
       emphasis.style.fontWeight = "600";
       emphasis.style.fontSize = "14px";
       emphasis.style.marginBottom = "4px";
@@ -2284,7 +2305,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
 
       const subtle = text(
         "div",
-        "this PC couldn't work out your journal's mark, so there's nothing to compare. continue only if you're sure the link came from your journal.",
+        t("windows.ui.thispccouldntworkoutyour"),
       );
       subtle.style.fontSize = "12px";
       subtle.style.color = "var(--fg-subtle)";
@@ -2298,7 +2319,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
       btnRow.style.marginTop = "8px";
 
       const cancelBtn = actionButton(
-        "cancel pairing",
+        t("windows.desktop.shared.copy.journalmarkunverifiedcancelbutton"),
         ids["settings.pairing.confirmCancel"],
         true,
         async () => {
@@ -2317,7 +2338,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
       );
 
       const continueBtn = actionButton(
-        "continue anyway",
+        t("windows.desktop.shared.copy.journalmarkunverifiedcontinuebutton"),
         ids["settings.pairing.confirmContinue"],
         true,
         async () => {
@@ -2350,7 +2371,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
   } else {
     pane.append(
       valueRow(
-        "mark",
+        t("windows.ui.mark"),
         automation(
           renderMarkCard(paired ? pairing.mark : null, paired ? "unavailable" : "generic"),
           ids["settings.pairing.mark"],
@@ -2362,7 +2383,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
   if (pairing.phase === "not_paired") {
     if (pairing.detail === SAME_COMPUTER_UNVERIFIED) {
       const msg = automation(
-        text("div", "couldn't verify your journal, so nothing connected. try again, or paste a pairing link."),
+        text("div", t("windows.ui.couldntverifyjournalsonothing")),
         ids["settings.pairing.foundFailed"],
       );
       msg.style.fontSize = "12px";
@@ -2372,7 +2393,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
     } else if (pairing.detail === "mark_rejected") {
       const msg = text(
         "div",
-        "you said this mark doesn't match the one your journal shows, so this PC isn't paired. you may have pasted the wrong link, or something isn't right. paste a fresh link from your journal, or email support@solstone.app and we'll help.",
+        t("windows.ui.yousaidthismarkdoesntmatch"),
       );
       msg.style.fontSize = "12px";
       msg.style.color = "var(--fg-subtle)";
@@ -2381,7 +2402,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
     } else if (pairing.detail === "pairing_cancelled") {
       const msg = text(
         "div",
-        "pairing cancelled. paste a fresh link from your journal when you're ready.",
+        t("windows.ui.pairingcancellednothingthispchaskept"),
       );
       msg.style.fontSize = "12px";
       msg.style.color = "var(--fg-subtle)";
@@ -2409,7 +2430,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
     const browserRow = document.createElement("div");
     browserRow.style.marginTop = "8px";
     const openBtn = actionButton(
-      "open your journal",
+      t("windows.desktop.shared.copy.setupopenyourjournal"),
       ids["settings.setup.browserJournal"],
       !browserInFlight,
       async () => {
@@ -2446,7 +2467,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
     const connectRow = document.createElement("div");
     connectRow.style.marginTop = "8px";
     const connectBtn = actionButton(
-      "continue this connection",
+      t("windows.ui.continuethisconnection"),
       ids["settings.setup.nativeConnect"],
       !expired && !nativeConnectInFlight,
       async () => {
@@ -2475,7 +2496,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
 
   const dismissDeferredButton = () =>
     actionButton(
-      "dismiss",
+      t("windows.desktop.shared.updates.dismiss"),
       ids["settings.setup.deferredDismiss"],
       !deferredInFlight,
       async () => {
@@ -2499,7 +2520,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
   if (dump.setup?.sequence_enabled === true && dump.setup.has_deferred_link && !connectedInSetup) {
     const deferredNote = document.createElement("p");
     deferredNote.classList.add("setup-deferred-note");
-    deferredNote.textContent = "another pairing link arrived: use it or dismiss it.";
+    deferredNote.textContent = t("windows.ui.textcontent");
     pane.append(deferredNote);
     const deferredRow = document.createElement("div");
     deferredRow.classList.add("setup-deferred-row");
@@ -2507,7 +2528,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
     deferredRow.style.display = "flex";
     deferredRow.style.gap = "8px";
     const useBtn = actionButton(
-      "use this link",
+      t("windows.ui.usethislink"),
       ids["settings.setup.deferredUse"],
       !deferredInFlight,
       async () => {
@@ -2562,10 +2583,10 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
           ? SETUP_LINK_ERRORS.handoff_rejected
           : setup?.handoff_deferred
             ? SETUP_LINK_ERRORS.handoff_deferred
-            : "another pairing link could not be added.";
+            : t("windows.ui.anotherpairinglinkcouldnotbeadded");
     retryRow.append(reason);
     const retryBtn = actionButton(
-      "try again",
+      t("windows.desktop.shared.copy.tryagain"),
       ids["settings.setup.linkRetry"],
       !retryInFlight,
       async () => {
@@ -2590,8 +2611,8 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
 
   const freshLink = document.createElement("p");
   freshLink.textContent = pairing.phase === "paired"
-    ? "a new link from your journal can be pasted here."
-    : 'in your journal, choose "pair a device" and paste the link here.';
+    ? t("windows.ui.anewlinkfromyourjournalcanbepastedhere")
+    : t("windows.ui.inyourjournalchoosepairadeviceandpastethelinkher");
   freshLink.dataset.automationId = ids["settings.setup.freshLink"];
   if (!connectedInSetup) pane.append(freshLink);
 
@@ -2603,10 +2624,10 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
 
   const input = document.createElement("input");
   input.type = "text";
-  input.placeholder = "paste a pairing link from your journal";
+  input.placeholder = t("windows.ui.placeholder");
   input.value = pairingDraft;
   input.dataset.automationId = ids["settings.pairing.input"];
-  input.setAttribute("aria-label", "pairing link from your journal");
+  input.setAttribute("aria-label", t("windows.ui.pairinglinkfromyourjournal"));
   input.classList.add("fluent-control");
   input.style.fontSize = "13px";
   input.style.padding = "7px 9px";
@@ -2625,7 +2646,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
   {
     const button = document.createElement("button");
     const busy = pairingBusy || pairing.phase === "pairing";
-    button.textContent = busy ? "pairing…" : "pair";
+    button.textContent = busy ? t("windows.ui.textcontent2") : t("windows.desktop.shared.setup.pair");
     button.disabled = busy;
     button.dataset.automationId = ids["settings.pairing.submit"];
     // Beside an offer the connect button is the screen's one primary.
@@ -2646,7 +2667,7 @@ function renderPairingSection(dump: HealthDump, options: { setupStep?: boolean }
       foundJournalConnected = false;
       foundJournalConnectedAt = null;
       button.disabled = true;
-      button.textContent = "pairing…";
+      button.textContent = t("windows.ui.textcontent2");
       try {
         // The result is reflected through the health dump's pairing phase; we
         // ignore the return and let the next render paint the outcome.
@@ -2686,7 +2707,7 @@ function renderUnknownJournalsSection(sightings: UnknownJournalSighting[] | unde
     return null;
   }
 
-  const pane = section("unknown journals");
+  const pane = section(t("windows.ui.unknownjournals"));
   automation(pane, ids["settings.unknown-journal.list"]);
 
   for (const sighting of sightings) {
@@ -2703,7 +2724,7 @@ function renderUnknownJournalsSection(sightings: UnknownJournalSighting[] | unde
     summary.style.color = "var(--fg)";
     summary.style.padding = "4px 0";
 
-    const viewDetails = text("span", "view details");
+    const viewDetails = text("span", t("windows.ui.viewdetails"));
     viewDetails.style.marginLeft = "8px";
     viewDetails.style.fontWeight = "400";
     viewDetails.style.color = "var(--fg-subtle)";
@@ -2711,8 +2732,8 @@ function renderUnknownJournalsSection(sightings: UnknownJournalSighting[] | unde
       text(
         "span",
         sighting.address
-          ? `unknown journal seen at ${sighting.address}`
-          : "unknown journal seen through the relay",
+          ? t("windows.tray.unknownjournalseenat", { "name": String(sighting.address) })
+          : t("windows.tray.unknownjournalseenthroughtherelay"),
       ),
       viewDetails,
     );
@@ -2726,7 +2747,7 @@ function renderUnknownJournalsSection(sightings: UnknownJournalSighting[] | unde
     detailContent.style.flexDirection = "column";
     detailContent.style.gap = "12px";
 
-    const heading = text("div", "something answered instead of your journal");
+    const heading = text("div", t("windows.ui.somethingotherthanyourjournalansweredcompare"));
     heading.classList.add("unknown-journal-heading");
     heading.style.fontSize = "13px";
     heading.style.fontWeight = "600";
@@ -2734,8 +2755,8 @@ function renderUnknownJournalsSection(sightings: UnknownJournalSighting[] | unde
     const body = text(
       "p",
       sighting.address
-        ? `something answered this PC at ${sighting.address}, and it isn't the journal this PC is paired with. this could be another device now using that address, or your journal, if its identity was reset. if the mark under "what answered" matches the one your journal shows now, pair this PC again.`
-        : "something answered this PC through the relay, and it isn't the journal this PC is paired with. this is less certain than a direct connection.",
+        ? t("windows.ui.somethingansweredpcatisnt", { "value": String(sighting.address) })
+        : t("windows.ui.somethingansweredpcthroughrelayisn"),
     );
     body.classList.add("unknown-journal-body");
     body.style.margin = "-8px 0 0";
@@ -2751,14 +2772,14 @@ function renderUnknownJournalsSection(sightings: UnknownJournalSighting[] | unde
     // Responding / what answered
     const respondingBlock = document.createElement("div");
     automation(respondingBlock, ids["settings.unknown-journal.what-answered"]);
-    const respondingLabel = text("div", "what answered");
+    const respondingLabel = text("div", t("windows.ui.whatanswered"));
     respondingLabel.style.fontSize = "11px";
     respondingLabel.style.color = "var(--fg-subtle)";
     respondingLabel.style.marginBottom = "6px";
 
     const respondingCaption = text(
       "div",
-      displayableMark(sighting.responding_mark) ? "claimed, not verified" : "no identity presented",
+      displayableMark(sighting.responding_mark) ? t("windows.ui.claimednotverified") : t("windows.ui.noidentitypresented"),
     );
     automation(respondingCaption, ids["settings.unknown-journal.responding-caption"]);
     respondingCaption.style.fontSize = "11px";
@@ -2774,7 +2795,7 @@ function renderUnknownJournalsSection(sightings: UnknownJournalSighting[] | unde
     // Expected / your journal
     const pairedBlock = document.createElement("div");
     automation(pairedBlock, ids["settings.unknown-journal.your-journal"]);
-    const pairedLabel = text("div", "your journal");
+    const pairedLabel = text("div", t("windows.desktop.shared.copy.setupjournalcardheading"));
     pairedLabel.style.fontSize = "11px";
     pairedLabel.style.color = "var(--fg-subtle)";
     pairedLabel.style.marginBottom = "6px";
@@ -2819,18 +2840,11 @@ async function applyExclusions(next: ExclusionRules, edit: ExclusionEdit): Promi
 }
 
 function exclusionActivityLabel(health: ExclusionHealth | null): string {
-  if (!health || !health.rules_active) {
-    return "no exclusions active";
-  }
-  // frames_dropped is the count that never reached the journal: the Drop arm in
-  // capture-wgc returns before emit_screen_frame. frames_redacted frames DO reach
-  // the journal with the excluded rectangles blacked out, so they are not "kept
-  // out" and must not be reported as though they were.
-  const keptOut = `${health.frames_dropped} frame${health.frames_dropped === 1 ? "" : "s"} kept out of your journal this session`;
-  if (health.frames_redacted > 0) {
-    return `${keptOut} · ${health.frames_redacted} more reached your journal with an excluded window blacked out`;
-  }
-  return keptOut;
+  if (!health || !health.rules_active) return t("windows.ui.noexclusionsactive");
+  const dropped = health.frames_dropped;
+  const redacted = health.frames_redacted;
+  if (redacted > 0) return t("windows.exclusions.activityredacted", {count: dropped, display: number(dropped, {useGrouping:false}), more: number(redacted, {useGrouping:false})});
+  return t("windows.exclusions.activity", { count: dropped, display: number(dropped, { useGrouping: false }) });
 }
 
 // A removable list of string values (excluded exes / title keywords).
@@ -2838,7 +2852,7 @@ function removableList(
   values: string[],
   listAutomationId: string,
   onRemove: (value: string) => void,
-  emptyText = "none yet",
+  emptyText = t("windows.desktop.shared.app.emptytext"),
   pendingValue: string | null = null,
 ): HTMLElement {
   const list = automation(document.createElement("div"), listAutomationId);
@@ -2867,7 +2881,7 @@ function removableList(
 
     const remove = document.createElement("button");
     remove.textContent = "×";
-    remove.setAttribute("aria-label", `remove ${value}`);
+    remove.setAttribute("aria-label", t("windows.ui.remove", { "value": String(value) }));
     remove.style.border = "none";
     remove.style.background = "transparent";
     remove.style.color = "var(--fg-subtle)";
@@ -2888,15 +2902,15 @@ function removableList(
 }
 
 function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump, desk = false): HTMLElement {
-  const pane = desk ? document.createElement("div") : section("privacy");
+  const pane = desk ? document.createElement("div") : section(t("windows.ui.privacy"));
   if (!desk) {
     pane.append(
-      helpCaption("choose what stays out of your journal. changes take effect right away."),
+      helpCaption(t("windows.ui.choosewhatstaysoutofyourjournal")),
     );
   }
   if (!exclusionsPersisted) {
     const warn = helpCaption(
-      "these rules are active now but couldn't be saved, so they may not survive a restart.",
+      t("windows.ui.theserulesareactivenowbutcouldn"),
     );
     warn.style.color = "var(--danger)";
     pane.append(warn);
@@ -2908,9 +2922,9 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump, desk =
   if (desk) {
     pane.append(
       deskSwitchRow(
-        "private windows",
+        t("windows.ui.privatewindows"),
         rules.exclude_private_browsing,
-        "Edge and Firefox set to English",
+        t("windows.ui.edgeandfirefoxsettoenglish"),
         (on) => {
           void applyExclusions({ ...rules, exclude_private_browsing: on }, { kind: "toggle" });
         },
@@ -2919,7 +2933,7 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump, desk =
   } else {
     pane.append(
       toggleRow(
-        "keep private windows out of your journal: Edge and Firefox set to English",
+        t("windows.ui.keepprivatewindowsoutofyourjournal"),
         ids["settings.exclusions.privateBrowsing"],
         rules.exclude_private_browsing,
         (on) => {
@@ -2930,14 +2944,14 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump, desk =
     );
     pane.append(
       microCaption(
-        "this reads the window title and matches private windows in Edge and Firefox. that was checked on Edge 153 and Firefox 156, each set to English; a browser update or another language can change a title, and then a private window there may reach your journal. Chrome 153 and Brave 153 don't show private mode in their titles, and other browsers are not matched, so their private windows reach your journal. to keep every window of a browser out of your journal, add that browser to the excluded apps below.",
+        t("windows.ui.thisreadsthewindowtitleandmatches"),
       ),
     );
   }
 
   // Excluded apps — pick from the live running-app list (robust process identity).
-  pane.append(subheadLabel("excluded apps"));
-  pane.append(helpCaption("windows from these apps never reach your journal."));
+  pane.append(subheadLabel(t("windows.desktop.shared.settings.excludedapps")));
+  pane.append(helpCaption(t("windows.ui.windowsfromtheseappsneverreachyour")));
   const appPickRow = document.createElement("div");
   appPickRow.style.display = "grid";
   appPickRow.style.gridTemplateColumns = "minmax(0, 1fr) auto";
@@ -2946,7 +2960,7 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump, desk =
 
   const appSelect = document.createElement("select");
   appSelect.dataset.automationId = ids["settings.exclusions.appInput"];
-  appSelect.setAttribute("aria-label", "choose an app to exclude");
+  appSelect.setAttribute("aria-label", t("windows.ui.chooseanapptoexclude"));
   appSelect.classList.add("fluent-control");
   appSelect.style.fontSize = "13px";
   appSelect.style.padding = "7px 9px";
@@ -2960,7 +2974,7 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump, desk =
   );
   const placeholder = document.createElement("option");
   placeholder.value = "";
-  placeholder.textContent = choices.length > 0 ? "choose a running app…" : "no other apps running";
+  placeholder.textContent = choices.length > 0 ? t("windows.ui.choosearunningapp") : t("windows.ui.nootherappsrunning");
   appSelect.append(placeholder);
   for (const app of choices) {
     const opt = document.createElement("option");
@@ -2974,7 +2988,7 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump, desk =
   }
 
   const appAdd = actionButton(
-    "exclude",
+    t("windows.ui.exclude"),
     ids["settings.exclusions.appAdd"],
     choices.length > 0,
     () => {
@@ -3004,14 +3018,14 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump, desk =
           { kind: "appRemove", value: exe },
         );
       },
-      "nothing excluded yet",
+      t("windows.ui.nothingexcludedyet"),
       exclusionsPending?.kind === "appRemove" ? exclusionsPending.value : null,
     ),
   );
 
   // Title keywords — case-insensitive substring of a window title.
-  pane.append(subheadLabel("title keywords"));
-  pane.append(helpCaption("windows whose title contains a word you choose never reach your journal."));
+  pane.append(subheadLabel(t("windows.ui.titlekeywords")));
+  pane.append(helpCaption(t("windows.ui.windowswhosetitlecontainsawordyou")));
   const titleRow = document.createElement("div");
   titleRow.style.display = "grid";
   titleRow.style.gridTemplateColumns = "minmax(0, 1fr) auto";
@@ -3020,10 +3034,10 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump, desk =
 
   const titleInput = document.createElement("input");
   titleInput.type = "text";
-  titleInput.placeholder = "a keyword, e.g. banking";
+  titleInput.placeholder = t("windows.ui.placeholder2");
   titleInput.value = titleDraft;
   titleInput.dataset.automationId = ids["settings.exclusions.titleInput"];
-  titleInput.setAttribute("aria-label", "title keyword to exclude");
+  titleInput.setAttribute("aria-label", t("windows.ui.titlekeywordtoexclude"));
   titleInput.classList.add("fluent-control");
   titleInput.style.fontSize = "13px";
   titleInput.style.padding = "7px 9px";
@@ -3053,7 +3067,7 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump, desk =
   };
 
   const titleAdd = actionButton(
-    "add",
+    t("windows.desktop.shared.settings.add"),
     ids["settings.exclusions.titleAdd"],
     true,
     addTitle,
@@ -3074,14 +3088,14 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump, desk =
           { kind: "titleRemove", value: keyword },
         );
       },
-      "no keywords yet",
+      t("windows.ui.nokeywordsyet"),
       exclusionsPending?.kind === "titleRemove" ? exclusionsPending.value : null,
     ),
   );
 
   pane.append(
     microCaption(
-      "a window that closes or moves can appear for up to one frame before exclusion applies.",
+      t("windows.ui.awindowthatclosesormovescan"),
     ),
   );
 
@@ -3091,7 +3105,7 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump, desk =
   activityFoot.style.marginTop = "16px";
   activityFoot.style.paddingTop = "12px";
   activityFoot.style.borderTop = "1px solid var(--border-subtle)";
-  const activityCap = text("div", "exclusion activity");
+  const activityCap = text("div", t("windows.ui.exclusionactivity"));
   activityCap.style.fontSize = "12px";
   activityCap.style.fontWeight = "600";
   activityCap.style.color = "var(--fg-subtle)";
@@ -3126,24 +3140,24 @@ function resetRoot(rootId: string): void {
 function pauseRemainingLabel(secs: number): string {
   const mins = Math.floor(secs / 60);
   if (mins <= 0) {
-    return "less than a minute left";
+    return t("windows.ui.lessthanaminuteleft");
   }
   if (mins < 60) {
-    return `${mins} min left`;
+    return t("windows.ui.arg0minleft", { "arg0": String(mins) });
   }
   const h = Math.floor(mins / 60);
   const m = mins % 60;
-  return m === 0 ? `${h} hr left` : `${h} hr ${m} min left`;
+  return m === 0 ? t("windows.ui.arg0hrleft", { "arg0": String(h) }) : t("windows.ui.hrlefthrminleftboth", { "count": Number(h), "count2": Number(m) });
 }
 
 function pausedStatusText(secs: number): string {
-  return `paused — ${pauseRemainingLabel(secs)}`;
+  return t("windows.ui.paused", { "count": String(pauseRemainingLabel(secs)) });
 }
 
 function statusStateLabel(dump: HealthDump): string {
   if (dump.app_state === "paused") {
     const secs = dump.pause?.seconds_remaining;
-    return secs != null ? pausedStatusText(secs) : "paused";
+    return secs != null ? pausedStatusText(secs) : t("windows.ui.pausedxa7a9dc5b");
   }
   return phaseLabel(dump.app_state);
 }
@@ -3219,16 +3233,16 @@ function hotkeyHasCombo(c: HotkeyConfig): boolean {
 function hotkeyStatusLabel(view: HotkeyView): string {
   switch (view.registration) {
     case "registered":
-      return "active";
+      return t("windows.ui.activex96879611");
     case "combo_taken":
-      return "that combo is in use by another app — pick another";
+      return t("windows.ui.thatcomboisinusebyanother");
     case "failed":
-      return "couldn't register that shortcut";
+      return t("windows.ui.couldntregisterthatshortcut");
     case "inactive":
       if (!hotkeyHasCombo(view.config)) {
-        return "no shortcut set";
+        return t("windows.ui.noshortcutset");
       }
-      return view.config.enabled ? "starting…" : "shortcut set but turned off";
+      return view.config.enabled ? t("windows.tray.starting") : t("windows.ui.shortcutsetbutturnedoff");
   }
 }
 
@@ -3352,14 +3366,14 @@ async function applyHotkey(next: HotkeyConfig): Promise<void> {
 }
 
 function renderHotkeySection(view: HotkeyView): HTMLElement {
-  const pane = section("global shortcut");
+  const pane = section(t("windows.ui.globalshortcut"));
   const cfg = view.config;
 
-  pane.append(helpCaption("a global shortcut to pause and resume intake from anywhere."));
+  pane.append(helpCaption(t("windows.ui.aglobalshortcuttopauseandresume")));
 
   pane.append(
     toggleRow(
-      "enable the pause / resume shortcut",
+      t("windows.ui.enablethepauseresumeshortcut"),
       ids["settings.hotkey.enabled"],
       cfg.enabled,
       (on) => {
@@ -3371,7 +3385,7 @@ function renderHotkeySection(view: HotkeyView): HTMLElement {
   // Press-to-capture — the native global-shortcut pattern. The owner clicks the
   // field and presses their combo; the field carries the settings.hotkey.combo
   // contract id (the combo control). Writes the same HotkeyConfig fields.
-  pane.append(subheadLabel("your shortcut"));
+  pane.append(subheadLabel(t("windows.ui.yourshortcut")));
   const combo = hotkeyComboString(cfg);
   const field = document.createElement("button");
   field.dataset.automationId = ids["settings.hotkey.combo"];
@@ -3390,10 +3404,10 @@ function renderHotkeySection(view: HotkeyView): HTMLElement {
   field.style.color = "var(--fg)";
   field.style.cursor = "pointer";
   if (hotkeyCapturing) {
-    const lead = text("span", "press your shortcut…");
+    const lead = text("span", t("windows.ui.pressyourshortcut"));
     lead.style.color = "var(--accent)";
     lead.style.fontWeight = "600";
-    const hint = text("span", "esc to cancel");
+    const hint = text("span", t("windows.ui.esctocancel"));
     hint.style.color = "var(--muted)";
     hint.style.fontSize = "12px";
     field.append(lead, hint);
@@ -3401,15 +3415,15 @@ function renderHotkeySection(view: HotkeyView): HTMLElement {
   } else if (combo) {
     const kbd = text("span", combo);
     kbd.style.fontFamily = 'ui-monospace, "Cascadia Code", Consolas, monospace';
-    const hint = text("span", "change");
+    const hint = text("span", t("windows.ui.change"));
     hint.style.color = "var(--fg-subtle)";
     hint.style.fontSize = "12px";
     field.append(kbd, hint);
     field.onclick = () => startHotkeyCapture();
   } else {
-    const lead = text("span", "click, then press your shortcut");
+    const lead = text("span", t("windows.ui.clickthenpressyourshortcut"));
     lead.style.color = "var(--fg-subtle)";
-    const hint = text("span", "set");
+    const hint = text("span", t("windows.ui.set"));
     hint.style.color = "var(--accent)";
     hint.style.fontSize = "12px";
     hint.style.fontWeight = "600";
@@ -3417,17 +3431,17 @@ function renderHotkeySection(view: HotkeyView): HTMLElement {
     field.onclick = () => startHotkeyCapture();
   }
   pane.append(field);
-  pane.append(microCaption("hold one or more of Ctrl, Alt, Shift, or Win and press a key."));
+  pane.append(microCaption(t("windows.ui.holdoneormoreofctrlalt")));
 
   const [statusText, statusColor] = hotkeyStatusDisplay(view);
   const statusEl = automation(text("div", statusText), ids["settings.hotkey.status"]);
   statusEl.style.color = statusColor;
-  pane.append(valueRow("status", statusEl));
+  pane.append(valueRow(t("windows.ui.status"), statusEl));
 
   // Clear — a quiet text button, present only when a combo is set.
   if (hotkeyHasCombo(cfg)) {
     const clear = document.createElement("button");
-    clear.textContent = "clear shortcut";
+    clear.textContent = t("windows.ui.textcontent4");
     clear.dataset.automationId = ids["settings.hotkey.clear"];
     clear.style.border = "none";
     clear.style.background = "transparent";
@@ -3522,21 +3536,21 @@ function reorderButton(
 }
 
 function renderMicSection(view: MicView): HTMLElement {
-  const pane = section("microphones");
+  const pane = section(t("windows.ui.microphones"));
   const cfg = view.config;
   const ordered = orderedMicDevices(cfg, micDevices);
 
   pane.append(
     helpCaption(
-      "the solstone app uses one microphone at a time. set which one, and how much to boost it.",
+      t("windows.ui.thesolstoneappusesonemicrophoneat"),
     ),
   );
 
   // Device priority first (macOS-sibling order) — reorder + enable/disable.
-  pane.append(subheadLabel("device priority"));
+  pane.append(subheadLabel(t("windows.ui.devicepriority")));
   pane.append(
     helpCaption(
-      "the top enabled microphone is used. use ↑ ↓ to set the order; the solstone app falls back to the next if one is unavailable.",
+      t("windows.ui.thetopenabledmicrophoneisuseduse"),
     ),
   );
   const list = automation(document.createElement("div"), ids["settings.mic.devices"]);
@@ -3545,7 +3559,7 @@ function renderMicSection(view: MicView): HTMLElement {
   list.style.gap = "6px";
   list.style.padding = "4px 0";
   if (ordered.length === 0) {
-    const empty = text("div", "no microphone input devices");
+    const empty = text("div", t("windows.ui.nomicrophoneinputdevices"));
     empty.style.color = "var(--muted)";
     empty.style.fontSize = "13px";
     list.append(empty);
@@ -3560,14 +3574,14 @@ function renderMicSection(view: MicView): HTMLElement {
 
     const orderIds = ordered.map((x) => x.id);
     row.append(
-      reorderButton("↑", idx > 0, `move ${d.name} up`, () => {
+      reorderButton("↑", idx > 0, t("windows.ui.moveup", { "name": String(d.name) }), () => {
         const o = [...orderIds];
         [o[idx - 1], o[idx]] = [o[idx], o[idx - 1]];
         void applyMic({ ...cfg, priority: o });
       }),
     );
     row.append(
-      reorderButton("↓", idx < ordered.length - 1, `move ${d.name} down`, () => {
+      reorderButton("↓", idx < ordered.length - 1, t("windows.ui.movedown", { "name": String(d.name) }), () => {
         const o = [...orderIds];
         [o[idx + 1], o[idx]] = [o[idx], o[idx + 1]];
         void applyMic({ ...cfg, priority: o });
@@ -3581,14 +3595,14 @@ function renderMicSection(view: MicView): HTMLElement {
       label.style.color = "var(--muted)";
     }
     if (d.id === view.active_id) {
-      const badge = text("span", " · active");
+      const badge = text("span", t("windows.ui.activex68f50a9b"));
       badge.style.color = "var(--accent)";
       label.append(badge);
     }
     row.append(label);
 
     const toggle = document.createElement("button");
-    toggle.textContent = disabled ? "enable" : "disable";
+    toggle.textContent = disabled ? t("windows.ui.enable") : t("windows.ui.disable");
     toggle.classList.add("fluent-control");
     toggle.style.fontSize = "12px";
     toggle.style.padding = "4px 10px";
@@ -3613,7 +3627,7 @@ function renderMicSection(view: MicView): HTMLElement {
   // Carries the settings.mic.active contract id.
   const activeName =
     ordered.find((d) => d.id === view.active_id)?.name ??
-    (view.active_id ? "selected device" : "none");
+    (view.active_id ? t("windows.ui.selecteddevice") : t("windows.ui.nonedisplay"));
   const activeRow = document.createElement("div");
   activeRow.style.display = "flex";
   activeRow.style.gap = "6px";
@@ -3622,20 +3636,20 @@ function renderMicSection(view: MicView): HTMLElement {
   activeRow.style.margin = "6px 0 0";
   const activeVal = automation(text("span", activeName), ids["settings.mic.active"]);
   activeVal.style.color = "var(--fg)";
-  activeRow.append(text("span", "active:"), activeVal);
+  activeRow.append(text("span", t("windows.ui.activex474d1b75")), activeVal);
   pane.append(activeRow);
 
   // Input gain — segmented 1× / 2× / 4× / 8×.
-  pane.append(subheadLabel("input gain"));
+  pane.append(subheadLabel(t("windows.ui.inputgain")));
   const gainRow = automation(document.createElement("div"), ids["settings.mic.gain"]);
   gainRow.setAttribute("role", "group");
-  gainRow.setAttribute("aria-label", "input gain");
+  gainRow.setAttribute("aria-label", t("windows.ui.inputgain"));
   gainRow.style.display = "flex";
   gainRow.style.gap = "6px";
   for (const level of MIC_GAIN_LEVELS) {
     const on = cfg.gain === level;
     const b = document.createElement("button");
-    b.textContent = `${level}×`;
+    b.textContent = t("windows.ui.textcontent5", { "level": String(level) });
     b.classList.add(on ? "fluent-accent" : "fluent-control");
     b.style.fontSize = "13px";
     b.style.padding = "5px 12px";
@@ -3652,7 +3666,7 @@ function renderMicSection(view: MicView): HTMLElement {
   pane.append(gainRow);
   pane.append(
     microCaption(
-      "a louder input for quiet microphones — changes apply right away. a stronger boost can pick up more background noise in a quiet room.",
+      t("windows.ui.alouderinputforquietmicrophoneschanges"),
     ),
   );
 
@@ -3683,7 +3697,7 @@ function navigateTo(route: Route): void {
 }
 
 function loadingCaption(): HTMLElement {
-  const cap = helpCaption("not available right now.");
+  const cap = helpCaption(t("windows.ui.notavailablerightnow"));
   cap.style.padding = "18px 20px";
   return cap;
 }
@@ -3700,21 +3714,21 @@ function clearLastSectionDivider(container: HTMLElement): void {
 }
 
 const BROWSER_COPY = {
-  connected: "connected now",
-  none: "no browser connected now",
-  paused: "paused with the rest of the solstone app. pausing doesn't hold back what's already taken in.",
-  held: "new browser pages aren't being taken in right now.",
-  full: "no room for more right now. new pages are taken in again once there's room.",
-  notPaired: "pair with your journal first",
+  connected: t("windows.desktop.shared.copy.sourcesbrowserconnectednow"),
+  none: t("windows.ui.nobrowserconnectednow"),
+  paused: t("windows.ui.pausedwiththerestofthesolstone"),
+  held: t("windows.desktop.shared.copy.sourcesbrowserheld"),
+  full: t("windows.ui.noroommorerightnownew"),
+  notPaired: t("windows.ui.pairwithyourjournalfirst"),
   setup:
-    "if you haven't yet, add the solstone extension to a browser on this PC. what you share goes into your journal.",
-  failed: "kept on this PC, not reaching your journal right now",
-  discard: "discard waiting browser pages",
-  discardConfirm: "browser pages still waiting to be sent will be removed from this PC.",
-  discardConfirmButton: "discard pages",
+    t("windows.ui.ifyouhaventyetaddthe"),
+  failed: t("windows.ui.keptonthispcnotreachingyour"),
+  discard: t("windows.desktop.shared.copy.sourcesbrowserdiscard"),
+  discardConfirm: t("windows.desktop.shared.copy.sourcesbrowserdiscardconfirm"),
+  discardConfirmButton: t("windows.desktop.shared.copy.sourcesbrowserdiscardcommit"),
   cancel: "cancel",
   discarded: "discarded",
-  discardFailed: "couldn't finish discarding. what's left is still on this PC.",
+  discardFailed: t("windows.ui.couldntfinishdiscardingwhatsleft"),
 } as const;
 
 const BROWSER_NAMES: Record<string, string> = { chrome: "Chrome", edge: "Edge", firefox: "Firefox" };
@@ -3729,7 +3743,7 @@ function browserStateText(status: BrowserStatus): string {
   }
   if (status.custody.full) {
     return status.delivery === "failed"
-      ? `${BROWSER_COPY.full} ${BROWSER_COPY.failed}`
+      ? t("windows.tray.text", { "tooltip": String(BROWSER_COPY.full), "notice": String(BROWSER_COPY.failed) })
       : BROWSER_COPY.full;
   }
   if (status.delivery === "failed" && status.custody.held_bytes > 0) {
@@ -3741,7 +3755,7 @@ function browserStateText(status: BrowserStatus): string {
         return BROWSER_COPY.none;
       }
       const names = [...new Set(status.connected.map((c) => BROWSER_NAMES[c.brand] ?? c.brand))];
-      return `${BROWSER_COPY.connected} · ${names.join(", ")}`;
+      return t("windows.desktop.shared.copy.text", { "value": String(BROWSER_COPY.connected), "value2": String(names.join(", ")) });
     }
     case "intake_off":
     case "unavailable":
@@ -3788,7 +3802,7 @@ async function openBrowserStore(brand: string): Promise<void> {
 }
 
 function renderBrowserRows(status: BrowserStatus): HTMLElement[] {
-  const rows: HTMLElement[] = [valueRow("browser pages", selectable(text("div", browserStateText(status))))];
+  const rows: HTMLElement[] = [valueRow(t("windows.desktop.shared.copy.sourcesbrowserpages"), selectable(text("div", browserStateText(status))))];
   const offerVisible = status.connected.length === 0 && status.capture !== "not_paired";
   if (!offerVisible) {
     browserStoreFailure = null;
@@ -3799,7 +3813,7 @@ function renderBrowserRows(status: BrowserStatus): HTMLElement[] {
     const storesContainer = document.createElement("div");
     automation(storesContainer, ids["settings.sources.browser.stores"]);
     for (const brand of status.stores) {
-      const btn = quietButton(`add to ${BROWSER_NAMES[brand] ?? brand}`, () => {
+      const btn = quietButton(t("windows.ui.addto", { "value": String(BROWSER_NAMES[brand] ?? brand) }), () => {
         void openBrowserStore(brand);
       });
       btn.dataset.brand = brand;
@@ -3809,7 +3823,7 @@ function renderBrowserRows(status: BrowserStatus): HTMLElement[] {
     if (browserStoreFailure !== null) {
       const err = text(
         "div",
-        `couldn't open the store page in ${BROWSER_NAMES[browserStoreFailure] ?? browserStoreFailure}.`,
+        t("windows.ui.couldntopenthestorepagein", { "value": String(BROWSER_NAMES[browserStoreFailure] ?? browserStoreFailure) }),
       );
       automation(err, ids["settings.sources.browser.storeError"]);
       err.style.color = "var(--danger)";
@@ -3860,99 +3874,98 @@ function renderBrowserRows(status: BrowserStatus): HTMLElement[] {
 const OBSIDIAN_COPY = {
   label: "Obsidian",
   explain:
-    "the solstone app takes in the notes in one vault on this computer. all of them go into your journal, then each one as it changes. your vault stays as it is.",
-  foundLabel: "vaults on this computer",
-  noneFound: "the solstone app didn't find a vault on this computer. choose its folder instead.",
-  use: "use this vault",
-  chooseFolder: "choose a folder",
-  refusedNotVault: "that folder isn't an Obsidian vault, so nothing was sent.",
-  refusedName: "that folder's name can't be a vault's name in your journal. rename the folder and try again.",
-  couldNotTurnOn: "couldn't turn this on. try again.",
-  checking: "waiting to reach your journal",
-  waitingUpdate: "waiting for a journal update",
-  waitingUpdateDetail: "your journal needs an update before it can take these notes. they're waiting on this computer.",
+    t("windows.ui.solstoneapptakesnotesonevault"),
+  foundLabel: t("windows.ui.vaultscomputer"),
+  noneFound: t("windows.ui.solstoneappdidntfindvault"),
+  use: t("windows.ui.usevault"),
+  chooseFolder: t("windows.ui.choosefolder"),
+  refusedNotVault: t("windows.ui.thatfolderisntobsidianvault"),
+  refusedName: t("windows.ui.thatfoldersnamecant"),
+  couldNotTurnOn: t("windows.ui.couldntturntryagain"),
+  checking: t("windows.ui.waitingreachjournal"),
+  waitingUpdate: t("windows.ui.waitingjournalupdate"),
+  waitingUpdateDetail: t("windows.ui.journalneedsupdatebeforecantake"),
   on: "on",
   paused: "paused",
-  needsAttention: "needs attention",
+  needsAttention: t("windows.desktop.shared.copy.settingstabattentiona11y"),
   vault: "vault",
-  lastChecked: "last checked",
-  notOnDevice: "not on this computer",
-  tooLarge: "too large to bring in",
+  lastChecked: t("windows.ui.lastchecked"),
+  notOnDevice: t("windows.ui.notonthiscomputer"),
+  tooLarge: t("windows.ui.toolargebring"),
   attentionVault:
-    "the solstone app can't read this vault. check that its folder is there and that the drive it's on is connected. nothing changes in your journal while it's out of reach.",
-  attentionPart: "part of this vault can't be read. check the permissions on the folders inside it. the rest of the vault keeps going into your journal.",
-  attentionFile: "some notes couldn't go into your journal. the solstone app tries them again the next time it starts.",
-  attentionStorage: "the solstone app couldn't save its place for this vault. check that this computer has free space.",
-  warningHeading: "a vault with this name is already in your journal",
-  waitingAnswer: "waiting for your answer",
+    t("windows.ui.solstoneappcantreadvault"),
+  attentionPart: t("windows.ui.partvaultcantberead"),
+  attentionFile: t("windows.ui.somenotescouldntgointo"),
+  attentionStorage: t("windows.ui.solstoneappcouldntsaveits"),
+  warningHeading: t("windows.ui.vaultwithnamealreadyjournal"),
+  waitingAnswer: t("windows.ui.waitingforyouranswer"),
   continue: "continue",
   cancel: "cancel",
-  turnOff: "turn off",
+  turnOff: t("windows.ui.turnoff"),
   turnOffNote:
-    "turning this off stops bringing in changes. what's already in your journal stays there, and what's waiting stays on this computer until you turn it on again.",
+    t("windows.ui.turningoffstopsbringingchangeswhat"),
 } as const;
 
 /** Every screenshots string, by its id in the locked owner copy. */
 const SCREENSHOTS_COPY = {
-  S1: "screenshots",
-  S4: (folder: string) => `from ${folder}`,
-  S5: (done: number, total: number) => `${done} of ${total} in your journal`,
-  S6: (done: number, total: number) => `${done} of ${total} screenshots in your journal`,
-  S7: "from before today",
+  S1: t("windows.ui.screenshots"),
+  S4: (folder: string) => t("windows.ui.from", { "value": String(folder) }),
+  S5: (done: number, total: number) => t("windows.ui.arg0ofarg1inyourjournal", { "arg0": String(done), "arg1": String(total) }),
+  S6: (done: number, total: number) => t("windows.ui.arg0ofarg1screenshotsinyourjournal", { "arg0": String(done), "arg1": String(total) }),
+  S7: t("windows.ui.frombeforetoday"),
   S8: {
-    thirty_days: "the last 30 days",
-    six_months: "the last 6 months",
-    year: "the last year",
-    all: "all of it",
-    nothing: "nothing from before today",
+    thirty_days: t("windows.ui.thelast30days"),
+    six_months: t("windows.ui.thelast6months"),
+    year: t("windows.ui.thelastyear"),
+    all: t("windows.ui.allofit"),
+    nothing: t("windows.ui.nothingfrombeforetoday"),
   } as Record<ScreenshotsSpan, string>,
-  S9: "you'll see how many screenshots there are before any come in.",
-  S10: (count: number) => (count === 1 ? "bring in 1 screenshot" : `bring in ${count.toLocaleString("en-US")} screenshots`),
-  S10Today: "start from today",
-  checking: "checking\u2026",
-  S11: "choose how far back to start, then bring them in.",
-  S12: "couldn't count your screenshots.",
-  S12Action: "try again",
-  S14: "a screenshot already in your journal stays there if you delete it from the folder.",
-  S15: "what's already in your journal stays when you pause or turn this off.",
+  S9: t("windows.ui.youllseehowmanyscreenshotstherearebeforeanycomei"),
+  S10: (count: number) => (count === 1 ? t("windows.ui.bringin1screenshot") : t("windows.ui.bringinarg0screenshots", { "arg0": String(count.toLocaleString("en-US")) })),
+  S10Today: t("windows.ui.startfromtoday"),
+  checking: t("windows.ui.checking"),
+  S11: t("windows.ui.choosehowfarbacktostartthenbringthemin"),
+  S12: t("windows.ui.couldntcountyourscreenshots"),
+  S12Action: t("windows.desktop.shared.copy.tryagain"),
+  S14: t("windows.ui.ascreenshotalreadyinyourjournalstaysthereifyoude"),
+  S15: t("windows.ui.whatsalreadyinyourjournalstayswhenyoupauseorturn"),
   /** S16's second sentence: under the computer's whole pause it stands alone. */
-  S16ComputerPause: "screenshots you take while it's paused don't come in.",
-  S17: "screenshots already in your journal aren't brought in again.",
-  S18: "last checked",
-  S19: "waiting to go to your journal",
-  S20: (count: number) => countTotal(count, "screenshot", "screenshots"),
-  S21: "waiting for a journal update. your screenshots wait on this PC.",
-  S22: "folder",
-  S23: "only what the solstone app can tell is a screenshot comes in.",
-  D1: "while this is on, the solstone app takes in the screenshots you take on this PC, and your journal keeps each one at the minute you took it.",
-  D3: (folder: string) => `other files in ${folder} stay where they are.`,
-  D8: "couldn't find a Screenshots folder on this PC. choose the folder your screenshots save to.",
-  D9: (folder: string) => `the ${folder} folder isn't on this PC anymore.`,
+  S16ComputerPause: t("windows.ui.screenshotsyoutakewhileitspauseddontcomein"),
+  S17: t("windows.ui.screenshotsalreadyinyourjournalarentbroughtinaga"),
+  S18: t("windows.ui.lastchecked"),
+  S19: t("windows.ui.waitingtogotoyourjournal"),
+  S20: (count: number) => quantity("screenshots", count),
+  S21: t("windows.ui.waitingforajournalupdateyourscreenshotswaitonthi"),
+  S22: t("windows.ui.folder"),
+  S23: t("windows.ui.onlywhatthesolstoneappcantellisascreenshotcomesi"),
+  D1: t("windows.ui.whilethisisonthesolstoneapptakesinthescreenshots"),
+  D3: (folder: string) => t("windows.ui.otherfilesinarg0staywheretheyare", { "arg0": String(folder) }),
+  D8: t("windows.ui.couldntfindascreenshotsfolderonthispcchoosethefo"),
+  D9: (folder: string) => t("windows.ui.thearg0folderisntonthispcanymore", { "arg0": String(folder) }),
   D12: (count: number) =>
     count === 1
-      ? "1 screenshot can't come in, so it stays in the folder."
-      : `${count} screenshots can't come in, so they stay in the folder.`,
-  D13: (count: number) => (count === 1 ? "couldn't read 1 screenshot." : `couldn't read ${count} screenshots.`),
-  D13Action: "try again",
-  D15: "more about this",
-  D16: (folder: string) => `every picture saved in ${folder} comes in, not only your screenshots.`,
-  D17: "a screenshot that's only copied to the clipboard isn't saved, so it doesn't come in.",
-  chooseFolder: "choose a folder\u2026",
-  resume: "resume",
+      ? t("windows.ui.value1screenshotcantcomeinsoitstaysinthefolder")
+      : t("windows.ui.arg0screenshotscantcomeinsotheystayinthefolder", { "arg0": String(count) }),
+  D13: (count: number) => (count === 1 ? t("windows.ui.couldntread1screenshot") : t("windows.ui.couldntreadarg0screenshots", { "arg0": String(count) })),
+  D13Action: t("windows.desktop.shared.copy.tryagain"),
+  D15: t("windows.ui.moreaboutthis"),
+  D16: (folder: string) => t("windows.ui.everypicturesavedinarg0comesinnotonlyyourscreens", { "arg0": String(folder) }),
+  D17: t("windows.ui.ascreenshotthatsonlycopiedtotheclipboardisntsave"),
+  chooseFolder: t("windows.ui.chooseafolderxdbec742d"),
+  resume: t("windows.desktop.shared.setup.wizardpausefailure2"),
 } as const;
 
 function obsidianWarningText(warning: NonNullable<ObsidianStatus["warning"]>): string {
-  const from = warning.device ? `from ${warning.device}` : "from another device";
-  let date = "";
   const parsed = warning.last_synced_at ? new Date(warning.last_synced_at) : null;
-  if (parsed && !Number.isNaN(parsed.getTime())) {
-    date = `, last updated ${parsed.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}`;
-  }
-  return `your journal already has a vault named ${warning.vault} ${from}${date}. if you continue, changes from both devices go into your journal.`;
+  const date = parsed && !Number.isNaN(parsed.getTime()) ? parsed.toLocaleDateString(formatLocale, {year:"numeric",month:"short",day:"numeric"}) : null;
+  if (warning.device && date) return t("windows.obsidian.warningdevicedate", { vault: String(warning.vault), device: String(warning.device), date: String(date) });
+  if (warning.device) return t("windows.obsidian.warningdevice", { vault: String(warning.vault), device: String(warning.device) });
+  if (date) return t("windows.obsidian.warningdate", { vault: String(warning.vault), date: String(date) });
+  return t("windows.obsidian.warning", { vault: String(warning.vault) });
 }
 
 function obsidianProgressText(sync: NonNullable<ObsidianStatus["first_sync"]>): string {
-  return `${sync.sent} of ${sync.found} notes in your journal`;
+  return t("windows.ui.notesjournal", { "value": String(sync.sent), "value2": String(sync.found) });
 }
 
 /** The tile line while Obsidian sets up: what it is waiting on, never a generic one. */
@@ -3999,7 +4012,7 @@ function obsidianStateText(state: ObsidianStateName): string {
     case "needs_attention":
       return OBSIDIAN_COPY.needsAttention;
     case "off":
-      return "off";
+      return t("windows.desktop.shared.app.microphonemodeoff");
   }
 }
 
@@ -4125,7 +4138,7 @@ function renderObsidianRows(status: ObsidianStatus): HTMLElement[] {
     rows.push(valueRow("", selectable(text("div", obsidianProgressText(status.first_sync)))));
   }
   if (status.waiting > 0) {
-    rows.push(valueRow("", selectable(text("div", `${status.waiting} waiting to sync`))));
+    rows.push(valueRow("", selectable(text("div", t("windows.ui.waitingsync", { "value": String(status.waiting) })))));
   }
   rows.push(valueRow(OBSIDIAN_COPY.lastChecked, selectable(text("div", lastSyncedLabel(status.last_checked_ms, nowSecs())))));
   if (status.not_on_device > 0) {
@@ -4174,12 +4187,12 @@ function renderSourceControl(
 
   const accessibleName =
     kind === "mic"
-      ? "microphone"
+      ? t("windows.ui.microphone")
       : kind === "system_audio"
-        ? "computer sound"
+        ? t("windows.ui.computersound")
         : kind === "desktop_activity"
-          ? "desktop activity"
-          : "screen";
+          ? t("windows.ui.desktopactivity")
+          : t("windows.ui.screen");
 
   const toggle = toggleRow("", switchId, switchOn, (on) => {
     void invoke("set_source_enabled", { kind, enabled: on }).then(() => retryHealth());
@@ -4200,7 +4213,7 @@ function renderSourceControl(
   wrap.append(toggle, pillEl);
   if (status === "unavailable" && needsPermission && kind === "mic") {
     wrap.append(
-      actionButton("open windows settings", ids["settings.sources.mic.permission"], true, () =>
+      actionButton(t("windows.ui.openwindowssettings"), ids["settings.sources.mic.permission"], true, () =>
         void invoke("open_microphone_privacy_settings"),
       ),
     );
@@ -4216,7 +4229,7 @@ function renderSourceControl(
 }
 
 const ACTIVITY_SENTENCE =
-  "add app names, window titles and page addresses, and whether you're active or idle, or this PC is locked, to your journal. it's on while screen is on, and pauses with it. page addresses include the site and path, with nothing after ? or #.";
+  t("windows.ui.addappnameswindowtitlesandpage");
 
 function renderDesktopActivityControl(
   report: SourceReport | undefined,
@@ -4243,7 +4256,7 @@ function renderDesktopActivityControl(
   const addressesEnabled = dump.setup?.desktop_activity_page_addresses ?? false;
 
   const titlesToggle = toggleRow(
-    "window titles",
+    t("windows.desktop.shared.settings.windowtitles"),
     ids["settings.sources.desktopActivity.windowTitles"],
     titlesEnabled,
     (on) => {
@@ -4253,7 +4266,7 @@ function renderDesktopActivityControl(
   titlesToggle.style.padding = "2px 0";
 
   const addressesToggle = toggleRow(
-    "page addresses (Edge and Chrome)",
+    t("windows.ui.pageaddressesedgeandchrome"),
     ids["settings.sources.desktopActivity.pageAddresses"],
     addressesEnabled,
     (on) => {
@@ -4263,7 +4276,7 @@ function renderDesktopActivityControl(
   addressesToggle.style.padding = "2px 0";
 
   const throughPauseToggle = toggleRow(
-    "keep on while paused or screen is off",
+    t("windows.ui.keeponwhilepausedorscreenis"),
     ids["settings.sources.desktopActivity.throughPause"],
     dump.setup?.desktop_activity_through_pause ?? false,
     (on) => {
@@ -4279,7 +4292,7 @@ function renderDesktopActivityControl(
   ] as const) {
     container.append(toggle);
     if (failed) {
-      const failure = text("div", "could not save this choice. it may change after a restart. try again.");
+      const failure = text("div", t("windows.ui.couldnotsavethischoiceitmay"));
       failure.classList.add("save-failure");
       container.append(failure);
     }
@@ -4287,21 +4300,21 @@ function renderDesktopActivityControl(
   return container;
 }
 const savedChoicesUnread =
-  "couldn't read your saved source choices. sources are off. choose your sources again in settings.";
+  t("windows.ui.couldntreadyoursavedsourcechoices");
 
 function renderSourcesSection(dump: HealthDump): HTMLElement {
   if (dump.setup?.sequence_enabled !== true) {
-    const sources = section("sources");
+    const sources = section(t("windows.desktop.shared.app.sourcestitle"));
     if (dump.setup?.setup_read_failed === true) {
       const failureNotice = text("div", savedChoicesUnread);
       failureNotice.classList.add("save-failure");
       sources.prepend(failureNotice);
     }
     for (const [kind, label, id] of [
-      ["screen", "screen", ids["settings.sources.screen.state"]],
-      ["system_audio", "computer sound", ids["settings.sources.systemAudio.state"]],
-      ["mic", "microphone", ids["settings.sources.mic.state"]],
-      ["desktop_activity", "desktop activity", ids["settings.sources.desktopActivity.state"]],
+      ["screen", t("windows.ui.screen"), ids["settings.sources.screen.state"]],
+      ["system_audio", t("windows.ui.computersound"), ids["settings.sources.systemAudio.state"]],
+      ["mic", t("windows.ui.microphone"), ids["settings.sources.mic.state"]],
+      ["desktop_activity", t("windows.ui.desktopactivity"), ids["settings.sources.desktopActivity.state"]],
     ] as const) {
       const report = sourceByKind(dump, kind);
       sources.append(valueRow(label, selectable(automation(sourcePill(deriveSourceStatus(isSourceEnabled(dump.setup, kind), isSourcePaused(dump, kind), report), isAccessDenied(report)), id))));
@@ -4310,7 +4323,7 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
     if (latestObsidian) sources.append(...renderObsidianRows(latestObsidian));
     return sources;
   }
-  const sources = section("sources");
+  const sources = section(t("windows.desktop.shared.app.sourcestitle"));
   if (dump.setup?.setup_read_failed === true) {
     const failureNotice = text("div", savedChoicesUnread);
     failureNotice.classList.add("save-failure");
@@ -4322,19 +4335,19 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
   const desktopActivity = sourceByKind(dump, "desktop_activity");
   sources.append(
     valueRow(
-      "screen",
+      t("windows.ui.screen"),
       renderSourceControl("screen", screen, ids["settings.sources.screen.state"], ids["settings.sources.screen.enabled"], dump),
     ),
     valueRow(
-      "computer sound",
+      t("windows.ui.computersound"),
       renderSourceControl("system_audio", systemAudio, ids["settings.sources.systemAudio.state"], ids["settings.sources.systemAudio.enabled"], dump),
     ),
     valueRow(
-      "microphone",
+      t("windows.ui.microphone"),
       renderSourceControl("mic", mic, ids["settings.sources.mic.state"], ids["settings.sources.mic.enabled"], dump),
     ),
     valueRow(
-      "desktop activity",
+      t("windows.ui.desktopactivity"),
       renderDesktopActivityControl(desktopActivity, dump),
     ),
   );
@@ -4350,7 +4363,7 @@ function renderSourcesSection(dump: HealthDump): HTMLElement {
     const failureEl = document.createElement("div");
     failureEl.classList.add("save-failure");
     const retryBtn = actionButton(
-      "retry",
+      t("windows.desktop.shared.settings.textcontent"),
       ids["settings.sources.saveRetry"],
       true,
       () => {
@@ -4386,7 +4399,7 @@ function syncSummary(sync: SyncSnapshot): string {
   const pairing = presentedPairing(sync.pairing);
   switch (pairing.phase) {
     case "not_paired":
-      return "pair to deliver to your journal";
+      return t("windows.ui.pairtodelivertoyourjournal");
     case "pairing":
     case "awaiting_confirmation":
     case "failed":
@@ -4398,30 +4411,30 @@ function syncSummary(sync: SyncSnapshot): string {
         return needsAttentionLabel(quarantined);
       }
       if (sync.journal_link === "offline") {
-        return "waiting to sync";
+        return t("windows.ui.waitingtosync");
       }
-      return `${upload.uploaded_segments} delivered · ${upload.pending_segments} pending`;
+      return t("windows.ui.deliveredpending", { "value": String(upload.uploaded_segments), "value2": String(upload.pending_segments) });
     }
   }
 }
 
 function sourceGlanceToken(source: SourceReport | undefined, isMic: boolean): string {
   if (!source) {
-    return "not reported";
+    return t("windows.ui.notreported");
   }
   if (isAccessDenied(source)) {
-    return "needs permission";
+    return t("windows.ui.needspermission");
   }
 
   switch (source.status) {
     case "active":
-      return "on";
+      return stateWord("on");
     case "inactive":
-      return "off";
+      return stateWord("off");
     case "no_input_device":
-      return isMic ? "none" : "no input device";
+      return isMic ? t("windows.ui.nonedisplay") : t("windows.ui.noinputdevice");
     case "faulted":
-      return "attention needed";
+      return t("windows.ui.attentionneeded");
   }
 }
 
@@ -4431,9 +4444,9 @@ function sourcesGlance(dump: HealthDump): string {
   const mic = sourceGlanceToken(sourceByKind(dump, "mic"), true);
   const activity = sourceGlanceToken(sourceByKind(dump, "desktop_activity"), false);
   if (screen === "on" && systemAudio === "on" && mic === "on" && activity === "on") {
-    return "all sources on";
+    return t("windows.ui.allsourceson");
   }
-  return `screen: ${screen} · computer sound: ${systemAudio} · mic: ${mic} · desktop activity: ${activity}`;
+  return t("windows.ui.screenarg0computersoundarg1micarg2desktopactivit", { "arg0": String(screen), "arg1": String(systemAudio), "arg2": String(mic), "arg3": String(activity) });
 }
 
 function statusLabelNode(labelText: string): HTMLElement {
@@ -4479,27 +4492,27 @@ function nextSaveRemaining(secs: number, elapsed: number): number {
 
 function nextSaveLabel(remaining: number): string {
   const secs = Math.max(0, Math.floor(remaining));
-  return `in ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+  return t("windows.time.nextsave", { minutes: String(Math.floor(secs / 60)), seconds: String(String(secs % 60).padStart(2, "0")) });
 }
 
 function lastSyncedLabel(syncedAtMs: number | null | undefined, secsNow: number): string {
   if (syncedAtMs == null) {
-    return "not yet";
+    return t("windows.ui.notyet");
   }
   const secs = Math.max(0, secsNow - Math.floor(syncedAtMs / 1000));
   if (secs < 60) {
-    return "just now";
+    return t("windows.desktop.shared.app.justnow");
   }
   if (secs < 3600) {
     const m = Math.floor(secs / 60);
-    return `${m} minute${m === 1 ? "" : "s"} ago`;
+    return t("windows.ui.minuteago", { count: m });
   }
   if (secs < 86400) {
     const h = Math.floor(secs / 3600);
-    return `${h} hour${h === 1 ? "" : "s"} ago`;
+    return t("windows.ui.hourago", { count: h });
   }
   const d = Math.floor(secs / 86400);
-  return `${d} day${d === 1 ? "" : "s"} ago`;
+  return t("windows.ui.dayago", { count: d });
 }
 
 function updateStatusClocks(): void {
@@ -4521,23 +4534,23 @@ function renderStatusStrip(dump: HealthDump): HTMLElement {
   trackPausePill(dump, statePill);
   strip.append(
     statusLine(
-      "state",
+      t("windows.ui.state"),
       automation(statePill, ids["settings.status.appState.state"]),
     ),
   );
   if (dump.app_state === "observing" && dump.segment_seconds_remaining != null) {
     nextSaveEl = automation(text("span", nextSaveLabel(dump.segment_seconds_remaining)), ids["settings.status.nextSave"]);
-    strip.append(statusLine("next save", nextSaveEl));
+    strip.append(statusLine(t("windows.ui.nextsave"), nextSaveEl));
   }
-  strip.append(statusButton("journal", syncSummary(dump.sync), "journal"));
+  strip.append(statusButton(t("windows.desktop.shared.about.pendingsettingstab"), syncSummary(dump.sync), "journal"));
   if (dump.sync.pairing.phase === "paired") {
     lastSyncedEl = automation(
       text("span", lastSyncedLabel(dump.sync.upload.last_successful_sync, nowSecs())),
       ids["settings.status.lastSynced"],
     );
-    strip.append(statusLine("journal last reached", lastSyncedEl));
+    strip.append(statusLine(t("windows.ui.journallastreached"), lastSyncedEl));
   }
-  strip.append(statusButton("sources", sourcesGlance(dump), "sources"));
+  strip.append(statusButton(t("windows.desktop.shared.app.sourcestitle"), sourcesGlance(dump), "sources"));
   return strip;
 }
 
@@ -4561,7 +4574,7 @@ function homeCard(titleText: string, glanceNode: HTMLElement, actionNode: HTMLEl
 }
 
 function storageGlance(): HTMLElement {
-  return text("div", "stored on this PC");
+  return text("div", t("windows.ui.storedonthispc"));
 }
 
 function globalPauseActive(dump: HealthDump): boolean {
@@ -4592,7 +4605,7 @@ function createPauseButton(dump: HealthDump): HTMLButtonElement {
     latestScreenshots !== null &&
     (latestScreenshots.state === "on" || latestScreenshots.state === "bringing_in");
   if (phase === "observing" || (phase === "idle" && (obsidianOn || screenshotsOn))) {
-    return actionButton("pause", undefined, true, async () => {
+    return actionButton(t("windows.desktop.shared.setup.wizardpausefailure"), undefined, true, async () => {
       try {
         await invoke("pause", { reason: "operator", durationSecs: null });
         retryHealth();
@@ -4601,7 +4614,7 @@ function createPauseButton(dump: HealthDump): HTMLButtonElement {
       }
     });
   } else if (phase === "paused") {
-    return actionButton("resume", undefined, true, async () => {
+    return actionButton(t("windows.desktop.shared.setup.wizardpausefailure2"), undefined, true, async () => {
       try {
         await invoke("resume");
         retryHealth();
@@ -4610,7 +4623,7 @@ function createPauseButton(dump: HealthDump): HTMLButtonElement {
       }
     });
   } else if (phase === "error") {
-    return actionButton("restart intake", undefined, true, async () => {
+    return actionButton(t("windows.ui.restartintake"), undefined, true, async () => {
       try {
         await invoke("resume");
         retryHealth();
@@ -4619,13 +4632,13 @@ function createPauseButton(dump: HealthDump): HTMLButtonElement {
       }
     });
   } else {
-    return actionButton("pause", undefined, false, () => {});
+    return actionButton(t("windows.desktop.shared.setup.wizardpausefailure"), undefined, false, () => {});
   }
 }
 
 function createSetupPauseButton(dump: HealthDump): HTMLButtonElement {
   if (globalPauseActive(dump)) {
-    return actionButton("resume", undefined, true, async () => {
+    return actionButton(t("windows.desktop.shared.setup.wizardpausefailure2"), undefined, true, async () => {
       try {
         await invoke("resume");
         wizardPauseFailure = null;
@@ -4636,7 +4649,7 @@ function createSetupPauseButton(dump: HealthDump): HTMLButtonElement {
       }
     });
   }
-  return actionButton("pause", undefined, true, async () => {
+  return actionButton(t("windows.desktop.shared.setup.wizardpausefailure"), undefined, true, async () => {
     try {
       await invoke("pause", { reason: "operator", durationSecs: null });
       wizardPauseFailure = null;
@@ -4653,14 +4666,14 @@ function renderPauseCard(dump: HealthDump): HTMLElement {
   const statePill = pill(statusStateLabel(dump), statusSeverity(dump.app_state));
   trackPausePill(dump, statePill);
 
-  return homeCard("pause / resume", statePill, action);
+  return homeCard(t("windows.ui.pauseresume"), statePill, action);
 }
 
 function renderJournalCard(dump: HealthDump): HTMLElement {
   const phase = dump.sync.pairing.phase;
-  const labelText = phase === "not_paired" || phase === "failed" ? "pair" : "journal details";
+  const labelText = phase === "not_paired" || phase === "failed" ? t("windows.desktop.shared.setup.pair") : t("windows.ui.journaldetails");
   return homeCard(
-    "journal",
+    t("windows.desktop.shared.about.pendingsettingstab"),
     text("div", pairingPhaseLabel(dump.sync.pairing)),
     actionButton(labelText, undefined, true, () => navigateTo("journal")),
   );
@@ -4668,17 +4681,17 @@ function renderJournalCard(dump: HealthDump): HTMLElement {
 
 function renderStorageCard(): HTMLElement {
   return homeCard(
-    "storage",
+    t("windows.ui.storage"),
     storageGlance(),
-    actionButton("open folder", undefined, true, () => void invoke("open_storage_folder")),
+    actionButton(t("windows.ui.openfolder"), undefined, true, () => void invoke("open_storage_folder")),
   );
 }
 
 function renderUpdatesCard(): HTMLElement {
   return homeCard(
-    "updates",
-    text("div", latestUpdate ? updateHeadline(latestUpdate) : "not available right now."),
-    actionButton("check now", undefined, latestUpdate !== null, () => void invoke("update_check_now")),
+    t("windows.desktop.shared.settings.updates"),
+    text("div", latestUpdate ? updateHeadline(latestUpdate) : t("windows.ui.notavailablerightnow")),
+    actionButton(t("windows.desktop.shared.updates.checknow"), undefined, latestUpdate !== null, () => void invoke("update_check_now")),
   );
 }
 
@@ -4687,19 +4700,19 @@ function renderSourcesNotice(dump: HealthDump = latestHealth ?? ({} as HealthDum
   card.classList.add("settings-card");
   automation(card, ids["settings.home.sourcesNotice"]);
 
-  const heading = text("h2", "you choose which sources are on.");
+  const heading = text("h2", t("windows.ui.youchoosewhichsourcesareon"));
   heading.classList.add("settings-card-title");
 
   const body = text(
     "div",
-    "you can turn each source on or off in sources.",
+    t("windows.ui.youcanturneachsourceonor"),
   );
   body.style.fontSize = "13px";
   body.style.color = "var(--fg-subtle)";
   body.style.margin = "4px 0 12px";
 
   const dismiss = actionButton(
-    "dismiss",
+    t("windows.desktop.shared.updates.dismiss"),
     ids["settings.home.sourcesNotice.dismiss"],
     true,
     () => {
@@ -4710,10 +4723,10 @@ function renderSourcesNotice(dump: HealthDump = latestHealth ?? ({} as HealthDum
   card.append(heading, body, dismiss);
 
   if (dump.setup?.notice_save_failed) {
-    const failEl = text("div", "could not save this dismissal. try again.");
+    const failEl = text("div", t("windows.ui.couldnotsavethisdismissaltryagain"));
     failEl.classList.add("save-failure");
     const retryBtn = actionButton(
-      "retry",
+      t("windows.desktop.shared.settings.textcontent"),
       ids["settings.sources.saveRetry"],
       true,
       () => {
@@ -4813,7 +4826,7 @@ function fillProofNode(node: HTMLElement, kind: SourceKind, preview: PreviewSnap
   }
 
   if (status === "off" || isPaused || !proofWindowActive || document.visibilityState === "hidden") {
-    const withheldEl = text("span", isPaused ? "paused" : "preview paused");
+    const withheldEl = text("span", isPaused ? t("windows.ui.pausedword") : t("windows.ui.previewpaused"));
     withheldEl.classList.add("proof-status");
     node.replaceChildren(withheldEl);
     return;
@@ -4833,7 +4846,7 @@ function fillProofNode(node: HTMLElement, kind: SourceKind, preview: PreviewSnap
       node.replaceChildren(textEl);
       return;
     }
-    const retryBtn = actionButton("retry", undefined, true, () => {
+    const retryBtn = actionButton(t("windows.desktop.shared.settings.textcontent"), undefined, true, () => {
       void invoke("set_source_enabled", { kind, enabled: true }).then(() => retryHealth());
     }, false, "standard");
     retryBtn.id = "setup-proof-retry";
@@ -4854,7 +4867,7 @@ function fillProofNode(node: HTMLElement, kind: SourceKind, preview: PreviewSnap
     if (typeof level === "number" && Number.isFinite(level)) {
       const meter = document.createElement("meter");
       meter.setAttribute("role", "meter");
-      meter.setAttribute("aria-label", kind === "mic" ? "microphone level" : "computer sound level");
+      meter.setAttribute("aria-label", kind === "mic" ? t("windows.ui.microphonelevel") : t("windows.ui.computersoundlevel"));
       meter.min = 0;
       meter.max = 1;
       meter.value = level;
@@ -4863,7 +4876,7 @@ function fillProofNode(node: HTMLElement, kind: SourceKind, preview: PreviewSnap
       meter.setAttribute("aria-valuenow", String(level));
       node.replaceChildren(meter);
     } else {
-      const waitingEl = text("span", "waiting");
+      const waitingEl = text("span", t("windows.ui.waiting"));
       waitingEl.classList.add("proof-status");
       node.replaceChildren(waitingEl);
     }
@@ -4871,7 +4884,7 @@ function fillProofNode(node: HTMLElement, kind: SourceKind, preview: PreviewSnap
     const frame = validSnapshot.screen_frame;
     if (frame && Array.isArray(frame.rgba) && typeof frame.width === "number" && typeof frame.height === "number") {
       const canvas = document.createElement("canvas");
-      canvas.setAttribute("aria-label", "screen preview");
+      canvas.setAttribute("aria-label", t("windows.ui.screenpreview"));
       canvas.width = frame.width;
       canvas.height = frame.height;
       const ctx = canvas.getContext("2d");
@@ -4884,11 +4897,11 @@ function fillProofNode(node: HTMLElement, kind: SourceKind, preview: PreviewSnap
           // ignore canvas paint errors
         }
       }
-      const caption = text("p", "your screen, a moment ago");
+      const caption = text("p", t("windows.desktop.shared.copy.setupscreenframecaption"));
       caption.classList.add("setup-screen-caption");
       node.replaceChildren(canvas, caption);
     } else {
-      const waitingEl = text("span", "waiting");
+      const waitingEl = text("span", t("windows.ui.waiting"));
       waitingEl.classList.add("proof-status");
       node.replaceChildren(waitingEl);
     }
@@ -4950,9 +4963,9 @@ function renderWizardSourceControl(
   const failure = dump.setup?.failed_sources?.find((f) => f.kind === kind);
 
   const accessibleName =
-    kind === "mic" ? "microphone" : kind === "system_audio" ? "computer sound" : "screen";
+    kind === "mic" ? t("windows.ui.microphone") : kind === "system_audio" ? t("windows.ui.computersound") : t("windows.ui.screen");
 
-  const toggle = toggleRow(enabled ? accessibleName : `turn on ${accessibleName}`, automationId, enabled, async (on) => {
+  const toggle = toggleRow(enabled ? accessibleName : t("windows.ui.turnon", { "accessiblename": String(accessibleName) }), automationId, enabled, async (on) => {
     try {
       await invoke("set_source_enabled", { kind, enabled: on });
     } finally {
@@ -4963,7 +4976,7 @@ function renderWizardSourceControl(
   toggle.style.padding = "12px 0";
   const input = toggle.querySelector("input");
   if (input) {
-    input.setAttribute("aria-label", enabled ? accessibleName : `turn on ${accessibleName}`);
+    input.setAttribute("aria-label", enabled ? accessibleName : t("windows.ui.turnon", { "accessiblename": String(accessibleName) }));
     input.style.width = "20px";
     input.style.height = "20px";
     if (status !== null) {
@@ -4979,7 +4992,7 @@ function renderWizardSourceControl(
   if (failure) {
     const failEl = text("div", sourceSaveFailureMessage(failure));
     failEl.classList.add("save-failure");
-    const retry = actionButton("retry", ids["settings.sources.saveRetry"], true, () => {
+    const retry = actionButton(t("windows.desktop.shared.settings.textcontent"), ids["settings.sources.saveRetry"], true, () => {
       void invoke("retry_save").then(() => retryHealth());
     });
     retry.style.marginTop = "8px";
@@ -5007,7 +5020,7 @@ function renderStartAtLoginControl(dump: HealthDump): HTMLElement {
 
   if (dump.setup?.start_at_login === null) {
     const toggle = toggleRow(
-      "start at login",
+      t("windows.desktop.shared.setup.startatlogin"),
       ids["settings.setup.startAtLogin"],
       false,
       () => {},
@@ -5017,11 +5030,11 @@ function renderStartAtLoginControl(dump: HealthDump): HTMLElement {
       box.indeterminate = true;
       box.disabled = true;
     }
-    const onBtn = actionButton("start at login", undefined, true, () => {
+    const onBtn = actionButton(t("windows.desktop.shared.setup.startatlogin"), undefined, true, () => {
       void commitUnknownLogin(true);
     });
     onBtn.id = "setup-login-on";
-    const offBtn = actionButton("don't start at login", undefined, true, () => {
+    const offBtn = actionButton(t("windows.ui.dontstartatlogin"), undefined, true, () => {
       void commitUnknownLogin(false);
     });
     offBtn.id = "setup-login-off";
@@ -5030,10 +5043,10 @@ function renderStartAtLoginControl(dump: HealthDump): HTMLElement {
     wrap.style.gap = "8px";
     wrap.append(toggle, onBtn, offBtn);
     if (unknownLoginAttempt !== null || dump.setup.login_apply_failed) {
-      const err = text("div", "could not update start at login");
+      const err = text("div", t("windows.ui.couldnotupdatestartatlogin"));
       automation(err, ids["settings.setup.startAtLogin.error"]);
       err.classList.add("save-failure");
-      const retry = actionButton("retry", undefined, true, () => {
+      const retry = actionButton(t("windows.desktop.shared.settings.textcontent"), undefined, true, () => {
         if (unknownLoginAttempt !== null) {
           void commitUnknownLogin(unknownLoginAttempt);
           return;
@@ -5048,7 +5061,7 @@ function renderStartAtLoginControl(dump: HealthDump): HTMLElement {
 
   const checked = dump.setup?.start_at_login === true;
   const toggle = toggleRow(
-    "start at login",
+    t("windows.desktop.shared.setup.startatlogin"),
     ids["settings.setup.startAtLogin"],
     checked,
     async (on) => {
@@ -5061,10 +5074,10 @@ function renderStartAtLoginControl(dump: HealthDump): HTMLElement {
   );
   wrap.append(toggle);
   if (dump.setup?.login_apply_failed) {
-    const err = text("div", "could not update start at login");
+    const err = text("div", t("windows.ui.couldnotupdatestartatlogin"));
     automation(err, ids["settings.setup.startAtLogin.error"]);
     err.classList.add("wizard-error");
-    const retry = actionButton("retry", undefined, true, () => {
+    const retry = actionButton(t("windows.desktop.shared.settings.textcontent"), undefined, true, () => {
       void invoke("retry_save").then(() => retryHealth());
     });
     retry.id = "setup-login-retry";
@@ -5088,7 +5101,7 @@ async function advanceWizardStep(step: WizardStep): Promise<void> {
 }
 
 function renderSetupProgress(stepNum: number, totalSteps: number): HTMLElement {
-  const progressText = `step ${stepNum} of ${totalSteps}`;
+  const progressText = t("windows.ui.progresstext", { "stepnum": Number(stepNum), "totalsteps": Number(totalSteps) });
   const p = document.createElement("p");
   p.classList.add("setup-progress", "wizard-progress");
   p.dataset.stepNumber = String(stepNum);
@@ -5134,7 +5147,7 @@ function renderSetupBand(): HTMLElement {
     // ignore parsing errors
   }
 
-  const labelNode = text("span", "the solstone app");
+  const labelNode = text("span", t("windows.desktop.shared.copy.setupapplabel"));
   labelNode.classList.add("setup-band-label");
 
   header.append(labelNode);
@@ -5157,9 +5170,9 @@ function renderSetupFrame(dump: HealthDump): HTMLElement {
 // What the screen step turns on, where it is kept, and what it leaves out. The password
 // manager defaults match each app's own process, so the line names apps.
 const SETUP_SCREEN_TRUST_LINES = [
-  "screen also adds the apps you use, with window titles and page addresses, to your journal. you can turn that off in settings.",
-  "what you share stays on this PC until it goes into your journal on your own devices. your journal is always private, only yours.",
-  "1Password, Bitwarden and the other password manager apps listed in settings are left out, but a password manager inside your browser isn't. you can pause any time.",
+  t("windows.ui.screenalsoaddstheappsyouuse"),
+  t("windows.ui.whatyousharestaysonthispc"),
+  t("windows.ui.n1passwordbitwardenandtheotherpasswordmanager"),
 ] as const;
 
 function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
@@ -5180,10 +5193,10 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     : { mic: 1, system_audio: 2, screen: 3, connection: 4 };
 
   const headings = {
-    mic: "share your conversations",
-    system_audio: "share sound from this PC",
-    screen: "share your screen",
-    connection: "connect your journal",
+    mic: t("windows.desktop.shared.copy.setupmicrophoneheadline"),
+    system_audio: t("windows.ui.sharesoundfromthiscomputer"),
+    screen: t("windows.ui.shareyourscreen"),
+    connection: t("windows.ui.connectyourjournal"),
   } as const;
 
   const stepNum = stepNumberMap[step as keyof typeof stepNumberMap] ?? 1;
@@ -5202,9 +5215,9 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     const isPaired = dump.sync.pairing.phase === "paired";
     if (isPaired) {
       if (dump.sync.pairing.mark != null) {
-        heading.textContent = `connected to ${markTextForm(dump.sync.pairing.mark)}`;
+        heading.textContent = t("windows.ui.connectedto", { "value": String(markTextForm(dump.sync.pairing.mark)) });
       } else {
-        heading.textContent = "connected to your journal";
+        heading.textContent = t("windows.desktop.shared.copy.setupconnectedtoyourjournal");
       }
       automation(heading, ids["settings.pairing.state"]);
       heading.classList.add("selectable");
@@ -5214,7 +5227,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
   copy.append(heading);
 
   if (step !== "connection") {
-    const sentence = text("p", "what you turn on goes into your journal.");
+    const sentence = text("p", t("windows.ui.whatyouturnongoesintoyour"));
     sentence.classList.add("wizard-sentence");
     copy.append(sentence);
   }
@@ -5258,7 +5271,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
       aside.classList.add("setup-switch-aside");
       const pauseBtn = createSetupPauseButton(dump);
       pauseBtn.id = "setup-pause";
-      const hint = text("span", "pauses all sources.");
+      const hint = text("span", t("windows.ui.pausesallsources"));
       hint.classList.add("setup-pause-hint");
       aside.append(pauseBtn, hint);
       switchRow.append(aside);
@@ -5279,14 +5292,14 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     if (isSourceEnabled(dump.setup, kind) && wizardPauseFailure) {
       const pauseFailureEl = text(
         "div",
-        wizardPauseFailure === "pause" ? "could not pause. try again." : "could not resume. try again.",
+        wizardPauseFailure === "pause" ? t("windows.ui.couldnotpausetryagain") : t("windows.ui.couldnotresumetryagain"),
       );
       pauseFailureEl.classList.add("save-failure");
       card.append(pauseFailureEl);
     }
 
     if (dump.setup?.wizard_save_failed) {
-      const failEl = text("div", "could not save your setup progress. try again.");
+      const failEl = text("div", t("windows.ui.couldnotsaveyoursetupprogresstry"));
       failEl.classList.add("save-failure");
       card.append(failEl);
     }
@@ -5301,7 +5314,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
       const retryFailEl = document.createElement("div");
       retryFailEl.classList.add("save-failure");
       const retryBtn = actionButton(
-        "retry",
+        t("windows.desktop.shared.settings.textcontent"),
         ids["settings.sources.saveRetry"],
         true,
         () => {
@@ -5313,7 +5326,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     }
 
     const notNowBtn = actionButton(
-      "not now",
+      t("windows.desktop.shared.copy.deferchoice"),
       ids["settings.setup.notNow"],
       true,
       async () => {
@@ -5332,7 +5345,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
 
     if (step !== "mic") {
       const backBtn = actionButton(
-        "back",
+        t("windows.desktop.shared.copy.setupback"),
         ids["settings.setup.back"],
         true,
         async () => {
@@ -5342,7 +5355,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
         "standard",
       );
       backBtn.classList.add("setup-back");
-      backBtn.setAttribute("aria-label", "back");
+      backBtn.setAttribute("aria-label", t("windows.desktop.shared.copy.setupback"));
       footer.append(backBtn);
     }
 
@@ -5357,7 +5370,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
 
     if (isSourceEnabled(dump.setup, kind)) {
       const continueBtn = actionButton(
-        "continue",
+        t("windows.desktop.shared.copy.setupcontinue"),
         ids["settings.setup.next"],
         true,
         async () => {
@@ -5373,7 +5386,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     card.append(renderPairingSection(dump, { setupStep: true }));
 
     if (dump.setup?.wizard_save_failed) {
-      const failEl = text("div", "could not save your setup progress. try again.");
+      const failEl = text("div", t("windows.ui.couldnotsaveyoursetupprogresstry"));
       failEl.classList.add("save-failure");
       card.append(failEl);
     }
@@ -5387,7 +5400,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
       const retryFailEl = document.createElement("div");
       retryFailEl.classList.add("save-failure");
       const retryBtn = actionButton(
-        "retry",
+        t("windows.desktop.shared.settings.textcontent"),
         ids["settings.sources.saveRetry"],
         true,
         () => {
@@ -5399,7 +5412,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     }
 
     const backBtn = actionButton(
-      "back",
+      t("windows.desktop.shared.copy.setupback"),
       ids["settings.setup.back"],
       true,
       async () => {
@@ -5409,7 +5422,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
       "standard",
     );
     backBtn.classList.add("setup-back");
-    backBtn.setAttribute("aria-label", "back");
+    backBtn.setAttribute("aria-label", t("windows.desktop.shared.copy.setupback"));
     footer.append(backBtn);
 
     footer.append(renderSetupProgress(stepNum, totalSteps));
@@ -5424,7 +5437,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     const isPaired = dump.sync.pairing.phase === "paired";
     const forwardBtn = isPaired
       ? actionButton(
-          "next",
+          t("windows.ui.next"),
           ids["settings.setup.next"],
           true,
           async () => {
@@ -5436,7 +5449,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
           "accent",
         )
       : actionButton(
-          "skip",
+          t("windows.ui.skip"),
           ids["settings.setup.notNow"],
           true,
           async () => {
@@ -5514,7 +5527,7 @@ function renderRouteContent(route: Route, dump: HealthDump): HTMLElement {
       content.append(latestExclusions ? renderExclusionsSection(latestExclusions, dump) : loadingCaption());
       break;
     case "journal": {
-      const sync = section("sync");
+      const sync = section(t("windows.ui.sync"));
       sync.append(syncRow(dump.sync));
       const sections = [
         renderJournalOpenSection(dump),
@@ -5534,12 +5547,12 @@ function renderRouteContent(route: Route, dump: HealthDump): HTMLElement {
       content.append(latestHotkey ? renderHotkeySection(latestHotkey) : loadingCaption());
       break;
     case "storage": {
-      const location = section("storage location");
+      const location = section(t("windows.ui.storagelocation"));
       location.append(
         storageRow(latestStorage),
-        helpCaption("segments that have not reached your journal yet are never deleted."),
+        helpCaption(t("windows.ui.segmentsthathavenotreachedyourjournal")),
         helpCaption(
-          "a segment is a 5-minute local bundle that stays here until your journal receives it.",
+          t("windows.ui.asegmentisa5minutelocal"),
         ),
       );
       content.append(location);
@@ -5579,7 +5592,7 @@ function renderRail(): HTMLElement {
   const rail = document.createElement("nav");
   rail.id = "settings-nav";
   rail.classList.add("settings-rail");
-  rail.setAttribute("aria-label", "settings");
+  rail.setAttribute("aria-label", t("windows.desktop.shared.app.frontendorigin"));
 
   const title = text("div", "solstone");
   title.classList.add("settings-rail-title");
@@ -5607,7 +5620,7 @@ function renderPane(dump: HealthDump): HTMLElement {
   const hamburger = document.createElement("button");
   hamburger.type = "button";
   hamburger.classList.add("settings-hamburger", "fluent-control");
-  hamburger.setAttribute("aria-label", "open navigation");
+  hamburger.setAttribute("aria-label", t("windows.ui.opennavigation"));
   hamburger.setAttribute("aria-expanded", "false");
   hamburger.setAttribute("aria-controls", "settings-nav");
   hamburger.onclick = () => {
@@ -5625,7 +5638,7 @@ function renderPane(dump: HealthDump): HTMLElement {
   hamburger.append(hamburgerGlyph);
 
   const inSetup = settingsShowsSetupFrame(dump);
-  const title = text("h1", inSetup ? "set up solstone" : routeLabel(activeRoute));
+  const title = text("h1", inSetup ? t("windows.desktop.shared.copy.setupwindowtitle") : routeLabel(activeRoute));
   title.classList.add("settings-pane-title");
   title.tabIndex = -1;
 
@@ -5636,10 +5649,10 @@ function renderPane(dump: HealthDump): HTMLElement {
 }
 
 const DESK_BREATH = {
-  audio: "while this is on, the solstone app takes in sound, and all of it goes into your journal.",
-  screen: "while this is on, the solstone app takes in what's on your screen, and all of it goes into your journal.",
+  audio: t("windows.ui.whilethisisonthesolstoneapptakesinsoundandallofi"),
+  screen: t("windows.ui.whilethisisonthesolstoneapptakesinwhatsonyourscr"),
   browsers:
-    "on the sites you allow, the solstone extension takes in the page's text and rough layout, and all of it goes into your journal.",
+    t("windows.ui.onthesitesyouallowthesolstoneextensiontakesinthe"),
 } as const;
 
 function showsDesktopShell(dump: HealthDump | null): boolean {
@@ -5753,9 +5766,9 @@ function deskPausedLine(dump: HealthDump): string | null {
   const remaining =
     secs == null || healthReceivedAt == null ? null : Math.max(0, secs - (nowSecs() - healthReceivedAt));
   const left = pauseTimeLeft(dump.pause ? remaining : null);
-  if (left.kind === "untilResume") return "paused until you resume";
-  if (left.kind === "lessThanAMinute") return "paused, less than a minute left";
-  return `paused, ${left.minutes} min left`;
+  if (left.kind === "untilResume") return t("windows.ui.pauseduntilyouresume");
+  if (left.kind === "lessThanAMinute") return t("windows.ui.pausedlessthanaminuteleft");
+  return t("windows.ui.pausedarg0minleft", { "arg0": String(left.minutes) });
 }
 
 function deskJournalInput(dump: HealthDump): JournalPillInput {
@@ -5790,15 +5803,19 @@ function deskFacts(dump: HealthDump): { label: string; value: string }[] {
 
 function deskSourceName(id: string): string {
   if (id === "obsidian") return "Obsidian";
-  if (id === "addMore") return "add more";
+  if (id === "addMore") return t("windows.ui.addmore");
+  if (id === "audio") return t("windows.ui.audio");
+  if (id === "screen") return t("windows.ui.screen");
+  if (id === "browsers") return t("windows.ui.browsers");
+  if (id === "screenshots") return t("windows.ui.screenshots");
   return id;
 }
 
 function totalWords(source: SourceId, total: number): string {
   if (source === "audio" || source === "screen") return durationTotal(total);
-  if (source === "browsers") return countTotal(total, "page", "pages");
+  if (source === "browsers") return quantity("pages", total);
   if (source === "screenshots") return SCREENSHOTS_COPY.S20(total);
-  return countTotal(total, "note", "notes");
+  return quantity("notes", total);
 }
 
 function factFor(source: SourceId): SourceFacts | undefined {
@@ -5892,14 +5909,14 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
     : [];
   return deckTiles().map((id) => {
     if (id === "import") {
-      return { id, name: "import", word: "", sub: "files", switchOn: null, switchId: null, switchLabel: "", selected: deskPane === "import" };
+      return { id, name: t("windows.ui.import"), word: "", sub: t("windows.ui.files"), switchOn: null, switchId: null, switchLabel: "", selected: deskPane === "import" };
     }
     if (id === "addMore") {
       return {
         id,
-        name: "add more",
+        name: t("windows.ui.addmore"),
         word: "",
-        sub: "sources",
+        sub: t("windows.desktop.shared.app.sourcestitle"),
         switchOn: null,
         switchId: null,
         switchLabel: "",
@@ -5922,13 +5939,13 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
         ? audioSubline({
             systemAudioOn: setup?.system_audio === true,
             word: audio.word,
-            microphone: audio.namesMicrophone ? mic?.device || "microphone" : null,
+            microphone: audio.namesMicrophone ? mic?.device || t("windows.ui.microphone") : null,
           })
         : id === "screen"
           ? screenView.activityKept
-            ? "activity is still on."
+            ? t("windows.ui.activityisstillon")
             : screenView.activityAlongside
-              ? "with activity"
+              ? t("windows.ui.withactivity")
               : ""
           : id === "browsers"
             ? browserNames.join(", ")
@@ -5983,7 +6000,7 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
           : id === "screenshots"
             ? ids["settings.sources.screenshots.enabled"]
             : null,
-      switchLabel: id === "obsidian" ? "Obsidian" : id,
+      switchLabel: deskSourceName(id),
       selected: deskPane === id,
     };
   });
@@ -6003,7 +6020,7 @@ function deskStatusRows(): DeskStatusRow[] {
       hasFacts: true,
     };
   });
-  rows.push({ id: "import", name: "import", nothingYet: false, total: latestImport?.recent ?? "", relative: "", hasFacts: latestImport !== null });
+  rows.push({ id: "import", name: t("windows.ui.import"), nothingYet: false, total: latestImport?.recent ?? "", relative: "", hasFacts: latestImport !== null });
   return rows;
 }
 
@@ -6020,21 +6037,21 @@ function deskFactBlock(source: SourceId): HTMLElement | null {
   block.className = "desk-facts";
   const soFar = document.createElement("div");
   soFar.className = "desk-fact";
-  const soFarLabel = text("span", "so far");
+  const soFarLabel = text("span", t("windows.ui.sofar"));
   soFarLabel.className = "desk-fact-label";
   const soFarValue = text(
     "span",
     fact.nothingYet
-      ? "nothing yet"
+      ? t("windows.ui.nothingyet")
       : `${totalWords(source, fact.total)}, since ${startedLabel(fact.started ?? "", new Date().getFullYear())}`,
   );
   soFarValue.className = "desk-fact-value";
   soFar.append(soFarLabel, soFarValue);
   const last = document.createElement("div");
   last.className = "desk-fact";
-  const lastLabel = text("span", "last taken in");
+  const lastLabel = text("span", t("windows.ui.lasttakenin"));
   lastLabel.className = "desk-fact-label";
-  const lastValue = text("span", fact.last === null ? "nothing yet" : relativeTaken(fact.last, nowSecs()));
+  const lastValue = text("span", fact.last === null ? t("windows.ui.nothingyet") : relativeTaken(fact.last, nowSecs()));
   lastValue.className = "desk-fact-value";
   last.append(lastLabel, lastValue);
   block.append(soFar, last);
@@ -6045,10 +6062,10 @@ function deskJournalName(dump: HealthDump): string {
   const phase = dump.sync.pairing.phase;
   if (phase === "paired" || phase === "awaiting_confirmation") {
     const mark = dump.sync.pairing.mark;
-    if (!mark) return "mark \u00B7 unavailable";
+    if (!mark) return t("windows.ui.markunavailablex5acbd11e");
     return `${mark.words[0].toLowerCase()} \u00B7 ${mark.words[1].toLowerCase()}`;
   }
-  return "your \u00B7 journal";
+  return t("windows.ui.yourjournal");
 }
 
 function deskJournalChips(dump: HealthDump): { hex: string; rotated: boolean }[] | null {
@@ -6060,11 +6077,11 @@ function deskJournalChips(dump: HealthDump): { hex: string; rotated: boolean }[]
 }
 
 function deskByteLabel(bytes: number): string {
-  if (bytes <= 0) return "nothing yet";
+  if (bytes <= 0) return t("windows.ui.nothingyet");
   const mb = 1_000_000;
   const kb = 1_000;
-  if (bytes < mb) return `${Math.max(1, Math.floor(bytes / kb))} KB`;
-  return `${Math.floor(bytes / mb)} MB`;
+  if (bytes < mb) return t("windows.ui.arg0kb", { "arg0": String(Math.max(1, Math.floor(bytes / kb))) });
+  return t("windows.ui.arg0mb", { "arg0": String(Math.floor(bytes / mb)) });
 }
 
 function deskKept(dump: HealthDump): { label: string; value: string } | null {
@@ -6072,7 +6089,7 @@ function deskKept(dump: HealthDump): { label: string; value: string } | null {
   if (phase === "paired" || phase === "awaiting_confirmation") return null;
   const bytes = latestStorage?.bytes;
   if (typeof bytes !== "number") return null;
-  return { label: "kept on this PC", value: deskByteLabel(bytes) };
+  return { label: t("windows.ui.keptonthispc"), value: deskByteLabel(bytes) };
 }
 
 function deskTitleGlyph(): GlyphName | null {
@@ -6092,7 +6109,7 @@ function deskTitleGlyph(): GlyphName | null {
 }
 
 function restartControl(): HTMLButtonElement {
-  return actionButton("restart intake", ids["tray.menu.restartObserving"], true, () => {
+  return actionButton(t("windows.ui.restartintake"), ids["tray.menu.restartObserving"], true, () => {
     void invoke("resume").then(() => retryHealth());
   });
 }
@@ -6193,24 +6210,24 @@ function deskMicChildren(): HTMLElement | null {
   const ordered = orderedMicDevices(latestMic.config, micDevices);
   if (ordered.length === 0) return null;
   const block = document.createElement("div");
-  block.append(deskSection("microphones"));
+  block.append(deskSection(t("windows.ui.microphones")));
   for (const device of ordered) {
-    block.append(deskChild(device.name, device.id === latestMic.active_id ? "active" : ""));
+    block.append(deskChild(device.name, device.id === latestMic.active_id ? t("windows.ui.activex96879611") : ""));
   }
   const gain = document.createElement("div");
   gain.className = "desk-switch-row";
   const head = document.createElement("div");
   head.className = "desk-switch-head";
-  head.append(text("span", "input gain"));
+  head.append(text("span", t("windows.ui.inputgain")));
   const levels = document.createElement("div");
   levels.className = "desk-gain";
   levels.setAttribute("role", "group");
-  levels.setAttribute("aria-label", "input gain");
+  levels.setAttribute("aria-label", t("windows.ui.inputgain"));
   for (const level of MIC_GAIN_LEVELS) {
     const on = latestMic.config.gain === level;
     const button = document.createElement("button");
     button.type = "button";
-    button.textContent = `${level}×`;
+    button.textContent = t("windows.ui.textcontent5", { "level": String(level) });
     button.className = on ? "desk-connect" : "desk-gain-level";
     button.onclick = () => {
       if (!latestMic) return;
@@ -6227,9 +6244,9 @@ function deskMicChildren(): HTMLElement | null {
 function deskBrowserChildren(status: BrowserStatus): HTMLElement | null {
   if (status.connected.length === 0) return null;
   const block = document.createElement("div");
-  block.append(deskSection("browsers"));
+  block.append(deskSection(t("windows.ui.browsers")));
   const names = [...new Set(status.connected.map((item) => BROWSER_NAMES[item.brand] ?? item.brand))];
-  for (const name of names) block.append(deskChild(name, "connected"));
+  for (const name of names) block.append(deskChild(name, t("windows.ui.connected")));
   return block;
 }
 
@@ -6245,7 +6262,7 @@ async function refreshImportStatus(): Promise<void> {
 
 async function importAction(command: string, args?: Record<string, unknown>): Promise<void> {
   importActionError = null;
-  try { await invoke(command, args); } catch { importActionError = "this step couldn't finish. try again."; }
+  try { await invoke(command, args); } catch { importActionError = t("windows.ui.thisstepcouldntfinishtryagain"); }
   await refreshImportStatus();
   requestRerender();
 }
@@ -6260,23 +6277,23 @@ async function askRemoveImport(row: ImportRow): Promise<void> {
     const tokens = getComputedStyle(shell);
     for (const name of ["--desk-ink", "--desk-card", "--desk-hairline"]) dialog.style.setProperty(name, tokens.getPropertyValue(name));
   }
-  const title = text("h2", `remove ${prompt.name}?`);
+  const title = text("h2", t("windows.ui.removearg0", { "arg0": String(prompt.name) }));
   title.id = "import-remove-title";
   dialog.setAttribute("aria-labelledby", title.id);
   const reason = text("p", prompt.missing_copy
-    ? "the copy is already gone, so this only clears it from here."
+    ? t("windows.ui.thecopyisalreadygonesothisonlyclearsitfromhere")
     : prompt.may_have_reached
-    ? "this removes the copy on this device. your journal may still bring in the copy it already has."
-    : "this removes the copy on this device, so it won't reach your journal.");
+    ? t("windows.ui.thisremovesthecopyonthisdeviceyourjournalmaystil")
+    : t("windows.ui.thisremovesthecopyonthisdevicesoitwontreachyourj"));
   const actions = document.createElement("div");
   actions.className = "desk-actions";
-  const cancel = deskAction("cancel", () => dialog.close());
-  const remove = deskAction("remove", () => {
+  const cancel = deskAction(t("windows.desktop.shared.setup.cancel"), () => dialog.close());
+  const remove = deskAction(t("windows.ui.removex7e5608ab"), () => {
     void invoke("import_remove", { id: row.id }).then(() => {
       dialog.close();
       void refreshImportStatus();
     }).catch(() => {
-      reason.textContent = "couldn't remove this. try again.";
+      reason.textContent = t("windows.ui.couldntremovethistryagain");
     });
   });
   actions.append(cancel, remove);
@@ -6293,49 +6310,49 @@ async function askRemoveImport(row: ImportRow): Promise<void> {
 function renderImportPage(): HTMLElement {
   const body = document.createElement("div");
   body.className = "desk-import-page";
-  body.append(breath("adds PDFs, audio, images and text you choose here or drop on this window."));
-  const choose = deskAction("choose files…", () => { void importAction("import_choose_files"); }, ids["settings.import.choose"]);
+  body.append(breath(t("windows.ui.addspdfsaudioimagesandtextyouchoosehereordropont")));
+  const choose = deskAction(t("windows.ui.choosefiles"), () => { void importAction("import_choose_files"); }, ids["settings.import.choose"]);
   choose.disabled = latestImport?.available === false;
   body.append(choose);
   const intake = latestImport?.intake;
   if (intake) {
     const line = intake.copying
-      ? `saving on this device: ${Math.min(intake.done + 1, intake.total)} of ${intake.total}`
-      : intake.accepted === 0 ? "nothing was saved on this device." : `saved on this device: ${intake.accepted}`;
+      ? t("windows.ui.savingonthisdevicearg0ofarg1", { "arg0": String(Math.min(intake.done + 1, intake.total)), "arg1": String(intake.total) })
+      : intake.accepted === 0 ? t("windows.ui.nothingwassavedonthisdevice") : t("windows.ui.savedonthisdevicearg0", { "arg0": String(intake.accepted) });
     const result = deskReason(line);
     result.setAttribute("aria-live", "polite");
     body.append(result);
-    for (const refused of intake.refused) body.append(deskReason(`${refused.name}: ${refused.reason}`));
+    for (const refused of intake.refused) body.append(deskReason(t("windows.ui.text6", { "status": String(refused.name), "reason": String(refused.reason) })));
   }
   if (importActionError) body.append(deskReason(importActionError));
   if (latestImport?.interrupted) {
-    body.append(deskReason("something you were adding didn't finish saving. add it again."));
-    body.append(deskAction("ok", () => { void importAction("import_dismiss_interrupted"); }));
+    body.append(deskReason(t("windows.ui.somethingyouwereaddingdidntfinishsavingadditagai")));
+    body.append(deskAction(t("windows.desktop.shared.settings.severity"), () => { void importAction("import_dismiss_interrupted"); }));
   }
-  body.append(deskSection("recent"));
+  body.append(deskSection(t("windows.ui.recent")));
   if (latestImport) {
     const recent = deskReason(latestImport.recent);
     recent.setAttribute("aria-live", "polite");
     body.append(recent);
   }
   if (latestImport?.rows.length) {
-    body.append(deskSection("on this device"));
+    body.append(deskSection(t("windows.ui.onthisdevice")));
     for (const row of latestImport.rows) {
       const item = document.createElement("div");
       item.className = "desk-import-item";
       item.dataset.importId = row.id;
       item.append(text("strong", row.name));
-      item.append(deskReason(row.state === "refused" ? row.reason ?? "your journal couldn't accept this." : row.state));
+      item.append(deskReason(row.state === "refused" ? row.reason ?? t("windows.ui.yourjournalcouldntacceptthis") : stateWord(row.state)));
       if (row.state !== "sending") {
         const actions = document.createElement("div");
         actions.className = "desk-actions";
         if (row.state === "refused" && row.retryable) {
-          const retry = deskAction("try now", () => { void importAction("import_retry", { id: row.id }); });
-          retry.setAttribute("aria-label", `try now, ${row.name}`);
+          const retry = deskAction(t("windows.ui.trynow"), () => { void importAction("import_retry", { id: row.id }); });
+          retry.setAttribute("aria-label", t("windows.ui.trynowarg0", { "arg0": String(row.name) }));
           actions.append(retry);
         }
-        const remove = deskAction("remove", () => { void askRemoveImport(row); });
-        remove.setAttribute("aria-label", `remove ${row.name}`);
+        const remove = deskAction(t("windows.ui.removex7e5608ab"), () => { void askRemoveImport(row); });
+        remove.setAttribute("aria-label", t("windows.ui.remove", { "value": String(row.name) }));
         actions.append(remove);
         item.append(actions);
       }
@@ -6367,13 +6384,13 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
       // A refusal opens microphone privacy settings. A missing device opens the sound page.
       if (isAccessDenied(mic)) {
         body.append(
-          deskAction("open windows settings", () => {
+          deskAction(t("windows.ui.openwindowssettings"), () => {
             void invoke("open_microphone_privacy_settings").catch(() => undefined);
           }, ids["settings.sources.mic.permission"]),
         );
       } else if (diagnosis === NO_MICROPHONE_LINE || diagnosis === NO_OUTPUT_LINE) {
         body.append(
-          deskAction("open sound settings", () => {
+          deskAction(t("windows.ui.opensoundsettings"), () => {
             void invoke("open_sound_settings").catch(() => undefined);
           }),
         );
@@ -6382,14 +6399,14 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
     body.append(breath(DESK_BREATH.audio));
     const facts = deskFactBlock("audio");
     if (facts) body.append(facts);
-    body.append(deskSection("goes along with it"));
+    body.append(deskSection(t("windows.ui.goesalongwithit")));
     const wanted = derivedComputerSoundWanted(
       dump.setup?.mic === true,
       dump.setup?.system_audio === true,
       dump.setup?.system_audio_wanted ?? null,
     );
     body.append(
-      deskSwitchRow("computer sound", wanted, null, (on) => {
+      deskSwitchRow(t("windows.ui.computersound"), wanted, null, (on) => {
         void invoke("set_computer_sound", { wanted: on }).catch(() => undefined).then(() => retryHealth());
       }),
     );
@@ -6408,25 +6425,25 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
     body.append(breath(DESK_BREATH.screen));
     const facts = deskFactBlock("screen");
     if (facts) body.append(facts);
-    body.append(deskSection("goes along with it"));
+    body.append(deskSection(t("windows.ui.goesalongwithit")));
     body.append(
-      deskSwitchRow("activity", dump.setup?.desktop_activity_allowed === true, ACTIVITY_SENTENCE, (on) => {
+      deskSwitchRow(t("windows.ui.activity"), dump.setup?.desktop_activity_allowed === true, ACTIVITY_SENTENCE, (on) => {
         void invoke("set_source_enabled", { kind: "desktop_activity", enabled: on }).catch(() => undefined).then(() => retryHealth());
       }),
     );
     body.append(
-      deskSwitchRow("window titles", dump.setup?.desktop_activity_window_titles === true, null, (on) => {
+      deskSwitchRow(t("windows.desktop.shared.settings.windowtitles"), dump.setup?.desktop_activity_window_titles === true, null, (on) => {
         void invoke("set_desktop_activity_window_titles", { enabled: on }).catch(() => undefined).then(() => retryHealth());
       }),
     );
     body.append(
-      deskSwitchRow("page addresses", dump.setup?.desktop_activity_page_addresses === true, null, (on) => {
+      deskSwitchRow(t("windows.ui.pageaddresses"), dump.setup?.desktop_activity_page_addresses === true, null, (on) => {
         void invoke("set_desktop_activity_page_addresses", { enabled: on }).catch(() => undefined).then(() => retryHealth());
       }),
     );
     body.append(
       deskSwitchRow(
-        "keep on while paused or screen is off",
+        t("windows.ui.keeponwhilepausedorscreenis"),
         dump.setup?.desktop_activity_through_pause === true,
         null,
         (on) => {
@@ -6434,8 +6451,8 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
         },
       ),
     );
-    body.append(deskSection("left out"));
-    const shared = text("p", "this list applies to activity too");
+    body.append(deskSection(t("windows.ui.leftout")));
+    const shared = text("p", t("windows.ui.thislistappliestoactivitytoo"));
     shared.classList.add("desk-breath");
     body.append(shared);
     if (latestExclusions) body.append(renderExclusionsSection(latestExclusions, dump, true));
@@ -6452,7 +6469,7 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
         stores.className = "desk-actions";
         for (const brand of latestBrowser.stores) {
           stores.append(
-            deskAction(`add to ${BROWSER_NAMES[brand] ?? brand}`, () => {
+            deskAction(t("windows.ui.addto", { "value": String(BROWSER_NAMES[brand] ?? brand) }), () => {
               void openBrowserStore(brand);
             }),
           );
@@ -6496,7 +6513,7 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
     if (status?.state === "waiting_for_journal_update") body.append(deskReason(OBSIDIAN_COPY.waitingUpdateDetail));
     if (status?.first_sync) body.append(deskReason(obsidianProgressText(status.first_sync)));
     if (status && status.waiting > 0 && status.state !== "off" && status.state !== "confirm") {
-      body.append(deskReason(`${status.waiting} waiting to sync`));
+      body.append(deskReason(t("windows.ui.waitingsync", { "value": String(status.waiting) })));
     }
     if (ready) {
       if (obsidianFound.length === 0) body.append(deskReason(OBSIDIAN_COPY.noneFound));
@@ -6518,7 +6535,7 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
     const vaultFacts = status ? obsidianDeskStatus(status) : null;
     if (vaultFacts) body.append(vaultFacts);
     if (ready && obsidianFound.length > 0) {
-      body.append(deskSection("vaults"));
+      body.append(deskSection(t("windows.ui.vaults")));
       for (const vault of obsidianFound) {
         const row = document.createElement("div");
         row.className = "desk-switch-row";
@@ -6540,7 +6557,7 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
     return body;
   }
   if (deskPane === "addMore") {
-    body.append(text("h3", "already on home"));
+    body.append(text("h3", t("windows.ui.alreadyonhome")));
     for (const source of addMoreSources()) body.append(text("div", deskSourceName(source)));
     return body;
   }
@@ -6565,8 +6582,8 @@ function deskShelfBody(dump: HealthDump): HTMLElement | null {
   if (deskRow === "help") {
     const body = renderRouteContent("help", dump);
     body.append(
-      actionButton("get help", undefined, true, () => void invoke("open_help")),
-      actionButton("report a problem", undefined, true, () => void invoke("open_support_report")),
+      actionButton(t("windows.desktop.shared.settings.gethelp"), undefined, true, () => void invoke("open_help")),
+      actionButton(t("windows.desktop.shared.settings.reportaproblem"), undefined, true, () => void invoke("open_support_report")),
     );
     return body;
   }
@@ -6574,14 +6591,14 @@ function deskShelfBody(dump: HealthDump): HTMLElement | null {
 }
 
 function deskPaneTitle(): string {
-  if (deskRow === "journal") return "your journal";
-  if (deskRow === "thisPc") return "this PC";
-  if (deskRow === "updates") return "updates";
-  if (deskRow === "help") return "help";
-  if (deskPane === "status") return "status";
-  if (deskPane === "technical") return "technical details";
-  if (deskPane === "addMore") return "add more";
-  if (deskPane === "screenLeftOut") return "left out";
+  if (deskRow === "journal") return t("windows.desktop.shared.copy.setupjournalcardheading");
+  if (deskRow === "thisPc") return t("windows.ui.thispc");
+  if (deskRow === "updates") return t("windows.desktop.shared.settings.updates");
+  if (deskRow === "help") return t("windows.desktop.shared.settings.help");
+  if (deskPane === "status") return t("windows.ui.status");
+  if (deskPane === "technical") return t("windows.desktop.shared.copy.technicaldetails");
+  if (deskPane === "addMore") return t("windows.ui.addmore");
+  if (deskPane === "screenLeftOut") return t("windows.ui.leftout");
   return deskSourceName(deskPane);
 }
 
@@ -6595,7 +6612,7 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
       dump.setup?.desktop_activity_page_addresses_save_failed,
   );
   const retry = saveFailed
-    ? actionButton("retry", ids["settings.sources.saveRetry"], true, () => {
+    ? actionButton(t("windows.desktop.shared.settings.textcontent"), ids["settings.sources.saveRetry"], true, () => {
         void invoke("retry_save").then(() => retryHealth());
       })
     : null;
@@ -6647,7 +6664,7 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
     paneTitle: deskPaneTitle(),
     titleGlyph: deskTitleGlyph(),
     paneIsStatus: statusOpen,
-    connected: pill === "connected",
+    connected: pill === t("windows.ui.connected"),
     leadHeadline: lead.headline || pill,
     leadLines: lead.lines,
     kept: statusOpen ? deskKept(dump) : null,
@@ -6851,11 +6868,11 @@ function renderAbout(dump: HealthDump): void {
 
   const body1 = text(
     "p",
-    "the solstone app takes in what you share with it, and all of it goes into your journal.",
+    t("windows.desktop.shared.about.setupwelcomebody1"),
   );
-  const body2 = text("p", "your journal is always private, only yours.");
-  const body3 = text("p", "open source, local-first.");
-  const body4 = text("p", "made by sol pbc.");
+  const body2 = text("p", t("windows.desktop.shared.copy.setupwelcomebody2"));
+  const body3 = text("p", t("windows.desktop.shared.about.opensourcelocalfirst"));
+  const body4 = text("p", t("windows.ui.madebysolpbc"));
   for (const body of [body1, body2, body3, body4]) {
     body.style.margin = "0 0 12px";
     body.style.lineHeight = "1.5";
@@ -6872,13 +6889,13 @@ function renderAbout(dump: HealthDump): void {
 
   const jvEl = selectable(
     automation(
-      text("div", aboutJournalValue(dump.sync.journal_display_line ?? "journal unknown")),
+      text("div", aboutJournalValue(dump.sync.journal_display_line ?? t("windows.desktop.shared.about.journalunknown"))),
       ids["about.journalVersion"],
     ),
   );
   const journalRow = document.createElement("div");
   journalRow.className = "desk-about-row";
-  const journalLabel = text("div", "journal version");
+  const journalLabel = text("div", t("windows.ui.journalversion"));
   journalLabel.className = "desk-about-label";
   jvEl.classList.add("desk-about-version");
   journalRow.append(journalLabel, jvEl);
@@ -6886,7 +6903,7 @@ function renderAbout(dump: HealthDump): void {
 
   const copy = document.createElement("button");
   copy.type = "button";
-  copy.textContent = "copy";
+  copy.textContent = t("windows.desktop.shared.about.textcontent");
   copy.style.marginTop = "14px";
   copy.style.padding = "7px 12px";
   copy.style.border = "1px solid var(--border)";
@@ -6902,9 +6919,9 @@ function renderAbout(dump: HealthDump): void {
       } else {
         await navigator.clipboard.writeText(block);
       }
-      copy.textContent = "copied";
+      copy.textContent = t("windows.ui.copied");
     } catch {
-      copy.textContent = "couldn't copy. select the text and copy it.";
+      copy.textContent = t("windows.desktop.shared.about.textcontent2");
     }
   };
   root.append(copy);
@@ -6924,71 +6941,71 @@ function setLatestHealth(dump: HealthDump | null): void {
 // spec, where the <60s "just now" threshold is pinned). This ticks the live clock.
 function lastCheckedRelative(checkedAt: number | null, secsNow: number): string {
   if (checkedAt == null) {
-    return "never checked for updates";
+    return t("windows.desktop.shared.updates.nevercheckedforupdates");
   }
   const secs = Math.max(0, secsNow - checkedAt);
   if (secs < 60) {
-    return "checked just now";
+    return t("windows.ui.checkedjustnow");
   }
   if (secs < 3600) {
     const m = Math.floor(secs / 60);
-    return `checked ${m} minute${m === 1 ? "" : "s"} ago`;
+    return t("windows.time.checkedminute", { count: m, display: number(m, { useGrouping: false }) });
   }
   if (secs < 86400) {
     const h = Math.floor(secs / 3600);
-    return `checked ${h} hour${h === 1 ? "" : "s"} ago`;
+    return t("windows.time.checkedhour", { count: h, display: number(h, { useGrouping: false }) });
   }
   const d = Math.floor(secs / 86400);
-  return `checked ${d} day${d === 1 ? "" : "s"} ago`;
+  return t("windows.time.checkedday", { count: d, display: number(d, { useGrouping: false }) });
 }
 
 function updateHeadline(view: UpdateView): string {
   const v = view.available_version ?? "";
   const stagedV = view.downloaded_version ?? "";
   if (view.activity === "installing") {
-    return stagedV ? `installing solstone ${stagedV}…` : "installing…";
+    return stagedV ? t("windows.ui.installingsolstone", { "v": String(stagedV) }) : t("windows.ui.installing");
   }
   switch (view.display) {
     case "never_checked":
-      return "not checked for updates yet";
+      return t("windows.ui.notcheckedforupdatesyet");
     case "up_to_date":
-      return "solstone is up to date";
+      return t("windows.desktop.shared.copy.settingstabupdatesdonea11y");
     case "checking":
-      return "checking for updates…";
+      return t("windows.ui.checkingforupdates");
     case "available":
-      return `solstone ${v} is available`;
+      return t("windows.ui.solstoneisavailable", { "v": String(v) });
     case "downloading":
-      return `downloading solstone ${v}`;
+      return t("windows.ui.downloadingsolstone", { "v": String(v) });
     case "staged":
-      return stagedV ? `solstone ${stagedV} is ready to install` : "solstone is ready to install";
+      return stagedV ? t("windows.ui.solstoneisreadytoinstall", { "v": String(stagedV) }) : t("windows.ui.solstonereadyinstall");
     case "failed":
       if (view.recovery === "download") {
-        return "couldn't download update";
+        return t("windows.ui.couldntdownloadupdate");
       }
       if (view.recovery === "install") {
-        return "couldn't install update";
+        return t("windows.ui.couldntinstallupdate");
       }
-      return "couldn't check for updates";
+      return t("windows.ui.couldntcheckforupdates");
     case "failed_with_available":
       if (view.recovery === "download") {
-        return `couldn't download solstone ${v}`;
+        return t("windows.ui.couldntdownloadsolstone", { "value": String(v) });
       }
-      return `couldn't check for updates. solstone ${v} was found earlier`;
+      return t("windows.ui.couldntcheckforupdatessolstonewas", { "v": String(v) });
     case "unavailable":
-      return "this build can't update itself";
+      return t("windows.ui.thisbuildcantupdateitself");
   }
 }
 
 function costDeferralText(deferral: "metered" | "roaming" | "restricted" | "unknown"): string {
   switch (deferral) {
     case "metered":
-      return "download deferred on a metered connection";
+      return t("windows.ui.downloaddeferredmeteredconnection");
     case "roaming":
-      return "download deferred while roaming";
+      return t("windows.ui.downloaddeferredwhileroaming");
     case "restricted":
-      return "background data use is restricted";
+      return t("windows.ui.backgrounddatauserestricted");
     case "unknown":
-      return "download deferred: connection status unknown";
+      return t("windows.ui.downloaddeferredconnectionstatusunknown");
   }
 }
 
@@ -7001,12 +7018,12 @@ function updateSubtitle(
   secsNow: number,
 ): { text: string; live: boolean } | null {
   if (view.activity === "installing") {
-    return { text: "this only takes a moment", live: false };
+    return { text: t("windows.ui.thisonlytakesamoment"), live: false };
   }
   if (view.display === "checking" || view.activity === "checking") {
     if (view.downloaded_version) {
       return {
-        text: `solstone ${view.downloaded_version} installs the next time the solstone app starts, including when you sign in to windows`,
+        text: t("windows.ui.solstonearg0installsthenexttimethesolstoneappsta", { "arg0": String(view.downloaded_version) }),
         live: false,
       };
     }
@@ -7016,16 +7033,16 @@ function updateSubtitle(
     return null;
   }
   if (view.display === "staged" || view.installs_next_start) {
-    let text = "it installs the next time the solstone app starts, including when you sign in to windows";
+    let text = t("windows.ui.itinstallsthenexttimethesolstoneappstartsincludi");
     if (view.cost_deferral) {
-      text += ` · ${costDeferralText(view.cost_deferral)}`;
+      text += t("windows.ui.arg0", { "arg0": String(costDeferralText(view.cost_deferral)) });
     }
     if (view.recovery === "check") {
-      text += " · the last check for updates failed";
+      text += t("windows.ui.thelastcheckforupdatesfailed");
     } else if (view.recovery === "download") {
-      text += " · the download did not finish";
+      text += t("windows.ui.thedownloaddidnotfinish");
     } else if (view.recovery === "install") {
-      text += " · the update couldn't be installed";
+      text += t("windows.ui.theupdatecouldntbeinstalled");
     }
     return { text, live: false };
   }
@@ -7036,13 +7053,13 @@ function updateSubtitle(
     case "never_checked":
       return {
         text: view.prefs.auto_check
-          ? "automatic checks are on"
-          : "automatic checks are off",
+          ? t("windows.ui.automaticchecksareon")
+          : t("windows.ui.automaticchecksareoff"),
         live: false,
       };
     case "unavailable":
       return {
-        text: "download the latest from solstone.app/download/windows",
+        text: t("windows.ui.downloadthelatestfromsolstoneappdownloadwindows"),
         live: false,
       };
     case "up_to_date":
@@ -7096,19 +7113,19 @@ function frequencyRow(interval: CheckIntervalKind, enabled: boolean): HTMLElemen
   row.style.padding = "6px 0";
   row.style.marginLeft = "26px";
 
-  const labelNode = text("div", "how often");
+  const labelNode = text("div", t("windows.desktop.shared.updates.howoften"));
   labelNode.style.fontSize = "13px";
   labelNode.style.color = enabled ? "var(--fg-subtle)" : "var(--muted)";
 
   const sel = document.createElement("select");
   sel.disabled = !enabled;
   sel.dataset.automationId = ids["settings.updates.frequency"];
-  sel.setAttribute("aria-label", "how often to check for updates");
+  sel.setAttribute("aria-label", t("windows.ui.howoftentocheckforupdates"));
   sel.classList.add("fluent-control");
   const options: ReadonlyArray<readonly [CheckIntervalKind, string]> = [
-    ["day", "every day"],
-    ["week", "every week"],
-    ["month", "every month"],
+    ["day", t("windows.desktop.shared.updates.everyday")],
+    ["week", t("windows.desktop.shared.updates.everyweek")],
+    ["month", t("windows.desktop.shared.updates.everymonth")],
   ];
   for (const [val, lbl] of options) {
     const opt = document.createElement("option");
@@ -7188,7 +7205,7 @@ function updateProgressBar(determinate: boolean, pct: number | null): HTMLElemen
   fill.style.borderRadius = "3px";
   if (determinate) {
     fill.style.left = "0";
-    fill.style.width = `${pct ?? 0}%`;
+    fill.style.width = t("windows.ui.arg0x211b8ba1", { "arg0": String(pct ?? 0) });
     fill.style.transition = "width .2s";
   } else {
     fill.style.width = "35%";
@@ -7198,7 +7215,7 @@ function updateProgressBar(determinate: boolean, pct: number | null): HTMLElemen
   wrap.append(track);
 
   if (determinate) {
-    const lbl = text("div", `${pct ?? 0}%`);
+    const lbl = text("div", t("windows.ui.arg0x211b8ba1", { "arg0": String(pct ?? 0) }));
     lbl.style.fontSize = "12px";
     lbl.style.color = "var(--fg-subtle)";
     lbl.style.minWidth = "34px";
@@ -7214,7 +7231,7 @@ function updateNotesBlock(notes: string): HTMLElement {
   const wrap = document.createElement("div");
   wrap.style.margin = "14px 0 2px";
 
-  const cap = text("div", "what's new");
+  const cap = text("div", t("windows.desktop.shared.updates.whatsnew"));
   cap.style.fontSize = "12px";
   cap.style.fontWeight = "600";
   cap.style.color = "var(--fg-subtle)";
@@ -7280,7 +7297,7 @@ function updateNotesBlock(notes: string): HTMLElement {
 // shell); the click is handed to the backend, which opens the system browser.
 function updateNotesOnlineLink(): HTMLAnchorElement {
   const link = document.createElement("a");
-  link.textContent = "read the full notes online";
+  link.textContent = t("windows.desktop.shared.updates.textcontent");
   link.href = "https://solstone.app/releases/windows";
   link.style.display = "inline-block";
   link.style.margin = "8px 0 0";
@@ -7302,7 +7319,7 @@ function updateNotesOnlineLink(): HTMLAnchorElement {
 }
 
 function renderUpdatesSection(view: UpdateView): HTMLElement {
-  const pane = section("updates");
+  const pane = section(t("windows.desktop.shared.settings.updates"));
   const a = view.actions;
 
   // Focal state headline + a quiet subtitle (the macOS Updates header hierarchy),
@@ -7374,7 +7391,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
     view.display !== "unavailable" &&
     view.activity !== "installing";
   if (showCheck) {
-    const checkLabel = view.display === "never_checked" ? "check for updates" : "check again";
+    const checkLabel = view.display === "never_checked" ? t("windows.ui.checkforupdates") : t("windows.desktop.shared.copy.checkagain");
     actions.append(
       actionButton(checkLabel, ids["settings.updates.checkNow"], a.can_check_now, () => {
         void invoke("update_check_now");
@@ -7384,7 +7401,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
   }
   if ((view.display === "available" || a.can_download) && view.recovery !== "download") {
     actions.append(
-      actionButton("download", ids["settings.updates.download"], a.can_download, () => {
+      actionButton(t("windows.desktop.shared.updates.download"), ids["settings.updates.download"], a.can_download, () => {
         void invoke("update_download");
       }),
     );
@@ -7392,7 +7409,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
   }
   if (view.installs_next_start && view.activity !== "installing") {
     actions.append(
-      actionButton("relaunch to install", ids["settings.updates.install"], a.can_install, () => {
+      actionButton(t("windows.ui.relaunchtoinstall"), ids["settings.updates.install"], a.can_install, () => {
         void invoke("update_install");
       }),
     );
@@ -7401,7 +7418,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
   if ((view.display === "failed" || view.display === "failed_with_available" || view.recovery === "download") && view.recovery !== "install") {
     const isDownloadRecovery = view.recovery === "download";
     actions.append(
-      actionButton("retry", ids["settings.updates.retry"], isDownloadRecovery ? a.can_download : a.can_retry, () => {
+      actionButton(t("windows.desktop.shared.settings.textcontent"), ids["settings.updates.retry"], isDownloadRecovery ? a.can_download : a.can_retry, () => {
         if (isDownloadRecovery) {
           void invoke("update_download");
         } else {
@@ -7413,7 +7430,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
   }
   if (a.can_dismiss) {
     actions.append(
-      actionButton("dismiss", ids["settings.updates.dismiss"], true, () => {
+      actionButton(t("windows.desktop.shared.updates.dismiss"), ids["settings.updates.dismiss"], true, () => {
         void invoke("update_dismiss");
       }),
     );
@@ -7431,7 +7448,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
   prefs.style.paddingTop = "14px";
   prefs.style.borderTop = "1px solid var(--border-subtle)";
 
-  const prefsLabel = text("div", "automatic updates");
+  const prefsLabel = text("div", t("windows.desktop.shared.updates.automaticupdates"));
   prefsLabel.style.fontSize = "12px";
   prefsLabel.style.fontWeight = "600";
   prefsLabel.style.color = "var(--fg-subtle)";
@@ -7440,7 +7457,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
 
   prefs.append(
     toggleRow(
-      "check for updates automatically",
+      t("windows.desktop.shared.updates.checkforupdatesautomatically"),
       ids["settings.updates.autoCheck"],
       view.prefs.auto_check,
       (on) => {
@@ -7451,7 +7468,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
   prefs.append(frequencyRow(view.prefs.interval, a.frequency_enabled));
   prefs.append(
     toggleRow(
-      "download updates in the background",
+      t("windows.desktop.shared.updates.downloadupdatesinthebackground"),
       ids["settings.updates.autoDownload"],
       view.prefs.auto_download,
       (on) => {
@@ -7470,7 +7487,7 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
   foot.style.borderTop = "1px solid var(--border-subtle)";
   const footText = text(
     "div",
-    "no usage data is ever sent — update checks only fetch the version manifest.",
+    t("windows.ui.nousagedataiseversentupdate"),
   );
   footText.style.fontSize = "12px";
   footText.style.color = "var(--fg-subtle)";
@@ -7548,12 +7565,12 @@ function renderUnavailable(): void {
   title.style.fontSize = "22px";
   title.style.fontWeight = "700";
 
-  const msg = text("p", "couldn't load the solstone app's status just now.");
+  const msg = text("p", t("windows.ui.couldntloadthesolstoneapps"));
   msg.style.padding = "0 20px";
   msg.style.color = "var(--fg-subtle)";
 
   const retry = document.createElement("button");
-  retry.textContent = "retry";
+  retry.textContent = t("windows.desktop.shared.settings.textcontent");
   retry.classList.add("fluent-accent");
   retry.style.margin = "8px 20px";
   retry.style.fontSize = "13px";
@@ -7909,6 +7926,7 @@ function updatePauseLabels(): void {
 }
 
 export function start(): void {
+  applyDocumentLocale();
   installFrontendErrorHandlers();
 
   const queriedRoot = document.querySelector<HTMLDivElement>("#app");

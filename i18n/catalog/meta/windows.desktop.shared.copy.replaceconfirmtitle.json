@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. replace \"\u2026\"?",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.replaceconfirmtitle.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "selecteddevicelabel",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 64,
+  "source_revision": "44fcdc086dccb0d89810356e2b96643cf90d3ae3781f0146307e7730ee3ff85b",
+  "risk": "routine",
+  "auto_merge": true
+}

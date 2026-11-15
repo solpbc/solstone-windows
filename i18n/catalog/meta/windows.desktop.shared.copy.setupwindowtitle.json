@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. set up solstone",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.setupwindowtitle.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "eb5a5b665f38043a5465337d344202ff6c2278ff76bd8d254537337918e42cc7",
+  "risk": "routine",
+  "auto_merge": true
+}

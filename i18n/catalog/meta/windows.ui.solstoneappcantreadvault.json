@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. the solstone app can't read this vault. check that its folder is there and that the dri\u2026",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 336,
+  "source_revision": "4c464d8bd3f670ab47e23ca70952a6b8d6a2ebd5781db4b81a1a1bccaa1af2d8",
+  "risk": "routine",
+  "auto_merge": true
+}

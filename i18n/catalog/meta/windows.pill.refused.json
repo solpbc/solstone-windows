@@ -1,0 +1,16 @@
+{
+  "description": "Whole message: windows.pill.refused",
+  "context": "Windows app display. Preserve the exact English text, arguments and state distinction.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "5f600fd084ecae678ff2e974738ae6a3ff615c69396ea291ec89fd1b478462f6",
+  "risk": "routine",
+  "auto_merge": true
+}

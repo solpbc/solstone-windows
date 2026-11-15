@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. not reported",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "1adf84bba21d837b7e8d98a0166feea6f5d1811787c90b2e9a1906aaa216e75a",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. a window that closes or moves can appear for up to one frame before exclusion applies.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 172,
+  "source_revision": "e829d7aeb92408c9c77862eb7f9625fe4389ad708a480b425db1ebab66b1c008",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "computer sound level",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "37878167724313b28ed689e3c8786bf9a554d5334c25242aea65b0158560586a",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "no local journal to connect to",
+  "context": "The Windows app: setup action error display. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "e25fc17073908341bc79bc96b4970f66ccb2420e8f159f8b5c859248f698a946",
+  "risk": "routine",
+  "auto_merge": true
+}

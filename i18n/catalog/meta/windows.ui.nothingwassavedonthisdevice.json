@@ -1,0 +1,16 @@
+{
+  "description": "nothing was saved on this device.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "070ba994e0922f62e220b04dd78a0210fb19b38670d57b9f74c345b132f08629",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "getting ready. connecting to your journal.",
+  "context": "The Windows app: ui/src/shell/derive.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 84,
+  "source_revision": "38fc6c5503e47dd1214913a826e507273ba21b61e5fefbc855ea3b0a37711be7",
+  "risk": "routine",
+  "auto_merge": true
+}

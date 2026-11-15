@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. remove \u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "804b13b442719a498da766e6804488586594c682f49df0aa997da8d33dee8eef",
+  "risk": "routine",
+  "auto_merge": true
+}

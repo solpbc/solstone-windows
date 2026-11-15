@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use observer_model::i18n::message;
 use observer_model::{PairingPhase, SyncSnapshot};
 use pl_transport_win::import_client::{ImportFile, ImportReply};
 use pl_transport_win::import_store::{self, Intake, Refusal, SavedProgress, Store, VersionGate};
@@ -39,7 +40,7 @@ pub struct Row {
 
 #[derive(Serialize)]
 pub struct Document {
-    recent: &'static str,
+    recent: String,
     rows: Vec<Row>,
     intake: Option<Intake>,
     interrupted: bool,
@@ -71,7 +72,10 @@ fn document_for(
 ) -> Document {
     let Some(store) = store else {
         return Document {
-            recent: "couldn't read imports on this device. nothing has been removed. restart the solstone app to try again.",
+            recent: message(
+                "windows.ui.couldntreadimportsonthisdevicenothinghasbeenremo",
+                &[],
+            ),
             rows: Vec::new(),
             intake: None,
             interrupted: false,
@@ -121,27 +125,50 @@ fn document_for(
     }
     let recent = if pending > 0 {
         if auth_blocked {
-            "your journal stopped accepting this device. imports wait here until you pair again."
+            message(
+                "windows.ui.yourjournalstoppedacceptingthisdeviceimportswait",
+                &[],
+            )
         } else {
             match sync.pairing.phase {
-            PairingPhase::NotPaired => "imports wait on this device until you connect a journal.",
-            PairingPhase::AwaitingConfirmation => "imports wait until you confirm your journal's mark.",
-            PairingPhase::Failed => "your journal stopped accepting this device. imports wait here until you pair again.",
-            PairingPhase::Pairing => "this device is not paired with your journal. imports wait here until you connect a journal.",
-            PairingPhase::Paired => match gate {
-                VersionGate::Unknown => "checking your journal.",
-                VersionGate::Old => "imports wait until your journal is updated.",
-                VersionGate::Supported if store.active.is_some() => "sending to your journal.",
-                VersionGate::Supported => "waiting to go to your journal.",
-            },
-        }
+                PairingPhase::NotPaired => message(
+                    "windows.ui.importswaitonthisdeviceuntilyouconnectajournal",
+                    &[],
+                ),
+                PairingPhase::AwaitingConfirmation => {
+                    message("windows.ui.importswaituntilyouconfirmyourjournalsmark", &[])
+                }
+                PairingPhase::Failed => message(
+                    "windows.ui.yourjournalstoppedacceptingthisdeviceimportswait",
+                    &[],
+                ),
+                PairingPhase::Pairing => message(
+                    "windows.ui.thisdeviceisnotpairedwithyourjournalimportswaith",
+                    &[],
+                ),
+                PairingPhase::Paired => match gate {
+                    VersionGate::Unknown => message("windows.ui.checkingyourjournal", &[]),
+                    VersionGate::Old => {
+                        message("windows.ui.importswaituntilyourjournalisupdated", &[])
+                    }
+                    VersionGate::Supported if store.active.is_some() => {
+                        message("windows.ui.sendingtoyourjournal", &[])
+                    }
+                    VersionGate::Supported => {
+                        message("windows.ui.waitingtogotoyourjournalx5d789db5", &[])
+                    }
+                },
+            }
         }
     } else if attention > 0 {
-        "not going to your journal right now. each one says why."
+        message(
+            "windows.ui.notgoingtoyourjournalrightnoweachonesayswhy",
+            &[],
+        )
     } else if !journal.is_empty() && store.delivered_to.as_deref() == Some(journal) {
-        "in your journal."
+        message("windows.ui.inyourjournal", &[])
     } else {
-        "nothing yet."
+        message("windows.ui.nothingyetxec5a8da6", &[])
     };
     Document {
         available: true,
@@ -411,7 +438,7 @@ async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Res
                     item.refusal = Some(Refusal {
                         journal: journal.clone(),
                         version: version.clone(),
-                        sentence: "the copy on this device is missing".into(),
+                        sentence: message("windows.ui.thecopyonthisdeviceismissing", &[]),
                         retryable: false,
                     });
                     store.put(item)?;
@@ -460,8 +487,8 @@ pub fn add_paths(app: tauri::AppHandle, paths: Vec<PathBuf>) {
             let result = tauri::async_runtime::spawn_blocking(move || {
                 import_store::new_id()
                     .map_err(|_| import_store::IntakeRefusal {
-                        name: "file".into(),
-                        reason: "this couldn't be read. add it again",
+                        name: message("windows.ui.file", &[]),
+                        reason: message("windows.ui.thiscouldntbereadadditagain", &[]),
                     })
                     .and_then(|id| import_store::stage(&root, &path, id, now()))
             })

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. a segment is a 5-minute local bundle that stays here until your journal receives it.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 168,
+  "source_revision": "b2ad76968388193c89287786356eff732425e3fc47b1ecd51a478ba1452ae8ee",
+  "risk": "routine",
+  "auto_merge": true
+}

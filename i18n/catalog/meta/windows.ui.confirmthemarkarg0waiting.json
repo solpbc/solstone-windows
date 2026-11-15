@@ -1,0 +1,21 @@
+{
+  "description": "confirm the mark \u00b7 {arg0} waiting",
+  "context": "The Windows app: crates/observer-model/src/tray_status.rs. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "69a3a7d97f5461c5e085a87c146ce614d4bfb6398773a3f4ab7b64ecc8db9519",
+  "risk": "routine",
+  "auto_merge": true
+}

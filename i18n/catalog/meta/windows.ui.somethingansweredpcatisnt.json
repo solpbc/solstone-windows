@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. something answered this PC at \u2026, and it isn't the journal this PC is paired with. this \u2026",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 556,
+  "source_revision": "bb8254a22dcb948205cec56443efa17903abe4e5a2835d1f66f65bbcc1296d14",
+  "risk": "routine",
+  "auto_merge": true
+}

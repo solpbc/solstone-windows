@@ -1,0 +1,16 @@
+{
+  "description": "no sound output is available. connect or enable one in windows sound settings. the solstone app starts using it on its own.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 246,
+  "source_revision": "1f1c7b5239c3c19105ad7069689ecd9a682b2f823075b93641319f0ee0155359",
+  "risk": "routine",
+  "auto_merge": true
+}

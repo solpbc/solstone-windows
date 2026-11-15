@@ -1,0 +1,16 @@
+{
+  "description": "connect to your journal",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "b8f17d93f9adfe05f28601304eb836590125cb95d4942b0d289e90b39b4c06a2",
+  "risk": "routine",
+  "auto_merge": true
+}

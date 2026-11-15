@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this PC isn't on a network. pairing needs to reach your journal directly, so join the s\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 424,
+  "source_revision": "5c23016dc614dcdcde099be775d3112d3bf9ec8624f686d5651e60041f5955ca",
+  "risk": "routine",
+  "auto_merge": true
+}

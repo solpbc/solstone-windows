@@ -1,0 +1,21 @@
+{
+  "description": "solstone {arg0} installs the next time the solstone app starts, including when you sign in to windows",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 202,
+  "source_revision": "4f2ac946431ec358fe7716443cc84f9c96b6e1ea9cd7466cfad79a183861c449",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. next save",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "ddf3e12ad8c5ff8dacd7b2597fdf8bb8ae628224f8dda9b85d7cd81b4f1a2465",
+  "risk": "routine",
+  "auto_merge": true
+}

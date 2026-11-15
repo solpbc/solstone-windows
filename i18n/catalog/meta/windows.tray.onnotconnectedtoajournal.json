@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. on, not connected to a journal",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 60,
+  "source_revision": "9927122d1c4c0a37fcbfba7719a82c32ddf4adecae12dc74659a879105bdf666",
+  "risk": "routine",
+  "auto_merge": true
+}

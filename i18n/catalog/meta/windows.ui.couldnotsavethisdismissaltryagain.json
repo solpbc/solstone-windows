@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. could not save this dismissal. try again.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 82,
+  "source_revision": "5579ffc8c6de6561e2d79e877d2854082fe0cdbfad433befe020d036bb7ac0b6",
+  "risk": "routine",
+  "auto_merge": true
+}

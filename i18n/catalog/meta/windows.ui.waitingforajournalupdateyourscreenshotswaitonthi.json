@@ -1,0 +1,16 @@
+{
+  "description": "waiting for a journal update. your screenshots wait on this PC.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 126,
+  "source_revision": "9ce2cceba758f71db80a4560f29832163c25909adff577b58d603d16e4507af5",
+  "risk": "routine",
+  "auto_merge": true
+}

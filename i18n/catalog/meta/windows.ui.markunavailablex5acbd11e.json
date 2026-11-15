@@ -1,0 +1,16 @@
+{
+  "description": "mark \u00b7 unavailable",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "135321e963aae647b7e7c2610e5336849401cb30fad1a0091e49b703daf2d384",
+  "risk": "routine",
+  "auto_merge": true
+}

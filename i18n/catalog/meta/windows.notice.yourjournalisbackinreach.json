@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. your journal is back in reach",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 58,
+  "source_revision": "4bb73a939471fb247eacabf1911e36227dbfb559d7fce2ae2fbd9ddf091a600d",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. choice needs attention",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.decisionrefusedtitle.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "0286302de89ad4d115be7b70e7989b172bda2f95f31b2bc56a696fa1c8fb608b",
+  "risk": "routine",
+  "auto_merge": true
+}

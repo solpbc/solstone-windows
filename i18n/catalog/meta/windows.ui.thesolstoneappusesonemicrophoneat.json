@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. the solstone app uses one microphone at a time. set which one, and how much to boost it.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 176,
+  "source_revision": "53b95e4996ac6f036d2d602461e70f4196c2c30b424112ae19e1adacd2b016ee",
+  "risk": "routine",
+  "auto_merge": true
+}

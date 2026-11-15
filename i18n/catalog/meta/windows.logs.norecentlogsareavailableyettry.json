@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. no recent logs are available yet. try again after using the app.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 128,
+  "source_revision": "5e46bd2f4c4c0726085234ab687d6f92c0d120df2b9936193a901e7c6840a769",
+  "risk": "routine",
+  "auto_merge": true
+}

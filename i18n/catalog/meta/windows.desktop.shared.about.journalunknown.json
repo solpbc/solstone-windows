@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. journal unknown",
+  "context": "the solstone app, speaking to the owner, on the about surface. This wording is also compared or parsed by code. Branch on an id. The owner's sentence can change without breaking the branch. The same sentence is on macOS as macos.desktop.shared.about.journalunknown.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "caaa00b4547d0856d52aa3735107d7f3ff6fef60404cd3b854f94e014fc2cb30",
+  "risk": "routine",
+  "auto_merge": true
+}

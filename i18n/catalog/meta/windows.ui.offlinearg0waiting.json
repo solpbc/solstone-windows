@@ -1,0 +1,21 @@
+{
+  "description": "offline \u00b7 {arg0} waiting",
+  "context": "The Windows app: ui/src/shell/derive.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "31c90e2b754a4963197a5c32ddd9f3ab090be839f83e15fa47134ab255727c4c",
+  "risk": "routine",
+  "auto_merge": true
+}

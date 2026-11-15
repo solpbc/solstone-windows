@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. could not save this choice. it may change after a restart. try again.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 138,
+  "source_revision": "2aeb2981d256f15e7e70b364cbc9af66f75a3f8b4b87c91a0f6870dadede65c5",
+  "risk": "routine",
+  "auto_merge": true
+}

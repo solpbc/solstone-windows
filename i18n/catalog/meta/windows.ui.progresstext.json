@@ -1,0 +1,27 @@
+{
+  "description": "Windows app. step \u2026 of \u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "stepnum",
+      "type": "cardinal",
+      "numeric_style": "ungrouped"
+    },
+    {
+      "name": "totalsteps",
+      "type": "cardinal",
+      "numeric_style": "ungrouped"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 60,
+  "source_revision": "0425dffd4553f100aee8e3f8f8e41bc7994bd80397633d5d956b5323a590d73c",
+  "risk": "routine",
+  "auto_merge": true
+}

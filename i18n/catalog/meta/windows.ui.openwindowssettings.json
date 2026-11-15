@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. open windows settings",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "18606a2d3cae322e24ae2fb563c2300dbf672b2b50ec536c752c1116520a8542",
+  "risk": "routine",
+  "auto_merge": true
+}

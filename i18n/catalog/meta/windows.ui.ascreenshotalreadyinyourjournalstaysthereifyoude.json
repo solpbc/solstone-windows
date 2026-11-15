@@ -1,0 +1,16 @@
+{
+  "description": "a screenshot already in your journal stays there if you delete it from the folder.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 164,
+  "source_revision": "f8bd409b3324255f66453173a200cc340abb2f8afe3cbfb490f5b27dd4e4429a",
+  "risk": "routine",
+  "auto_merge": true
+}

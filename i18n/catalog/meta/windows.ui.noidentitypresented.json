@@ -1,0 +1,16 @@
+{
+  "description": "no identity presented",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "fefb5737680e565132678c5353c1054ed84759a22a4bf6e863960f84dcd7b6f5",
+  "risk": "routine",
+  "auto_merge": true
+}

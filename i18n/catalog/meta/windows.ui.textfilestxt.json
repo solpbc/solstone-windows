@@ -1,0 +1,16 @@
+{
+  "description": "text files (*.txt)",
+  "context": "The Windows app: native dialogs and imported files. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "4e3a229b8a987d2a5d38dd0b6221369f0761fb9405a855ae2fa3abf917613c81",
+  "risk": "routine",
+  "auto_merge": true
+}

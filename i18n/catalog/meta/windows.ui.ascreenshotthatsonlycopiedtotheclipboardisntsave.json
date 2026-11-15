@@ -1,0 +1,16 @@
+{
+  "description": "a screenshot that's only copied to the clipboard isn't saved, so it doesn't come in.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 168,
+  "source_revision": "1d5fa0d57ef298624fea0e60e8af11f0904319a639527ad0b1c91dc052c28e1f",
+  "risk": "routine",
+  "auto_merge": true
+}

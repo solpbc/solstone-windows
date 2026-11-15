@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. pair with your journal first",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 56,
+  "source_revision": "bc9af3b08d7f4441de58cd78dbfd55985bcbd99230256fcf779f82f0ec65b8fc",
+  "risk": "routine",
+  "auto_merge": true
+}

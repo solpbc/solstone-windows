@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. replace device",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.replacedevice.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "800200af9b5acbf1067df3b9e1592f3662ca4e42433bcbf3544da16d5b5559a6",
+  "risk": "routine",
+  "auto_merge": true
+}

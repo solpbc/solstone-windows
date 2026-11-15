@@ -1,0 +1,23 @@
+{
+  "description": " \u00b7 active",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "5567ea4f3abe64bc6c3d01a0e6a01ad929276a9226c013535abbfc2460bdf813",
+  "risk": "routine",
+  "auto_merge": true,
+  "protected_slots": [
+    {
+      "name": "leading",
+      "kind": "whitespace",
+      "value": " "
+    }
+  ]
+}

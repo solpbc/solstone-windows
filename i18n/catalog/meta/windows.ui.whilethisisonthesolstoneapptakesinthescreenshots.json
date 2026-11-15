@@ -1,0 +1,16 @@
+{
+  "description": "while this is on, the solstone app takes in the screenshots you take on this PC, and your journal keeps each one at the minute you took it.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 278,
+  "source_revision": "ac037e46a44d9bf01f039598d8c6be8ca9d8edee8048d5364b24f1ad46b8ea2e",
+  "risk": "routine",
+  "auto_merge": true
+}

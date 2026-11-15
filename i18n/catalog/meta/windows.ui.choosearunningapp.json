@@ -1,0 +1,16 @@
+{
+  "description": "choose a running app\u2026",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "afa2972748ccfc61adc244ec2d01ad6f0a5e41b16454fe42ca0ed700c7f6b10c",
+  "risk": "routine",
+  "auto_merge": true
+}

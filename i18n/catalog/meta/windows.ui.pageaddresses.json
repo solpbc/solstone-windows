@@ -1,0 +1,16 @@
+{
+  "description": "page addresses",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "e09d39e93a949a57b66272088e1c3a59651dcf9b3fc155b35df7db4f6ce7d13a",
+  "risk": "routine",
+  "auto_merge": true
+}

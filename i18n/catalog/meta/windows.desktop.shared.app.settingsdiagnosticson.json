@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. on",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.app.settingsdiagnosticson.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "40d611c1c8b58aebd4ae5eef8a0723365b0d1bcaa7cba752d40a13221a70bdca",
+  "risk": "routine",
+  "auto_merge": true
+}

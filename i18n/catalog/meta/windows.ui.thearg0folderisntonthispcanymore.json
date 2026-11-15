@@ -1,0 +1,21 @@
+{
+  "description": "the {arg0} folder isn't on this PC anymore.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 86,
+  "source_revision": "cf9a16c5e6247f3d0ab63320d3dea6d02ee95e498a2f6a0f02056bb9d679009c",
+  "risk": "routine",
+  "auto_merge": true
+}

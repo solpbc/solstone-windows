@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. you can turn each source on or off in sources.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 92,
+  "source_revision": "b674aa41f4aed2878ab8958b31a0f53fa32a415031be5cd2184a0e1c0da0c446",
+  "risk": "routine",
+  "auto_merge": true
+}

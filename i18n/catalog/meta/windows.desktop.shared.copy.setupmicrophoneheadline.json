@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. share your conversations",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.setupmicrophoneheadline.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "7f6e62a81b27f600c71dbf721702526ca1802fa2d7bbbd60c5898ce4e7b3a399",
+  "risk": "routine",
+  "auto_merge": true
+}

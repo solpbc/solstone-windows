@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. couldn't turn this on. try again.",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 66,
+  "source_revision": "d70a91bfb34433ceb92418523c6644e5a4233d5db7438f2ac9c343b4a382f2bd",
+  "risk": "routine",
+  "auto_merge": true
+}

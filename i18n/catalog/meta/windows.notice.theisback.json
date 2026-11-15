@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. the \u2026 is back",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "43e8061f64c608d84d2dd4ca88157d68357d91d031e65a548b0704006d5d7879",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. found your journal on this PC",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 58,
+  "source_revision": "e7a87fae60b1a0a435bef690734c84f9c67a210dbfb3462a115a9da38c7d0a06",
+  "risk": "routine",
+  "auto_merge": true
+}

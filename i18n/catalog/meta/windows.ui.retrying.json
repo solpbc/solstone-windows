@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. \u2026 retrying",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "8b2379c3dc9d7a9c188d696e8201f7ae345967f3c46246bd8b4bd38e5e96540f",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "couldn't remove this. try again.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "eff873b04d3259209cdb7c4a9ecccc9bb93f73ec1f56543e5079d49819dc09eb",
+  "risk": "routine",
+  "auto_merge": true
+}

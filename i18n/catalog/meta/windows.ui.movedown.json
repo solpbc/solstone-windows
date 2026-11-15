@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. move \u2026 down",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "name",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "c2611c64abaee926ea976788dc08a7a80ce755daa7a66509d2fc617bad3dbb56",
+  "risk": "routine",
+  "auto_merge": true
+}

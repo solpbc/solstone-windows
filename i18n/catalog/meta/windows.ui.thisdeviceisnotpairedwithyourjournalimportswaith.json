@@ -1,0 +1,16 @@
+{
+  "description": "this device is not paired with your journal. imports wait here until you connect a journal.",
+  "context": "The Windows app: native dialogs and imported files. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 182,
+  "source_revision": "54e9cef5b77ff02d536a7c18950961d4f74732801a509ecd38aa0c18299a6227",
+  "risk": "routine",
+  "auto_merge": true
+}

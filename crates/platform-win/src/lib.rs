@@ -32,6 +32,8 @@ pub mod about_observation;
 pub mod app_paths;
 pub mod autostart;
 pub mod connection_cost;
+#[allow(unsafe_code)]
+pub mod locale;
 pub use connection_cost::{connection_cost, PlatformConnectionCost, PlatformConnectionCostKind};
 #[allow(unsafe_code)]
 pub mod desktop_activity;

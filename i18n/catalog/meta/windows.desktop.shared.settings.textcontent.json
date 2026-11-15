@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. retry",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.settings.textcontent.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "c5d68dbb6fc144551ddb124066eb837eabe9d1b3f6b0e371d4b45a563b47a759",
+  "risk": "routine",
+  "auto_merge": true
+}

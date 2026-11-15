@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. couldn't check for updates. solstone \u2026 was found earlier",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "v",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 116,
+  "source_revision": "5fecc4da62feea8f82065ed0f1656442f59ed68fb8e47b83f05dfcac07015a5f",
+  "risk": "routine",
+  "auto_merge": true
+}

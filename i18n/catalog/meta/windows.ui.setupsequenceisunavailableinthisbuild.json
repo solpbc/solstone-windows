@@ -1,0 +1,16 @@
+{
+  "description": "setup sequence is unavailable in this build",
+  "context": "The Windows app: setup action error display. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 86,
+  "source_revision": "605e077d4434ebcec627c334a0f8ffc211344f63be81c729b7203fbca0513f5d",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this step could not finish. try again.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 76,
+  "source_revision": "d037b12f5497e9d9a143f981a103c60ffe9831de4cdf4d2aa1d9b82954b31913",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -3,8 +3,12 @@
 
 //! Scheme ingress notices. Target bytes never enter diagnostics.
 
+use observer_model::i18n::message;
 pub fn show_failure() {
-    platform_win::notice::show("couldn't open your journal.", "try opening the link again.");
+    platform_win::notice::show(
+        &message("windows.ui.couldntopenyourjournal", &[]),
+        &message("windows.ui.tryopeningthelinkagain", &[]),
+    );
 }
 
 pub async fn open(app: tauri::AppHandle) {
@@ -19,8 +23,8 @@ pub async fn open(app: tauri::AppHandle) {
         Ok(true) => {
             std::thread::spawn(|| {
                 platform_win::notice::show(
-                    "this journal link isn't valid.",
-                    "copy the full link from your chat and open it again.",
+                    &message("windows.ui.thisjournallinkisntvalid", &[]),
+                    &message("windows.ui.copythefulllinkfromyourchatandopenitagain", &[]),
                 )
             });
         }

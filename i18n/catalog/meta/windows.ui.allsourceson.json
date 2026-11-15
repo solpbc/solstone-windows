@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. all sources on",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "0f532aa837731bfabbc871f2e189c3839ca29cfafcbfc80ea3ebead0385c6e26",
+  "risk": "routine",
+  "auto_merge": true
+}

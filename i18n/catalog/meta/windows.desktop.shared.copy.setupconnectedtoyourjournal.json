@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. connected to your journal",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.setupconnectedtoyourjournal.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 50,
+  "source_revision": "628f17577d1ef3be7ae2978c3751eda78f71873687ebfbbdb7f99a2e73a12d1d",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. \u2026 stored locally",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "31d2765fda90b10b397a2b7721724ba121fc6bd81a26c8c0155edd4e16f2bb45",
+  "risk": "routine",
+  "auto_merge": true
+}

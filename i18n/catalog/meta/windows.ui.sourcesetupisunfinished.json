@@ -1,0 +1,16 @@
+{
+  "description": "source setup is unfinished",
+  "context": "The Windows app: setup action error display. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "c64d168511c6435c464e7259277b16efbb2181afb5400ed796bbf1ed18abc0b7",
+  "risk": "routine",
+  "auto_merge": true
+}

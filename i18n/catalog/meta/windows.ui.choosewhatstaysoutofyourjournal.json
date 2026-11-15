@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. choose what stays out of your journal. changes take effect right away.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 140,
+  "source_revision": "01dcd6046a19a464165ee6561098d3b45c0598132e0752752f22dc1485ce294e",
+  "risk": "routine",
+  "auto_merge": true
+}

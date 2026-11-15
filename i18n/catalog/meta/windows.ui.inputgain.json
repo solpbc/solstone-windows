@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. input gain",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "5e5cc555d1843e81b711d7836940bce4b2d93223210910ecbc6ff16c3ee4f061",
+  "risk": "routine",
+  "auto_merge": true
+}

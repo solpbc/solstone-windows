@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. the top enabled microphone is used. use \u2191 \u2193 to set the order; the solstone app falls ba\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 248,
+  "source_revision": "f8e5a3bec6cb95a97ea4da1f64a8f5106d0072ac45dea923e269640929006c5c",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. intake is running again",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "a35314485460778ad3a0f411a41165ee30aa5e5cd781356f9a2d163ae88aad5e",
+  "risk": "routine",
+  "auto_merge": true
+}

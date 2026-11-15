@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this connection could not finish. try again.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 88,
+  "source_revision": "5407ff35a598f73296222f70ee611d2d7409f936b8091c84b996245f1867eccd",
+  "risk": "routine",
+  "auto_merge": true
+}

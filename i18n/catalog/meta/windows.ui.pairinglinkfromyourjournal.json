@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. pairing link from your journal",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 60,
+  "source_revision": "0ecc775f7660991800fb89b35a28dfedf0caf57181bb45fc439043626e2ef859",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "could not save turning this on. it stays off. try again.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 112,
+  "source_revision": "bc8492fb402a7ad89486598efb37915da90c265a4da64f04c312ce12cacf791d",
+  "risk": "routine",
+  "auto_merge": true
+}

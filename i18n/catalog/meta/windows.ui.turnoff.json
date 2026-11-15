@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. turn off",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "d08125e8055d91c8762152f9f23f69537fd74e26b9569e112580933dd95887f4",
+  "risk": "routine",
+  "auto_merge": true
+}

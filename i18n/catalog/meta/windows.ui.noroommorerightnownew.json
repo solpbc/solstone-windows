@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. no room for more right now. new pages are taken in again once there's room.",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 150,
+  "source_revision": "4cf875df04db2059b2b6e73f91b298a62d374b11be4fcb94f5a03fb52879e551",
+  "risk": "routine",
+  "auto_merge": true
+}

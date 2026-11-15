@@ -1,0 +1,16 @@
+{
+  "description": "connect a journal",
+  "context": "The Windows app: ui/src/shell/view.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "fcd7518187826a73aa525355a48daec05e8301fda665cd3046bb00c52dd218fa",
+  "risk": "routine",
+  "auto_merge": true
+}

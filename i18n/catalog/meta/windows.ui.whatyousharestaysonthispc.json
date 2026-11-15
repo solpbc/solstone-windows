@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. what you share stays on this PC until it goes into your journal on your own devices. yo\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 256,
+  "source_revision": "6e74ac8ec2dede564aab892e51bc17196bb0305aa61c1298935de5edadfa950f",
+  "risk": "routine",
+  "auto_merge": true
+}

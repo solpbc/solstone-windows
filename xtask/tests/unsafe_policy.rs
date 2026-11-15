@@ -61,6 +61,14 @@ struct ApprovedNode {
 }
 
 const APPROVED_NODES: &[ApprovedNode] = &[
+    // User-language queries borrow owned UTF-16 buffers; WebView2 environment
+    // creation stays on the UI STA and pumps its single completion callback.
+    ApprovedNode {
+        path: "crates/platform-win/src/lib.rs",
+        kind: ApprovedKind::ModDecl,
+        name: "locale",
+        owner: None,
+    },
     // A synchronous native notice for link failures before a webview exists.
     // MessageBoxW borrows two owned, nul-terminated UTF-16 buffers only for the call.
     ApprovedNode {

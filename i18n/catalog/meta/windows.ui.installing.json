@@ -1,0 +1,16 @@
+{
+  "description": "installing\u2026",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "451bb5d577b3c2434a0618a5d61cb285a6c840e97492e15e4e7797907a583563",
+  "risk": "routine",
+  "auto_merge": true
+}

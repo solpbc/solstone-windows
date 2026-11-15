@@ -11,12 +11,13 @@ use std::path::{Path, PathBuf};
 
 const HELPER: &str = "shared_webview_environment(";
 const BUILDER: &str = "WebviewWindowBuilder::new(";
-const ENVIRONMENT_OPTIONS: [&str; 5] = [
+const ENVIRONMENT_OPTIONS: [&str; 6] = [
     ".additional_browser_args(",
     ".scroll_bar_style(",
     ".data_directory(",
     ".browser_extensions_enabled(",
     ".proxy_url(",
+    ".with_environment(",
 ];
 
 fn app_sources() -> Vec<(PathBuf, String)> {
@@ -50,7 +51,7 @@ fn every_window_takes_the_shared_webview_environment() {
     let mut builders = 0;
     for (path, text) in app_sources() {
         let compact = without_whitespace(&text);
-        let wrapped = compact.matches(&format!("{HELPER}{BUILDER}")).count();
+        let wrapped = compact.matches(&format!("{HELPER}app,{BUILDER}")).count();
         let all = compact.matches(BUILDER).count();
         builders += all;
         assert_eq!(
@@ -70,7 +71,7 @@ fn every_window_takes_the_shared_webview_environment() {
 fn environment_options_are_set_only_in_the_shared_helper() {
     let mut helper_files = 0;
     for (path, text) in app_sources() {
-        let helper_start = text.find("fn shared_webview_environment(");
+        let helper_start = text.find("fn shared_webview_environment");
         if helper_start.is_some() {
             helper_files += 1;
         }

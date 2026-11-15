@@ -1,0 +1,25 @@
+{
+  "description": "Windows app. \u2026 delivered \u00b7 \u2026 pending",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    },
+    {
+      "name": "value2",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 72,
+  "source_revision": "4ee5a11473e2c567259712beda54dc3c58ffff5f37a43e4603419c0c7baca466",
+  "risk": "routine",
+  "auto_merge": true
+}

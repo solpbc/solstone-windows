@@ -3,6 +3,8 @@
 
 //! Durable local custody for files chosen for import.
 
+use observer_model::i18n::message;
+
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -59,7 +61,7 @@ impl Item {
 #[derive(Clone, Debug, Serialize)]
 pub struct IntakeRefusal {
     pub name: String,
-    pub reason: &'static str,
+    pub reason: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -262,17 +264,23 @@ pub fn stage(root: &Path, source: &Path, id: String, now: u64) -> Result<Item, I
         reason,
     };
     if !valid_id(&id) {
-        return Err(refuse("this couldn't be read. add it again"));
+        return Err(refuse(message(
+            "windows.ui.thiscouldntbereadadditagain",
+            &[],
+        )));
     }
-    let mime =
-        mime_for(source).ok_or_else(|| refuse("your journal can't take this kind of file"))?;
-    let mut input =
-        File::open(source).map_err(|_| refuse("this couldn't be read. add it again"))?;
+    let mime = mime_for(source)
+        .ok_or_else(|| refuse(message("windows.ui.yourjournalcanttakethiskindoffile", &[])))?;
+    let mut input = File::open(source)
+        .map_err(|_| refuse(message("windows.ui.thiscouldntbereadadditagain", &[])))?;
     let info = input
         .metadata()
-        .map_err(|_| refuse("this couldn't be read. add it again"))?;
+        .map_err(|_| refuse(message("windows.ui.thiscouldntbereadadditagain", &[])))?;
     if !info.is_file() {
-        return Err(refuse("your journal can't take this kind of file"));
+        return Err(refuse(message(
+            "windows.ui.yourjournalcanttakethiskindoffile",
+            &[],
+        )));
     }
     let size = info.len();
     let item = Item {
@@ -293,7 +301,10 @@ pub fn stage(root: &Path, source: &Path, id: String, now: u64) -> Result<Item, I
         path: source,
     };
     if size > MAX_IMPORT_FILE_BYTES || framing.request_length(size) > REQUEST_BODY_LIMIT {
-        return Err(refuse("it's larger than your journal takes"));
+        return Err(refuse(message(
+            "windows.ui.itslargerthanyourjournaltakes",
+            &[],
+        )));
     }
     let staging = root.join(format!(".staging-{}", item.id));
     let result = (|| -> io::Result<()> {
@@ -315,9 +326,9 @@ pub fn stage(root: &Path, source: &Path, id: String, now: u64) -> Result<Item, I
     if let Err(error) = result {
         let _ = fs::remove_dir_all(staging);
         return Err(refuse(if error.kind() == io::ErrorKind::StorageFull {
-            "there isn't enough room on this device"
+            message("windows.ui.thereisntenoughroomonthisdevice", &[])
         } else {
-            "this couldn't be read. add it again"
+            message("windows.ui.thiscouldntbereadadditagain", &[])
         }));
     }
     Ok(item)

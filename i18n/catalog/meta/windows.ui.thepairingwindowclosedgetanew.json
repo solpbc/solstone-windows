@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. the pairing window closed. get a new pairing link from your journal, then try again.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 168,
+  "source_revision": "a957b5d9be7921885d23c1d58124bb60af3cd0aafe63b8b22e0920dfe4715e01",
+  "risk": "routine",
+  "auto_merge": true
+}

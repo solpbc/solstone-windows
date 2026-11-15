@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. finish the current connection, then try again.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 92,
+  "source_revision": "f53284c79531dc611831b00278a5f9f60d9e1cf6a531119b8eb42703918b3636",
+  "risk": "routine",
+  "auto_merge": true
+}

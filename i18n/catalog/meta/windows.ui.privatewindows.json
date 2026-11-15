@@ -1,0 +1,16 @@
+{
+  "description": "private windows",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "6442a7245119a24fc9e07106db2e98848382ee527d3820960e3f9ddacd4bd2b3",
+  "risk": "routine",
+  "auto_merge": true
+}

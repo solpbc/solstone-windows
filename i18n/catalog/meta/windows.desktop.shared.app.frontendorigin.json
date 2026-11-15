@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. settings",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.app.frontendorigin.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "febd08eaca1e57ad6125caa5e39476bd228a3d42a631ce920973ec921f7b7c94",
+  "risk": "routine",
+  "auto_merge": true
+}

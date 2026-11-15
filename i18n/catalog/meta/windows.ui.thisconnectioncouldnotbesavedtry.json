@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this connection could not be saved. try again, or paste a pairing link from your journal.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 178,
+  "source_revision": "7cbe945cf3ac9e1d43b65476d364cf46cb7e948b97989f17e40121a78b0b972a",
+  "risk": "routine",
+  "auto_merge": true
+}

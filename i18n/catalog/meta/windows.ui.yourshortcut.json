@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. your shortcut",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "3470ee1db3b75a67051a24d6f9811f2c87af32790f9a234fdf398d0baa35d31f",
+  "risk": "routine",
+  "auto_merge": true
+}

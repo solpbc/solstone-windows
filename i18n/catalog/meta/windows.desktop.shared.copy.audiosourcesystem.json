@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. system audio",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.audiosourcesystem.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "cc48aa979dfe12efccfddaa188984ff3367849f8017bcec76b0b68624ccbd601",
+  "risk": "routine",
+  "auto_merge": true
+}

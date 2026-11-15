@@ -1,0 +1,16 @@
+{
+  "description": "nothing yet.",
+  "context": "The Windows app: native dialogs and imported files. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "05b6cfed46539237aef77b330e54cfb43485240497b5663d2abad4100582a607",
+  "risk": "routine",
+  "auto_merge": true
+}

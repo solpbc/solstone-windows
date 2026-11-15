@@ -1,0 +1,29 @@
+{
+  "description": "Whole message: windows.obsidian.warningdevicedate",
+  "context": "Windows app display. Preserve the exact English text, arguments and state distinction.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "vault",
+      "type": "string"
+    },
+    {
+      "name": "device",
+      "type": "string"
+    },
+    {
+      "name": "date",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "bd358f4046ff9feb290dbbc5fa4b39ca50d62502734c9562bd4a8d457f5ea462",
+  "risk": "routine",
+  "auto_merge": true
+}

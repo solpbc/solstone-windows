@@ -1,0 +1,16 @@
+{
+  "description": "microphones",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "4fa2e7842b967f60f02083a34ab40cbb27d0429456862960ec6b2d48e361a0d1",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. pause / resume",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "0dc5074ceac655e0d3a29fb312ad43be2610c35ed6e8c34d068696497fa32ef1",
+  "risk": "routine",
+  "auto_merge": true
+}

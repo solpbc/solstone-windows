@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. not available",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "38b5d32f27e523ade03f3b3e4b114c50ed76c1ac5b2df81f51a004cef95a6547",
+  "risk": "routine",
+  "auto_merge": true
+}

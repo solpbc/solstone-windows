@@ -1,0 +1,16 @@
+{
+  "description": "check for updates",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "3f54eee12c5b48a4a8feff8c8274a04f4ab694bb83052b02c5e896ca16c546b2",
+  "risk": "routine",
+  "auto_merge": true
+}

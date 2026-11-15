@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. windows privacy settings are blocking it. turn on \u2026 access for desktop apps, and it goe\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 238,
+  "source_revision": "a1ffbc506bd2a9484660962ade744fce81e4401fde961980f673afb1df2fc295",
+  "risk": "routine",
+  "auto_merge": true
+}

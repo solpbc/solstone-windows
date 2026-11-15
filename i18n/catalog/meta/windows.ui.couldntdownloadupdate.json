@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. couldn't download update",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "e4394550507e54436b65dccf2d730c82ebc84f2ab4fe80c45a51d3f9f1c91ffa",
+  "risk": "routine",
+  "auto_merge": true
+}

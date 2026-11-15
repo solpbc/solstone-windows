@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. a vault with this name is already in your journal",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 98,
+  "source_revision": "96e004c1e84fabcc9a65d914b6ce592931127ee581f51c00699595e623ca6ab2",
+  "risk": "routine",
+  "auto_merge": true
+}

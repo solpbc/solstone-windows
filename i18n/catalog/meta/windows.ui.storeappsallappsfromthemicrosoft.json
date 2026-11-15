@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. store apps (all). apps from the Microsoft Store share one entry, so excluding it exclud\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 202,
+  "source_revision": "69ed971eea7b269ed27f28909e64a2c1dab545d24052b9d6c6aecb2dd2ae01cd",
+  "risk": "routine",
+  "auto_merge": true
+}

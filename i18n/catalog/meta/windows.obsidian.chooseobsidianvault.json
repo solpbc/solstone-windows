@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. choose your Obsidian vault",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 52,
+  "source_revision": "724a5b39afeb2d6ddb260d48388880eb84959120a890270dd5fb4c487a7b4b36",
+  "risk": "routine",
+  "auto_merge": true
+}

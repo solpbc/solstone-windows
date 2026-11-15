@@ -1,0 +1,16 @@
+{
+  "description": "only what the solstone app can tell is a screenshot comes in.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 122,
+  "source_revision": "557462eda1f6800f1aba8a5905d4a2f024d9b6020532e3729a333f2b56ca2de7",
+  "risk": "routine",
+  "auto_merge": true
+}

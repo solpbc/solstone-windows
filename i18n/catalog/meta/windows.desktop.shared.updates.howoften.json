@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. how often",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.updates.howoften.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "7989b404c7031cfb49ec8a716f8b3c00e7419a323711c6360df64835d970d17a",
+  "risk": "routine",
+  "auto_merge": true
+}

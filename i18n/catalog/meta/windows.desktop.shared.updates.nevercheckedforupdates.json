@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. never checked for updates",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.updates.nevercheckedforupdates.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 50,
+  "source_revision": "343ee3e42a127172ed6fe2b4505516501823436b2cc1c003e4efea3a1998cb0e",
+  "risk": "routine",
+  "auto_merge": true
+}

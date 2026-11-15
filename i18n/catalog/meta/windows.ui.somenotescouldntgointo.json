@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. some notes couldn't go into your journal. the solstone app tries them again the next ti\u2026",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 200,
+  "source_revision": "627f3a9156b991bf3684f7e813144566c8c093deba2ed3a9c7cd1837e16459e2",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "imports wait on this device until you connect a journal.",
+  "context": "The Windows app: native dialogs and imported files. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 112,
+  "source_revision": "eb5e57ca2fd02d16d96c53cacb1d2beba1bba7153f7778264a4433395a09064f",
+  "risk": "routine",
+  "auto_merge": true
+}

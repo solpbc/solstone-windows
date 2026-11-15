@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. solstone \u2026 is ready to install",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "v",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 64,
+  "source_revision": "840824ebcc17f8a35bd854bc8099aab3013a2a777353b913e0b826ae1653de4f",
+  "risk": "routine",
+  "auto_merge": true
+}

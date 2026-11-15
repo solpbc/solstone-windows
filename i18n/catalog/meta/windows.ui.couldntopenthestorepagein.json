@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. couldn't open the store page in \u2026.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "a7a56261f842d3daf45760fa8e1a6c86dcd543c0551529120451d0a87f43c615",
+  "risk": "routine",
+  "auto_merge": true
+}

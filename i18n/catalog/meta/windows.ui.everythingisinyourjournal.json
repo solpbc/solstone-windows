@@ -1,0 +1,16 @@
+{
+  "description": "everything is in your journal",
+  "context": "The Windows app: ui/src/shell/derive.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "7547fa32749a1ca8abaed25e12fa669821212adf3542037d65dee0488c4d86fc",
+  "risk": "routine",
+  "auto_merge": true
+}

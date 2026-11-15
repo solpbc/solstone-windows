@@ -95,6 +95,8 @@ fn main() -> ExitCode {
         return code;
     }
 
+    observer_model::i18n::initialize(&platform_win::locale::preferred_languages());
+
     let is_veloapp = early_args
         .first()
         .is_some_and(|a| a.starts_with("--veloapp-"));

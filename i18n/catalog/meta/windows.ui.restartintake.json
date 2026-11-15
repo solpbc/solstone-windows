@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. restart intake",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "e7072ab8012a94a391bac89d47bb5e9d3886ad38c790ec0f43cc25ef0ff15c6f",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. use this link",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "6017ec53201057829fd63b1092526c57edd6fb5669c3d3152cce720f57dd5705",
+  "risk": "routine",
+  "auto_merge": true
+}

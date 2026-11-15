@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. the solstone app didn't find a vault on this computer. choose its folder instead.",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 162,
+  "source_revision": "b58e440dd027d9afdbde920381fe48fd4ce10c7d3a6b1283d80d13f9492178ae",
+  "risk": "routine",
+  "auto_merge": true
+}

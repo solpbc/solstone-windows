@@ -1,0 +1,16 @@
+{
+  "description": "browser state unavailable",
+  "context": "The Windows app: setup action error display. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "7741c3b52dc4f81f1d5fc8003aa2ff6e3724dbd2db93256f7c1b110063d2e4ac",
+  "risk": "routine",
+  "auto_merge": true
+}

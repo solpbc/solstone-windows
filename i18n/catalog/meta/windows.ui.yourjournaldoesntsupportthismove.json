@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. your journal doesn't support this move yet. anything waiting to send stays on this PC. \u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 246,
+  "source_revision": "0ff36a1d39665d92d5e6edfc6d0c2bd2cde105f18a589fa43896540470e9bfd7",
+  "risk": "routine",
+  "auto_merge": true
+}

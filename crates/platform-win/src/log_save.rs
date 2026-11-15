@@ -3,19 +3,29 @@
 
 //! Native destination selection for a separately reviewed log snapshot.
 
+#[cfg(windows)]
+use observer_model::i18n::message;
+
 use std::path::PathBuf;
 
 #[cfg(windows)]
 pub fn choose_destination(owner: isize) -> std::io::Result<Option<PathBuf>> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
-    use windows::core::{w, PWSTR};
+    use windows::core::{w, PCWSTR, PWSTR};
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::Controls::Dialogs::{
         CommDlgExtendedError, GetSaveFileNameW, OFN_DONTADDTORECENT, OFN_EXPLORER, OFN_NOCHANGEDIR,
         OFN_OVERWRITEPROMPT, OFN_PATHMUSTEXIST, OPENFILENAMEW,
     };
 
+    let title: Vec<u16> = (message("windows.ui.saveacopyofrecentlogs", &[]))
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let filter: Vec<u16> = (message("windows.ui.textfilestxt", &[]) + "\0*.txt\0\0")
+        .encode_utf16()
+        .collect();
     let mut filename = vec![0u16; 32768];
     let initial: Vec<u16> = "solstone-logs.txt".encode_utf16().collect();
     filename[..initial.len()].copy_from_slice(&initial);
@@ -24,9 +34,9 @@ pub fn choose_destination(owner: isize) -> std::io::Result<Option<PathBuf>> {
         hwndOwner: HWND(owner as *mut std::ffi::c_void),
         lpstrFile: PWSTR(filename.as_mut_ptr()),
         nMaxFile: filename.len() as u32,
-        lpstrFilter: w!("text files (*.txt)\0*.txt\0\0"),
+        lpstrFilter: PCWSTR(filter.as_ptr()),
         lpstrDefExt: w!("txt"),
-        lpstrTitle: w!("save a copy of recent logs"),
+        lpstrTitle: PCWSTR(title.as_ptr()),
         Flags: OFN_EXPLORER
             | OFN_NOCHANGEDIR
             | OFN_PATHMUSTEXIST

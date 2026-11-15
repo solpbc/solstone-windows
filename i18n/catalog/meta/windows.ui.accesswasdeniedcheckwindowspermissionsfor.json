@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. access was denied. check windows permissions for this source, then retry.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 146,
+  "source_revision": "25545eac9d516256fbf767c388c64f289db3f30253bad14e613a9522825e2369",
+  "risk": "consent",
+  "auto_merge": false
+}

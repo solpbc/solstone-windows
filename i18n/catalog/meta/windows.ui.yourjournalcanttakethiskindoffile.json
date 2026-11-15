@@ -1,0 +1,16 @@
+{
+  "description": "your journal can't take this kind of file",
+  "context": "The Windows app: native dialogs and imported files. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 82,
+  "source_revision": "b3a66eeb1f67961d93144ad189f5088d0eb713a034225cad09898f5feaff482d",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -719,8 +719,8 @@ pub struct SyncSnapshot {
     pub journal_version: Option<String>,
     #[serde(default)]
     pub journal_version_fresh: bool,
-    /// Frozen rendered journal line used by About and the native browser host.
-    #[serde(default = "about::unknown_journal_line")]
+    /// Frozen localized journal line used by About.
+    #[serde(default = "about::localized_unknown_journal_line")]
     pub journal_display_line: String,
     /// Base journal line for the native protocol, without freshness suffixes.
     #[serde(default = "about::unknown_journal_line")]
@@ -753,7 +753,7 @@ impl Default for SyncSnapshot {
             upload: UploadStatus::default(),
             journal_version: None,
             journal_version_fresh: false,
-            journal_display_line: unknown.clone(),
+            journal_display_line: about::localized_unknown_journal_line(),
             journal_base_line: unknown.clone(),
             journal_seen_at_epoch_secs: None,
             about_app_line: String::new(),
@@ -2139,3 +2139,5 @@ mod tests {
         }
     }
 }
+
+pub mod i18n;

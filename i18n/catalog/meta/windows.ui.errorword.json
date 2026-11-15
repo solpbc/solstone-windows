@@ -1,0 +1,16 @@
+{
+  "description": "error",
+  "context": "Displayed source state; keep distinct from every other state. The code token stays untranslated.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "source_revision": "9fba56756fa4c02c10b841cdcf1a3ebca0de7af715652d5893663be88e98181e",
+  "risk": "routine",
+  "auto_merge": true,
+  "max_length": 120
+}

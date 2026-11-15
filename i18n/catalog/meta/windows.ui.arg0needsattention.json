@@ -1,0 +1,21 @@
+{
+  "description": "{arg0} needs attention",
+  "context": "The Windows app: src-tauri/src/tray.rs. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "f94324cd871ee24e16bfe1fa6d28382a0779b358deb0e0c0f59b68794dc7a656",
+  "risk": "routine",
+  "auto_merge": true
+}

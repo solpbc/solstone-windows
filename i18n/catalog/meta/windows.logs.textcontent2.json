@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. read recent logs",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "4ea09715f5e6150049a500e6ac2f4e650867be89a9fa3addac8712fafa597ffd",
+  "risk": "routine",
+  "auto_merge": true
+}

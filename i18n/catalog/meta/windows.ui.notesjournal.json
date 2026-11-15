@@ -1,0 +1,25 @@
+{
+  "description": "Windows app. \u2026 of \u2026 notes in your journal",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    },
+    {
+      "name": "value2",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 82,
+  "source_revision": "492684b46139938808553682ff44de55b0c758a003197ee2836cd69c8d27abfc",
+  "risk": "routine",
+  "auto_merge": true
+}

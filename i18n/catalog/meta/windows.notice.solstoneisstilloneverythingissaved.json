@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. solstone is still on. everything is saved on this PC and goes into your journal once it\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 208,
+  "source_revision": "9283189104292f970c06ef2a7fbf0b6b12946516bda0ccd1e22ba07fa6113efa",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. couldn't download solstone \u2026",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "value",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 68,
+  "source_revision": "94327763b1dbc5b65d39b556fb913e486569aae025f1ff352fd45766a4e5cda4",
+  "risk": "routine",
+  "auto_merge": true
+}

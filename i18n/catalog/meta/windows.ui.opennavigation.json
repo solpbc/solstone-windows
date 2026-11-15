@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. open navigation",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "ed7860fc89f9ec5620ea3ba005a45a871985b3324053cea4b9593d5262da1e05",
+  "risk": "routine",
+  "auto_merge": true
+}

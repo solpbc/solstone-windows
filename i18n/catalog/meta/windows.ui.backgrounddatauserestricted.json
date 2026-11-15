@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. background data use is restricted",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 66,
+  "source_revision": "7173d3a1004cc4bed6bfa98f24920497bbeeaa23d7a3d879b134422ca71757e4",
+  "risk": "routine",
+  "auto_merge": true
+}

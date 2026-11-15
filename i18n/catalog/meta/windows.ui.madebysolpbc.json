@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. made by sol pbc.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "c054a40a74d42b33a184194296d63754da3b444e398d1ee95c2312485fc3d31c",
+  "risk": "routine",
+  "auto_merge": true
+}

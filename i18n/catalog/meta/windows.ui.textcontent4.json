@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. clear shortcut",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "3a4892c94d6439f8a516ff5fffd14b319c5e030a06ba6dc35e3587b6d2519457",
+  "risk": "routine",
+  "auto_merge": true
+}

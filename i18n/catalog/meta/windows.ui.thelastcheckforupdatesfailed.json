@@ -1,0 +1,23 @@
+{
+  "description": " \u00b7 the last check for updates failed",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "b2faa3e500c08577cd61ddadf00afd3cd61b3a286fb37e49487a9b6f67bb05ae",
+  "risk": "routine",
+  "auto_merge": true,
+  "protected_slots": [
+    {
+      "name": "leading",
+      "kind": "whitespace",
+      "value": " "
+    }
+  ]
+}

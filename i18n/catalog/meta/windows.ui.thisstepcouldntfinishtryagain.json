@@ -1,0 +1,16 @@
+{
+  "description": "this step couldn't finish. try again.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "f817af129530c3ecd6d7984cf5d249fa8fb743ead3bd1d8806ec483910fc7da4",
+  "risk": "routine",
+  "auto_merge": true
+}

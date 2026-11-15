@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. a global shortcut to pause and resume intake from anywhere.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 118,
+  "source_revision": "fe8579dc0f368b35040b8c06f5a92187403325207df7ef14a825649a3f676d61",
+  "risk": "routine",
+  "auto_merge": true
+}

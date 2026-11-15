@@ -1,0 +1,16 @@
+{
+  "description": "no other apps running",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "7f632e84415b48ef500ac7a454b09eedc3832a90fc203ee2266854768496aa63",
+  "risk": "routine",
+  "auto_merge": true
+}

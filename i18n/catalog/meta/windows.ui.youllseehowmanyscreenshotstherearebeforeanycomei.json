@@ -1,0 +1,16 @@
+{
+  "description": "you'll see how many screenshots there are before any come in.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 122,
+  "source_revision": "ba13e55fa7b2c9565c7b18841bafa2967a801fee77163ddcd633f3ef3680a48d",
+  "risk": "routine",
+  "auto_merge": true
+}

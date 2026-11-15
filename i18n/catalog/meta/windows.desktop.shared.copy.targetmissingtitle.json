@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. device no longer available",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.targetmissingtitle.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 52,
+  "source_revision": "025f10aedddbbe9378d68786ef7158e3e9623f04f795397dfa6da1dc6204d752",
+  "risk": "routine",
+  "auto_merge": true
+}

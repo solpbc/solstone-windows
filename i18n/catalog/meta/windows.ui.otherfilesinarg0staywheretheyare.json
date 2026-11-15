@@ -1,0 +1,21 @@
+{
+  "description": "other files in {arg0} stay where they are.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 84,
+  "source_revision": "0e4509b4f9dac51bb5280f2b7c5f799191acd32c40b011507a46a540651ff086",
+  "risk": "routine",
+  "auto_merge": true
+}

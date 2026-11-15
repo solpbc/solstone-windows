@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. close navigation",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "a39ea5e5c34b1b3ae47abe97eaa0529133e2fde53c93b2b29fea21859ad8e3ef",
+  "risk": "routine",
+  "auto_merge": true
+}

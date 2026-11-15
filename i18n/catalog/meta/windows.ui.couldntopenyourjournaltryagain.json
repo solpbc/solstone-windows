@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. couldn't open your journal \u2014 try again",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 76,
+  "source_revision": "ebf061df01abfc67df69ee5bbe13ceaefaeff38b3469358f39c6fe6d391f23cc",
+  "risk": "routine",
+  "auto_merge": true
+}

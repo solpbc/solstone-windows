@@ -1,0 +1,27 @@
+{
+  "description": "Windows app. \u2026 hr \u2026 min",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "count",
+      "type": "cardinal",
+      "numeric_style": "ungrouped"
+    },
+    {
+      "name": "count2",
+      "type": "cardinal",
+      "numeric_style": "ungrouped"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "466f4be85bbaf529fd7eb3e34ea202414aa4100106ae4ff66c0664f2b1135805",
+  "risk": "routine",
+  "auto_merge": true
+}

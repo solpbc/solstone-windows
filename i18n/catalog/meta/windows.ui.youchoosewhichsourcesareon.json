@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. you choose which sources are on.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 64,
+  "source_revision": "f6cf5584306175e33b79ef180d5682aaaddd681c5b3642438d238a0aa8cd81d9",
+  "risk": "routine",
+  "auto_merge": true
+}

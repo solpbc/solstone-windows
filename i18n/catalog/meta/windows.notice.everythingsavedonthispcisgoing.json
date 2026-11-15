@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. everything saved on this PC is going into your journal now.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 118,
+  "source_revision": "95e3d964df09389eba3edaf65d1bb03a2fd4e967a9705c6a28a04f527aa36c09",
+  "risk": "routine",
+  "auto_merge": true
+}

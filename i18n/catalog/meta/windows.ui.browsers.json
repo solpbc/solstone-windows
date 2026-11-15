@@ -1,0 +1,16 @@
+{
+  "description": "browsers",
+  "context": "The Windows app: src-tauri/src/tray.rs. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "952595408ff71064c307af1e8d11ef67ec4024e6e1cf5055e98ae8f57f66e0be",
+  "risk": "routine",
+  "auto_merge": true
+}

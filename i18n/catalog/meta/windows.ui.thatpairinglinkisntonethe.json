@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. that pairing link isn't one the solstone app can read. get a new pairing link from your\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 220,
+  "source_revision": "3e662512366a17e8c5ca7e5fd177a941906427734d8f1d177ab228d2c9ceba75",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "what's already in your journal stays when you pause or turn this off.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 138,
+  "source_revision": "88d091123442517ed9e24a0fc07f81919cb38d25ec542373965970d004011c5b",
+  "risk": "routine",
+  "auto_merge": true
+}

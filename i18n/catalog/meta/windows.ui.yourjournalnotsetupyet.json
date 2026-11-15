@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. your journal, not set up yet",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 56,
+  "source_revision": "1a1802ba66f1ae2bc23e3356a25a3c0981799da3a35e93469ce59997c1e058ea",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. storage location",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "ec9a7c068857df019e425e78cac6456fad6f6a66d0214263ea15b83a7843301e",
+  "risk": "routine",
+  "auto_merge": true
+}

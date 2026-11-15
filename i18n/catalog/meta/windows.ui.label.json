@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. not paired. pair to sync your journal",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 74,
+  "source_revision": "93ce5aaf8021e7ed71012e36cb5c5478782a4165abf662e7501d00f77f8f36bd",
+  "risk": "routine",
+  "auto_merge": true
+}

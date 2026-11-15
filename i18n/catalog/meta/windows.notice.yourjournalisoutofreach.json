@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. your journal is out of reach",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 56,
+  "source_revision": "bed53dfad23cfef482a6034a0592a44d7f0a52393d1c5b29b5a9decab34097f1",
+  "risk": "routine",
+  "auto_merge": true
+}

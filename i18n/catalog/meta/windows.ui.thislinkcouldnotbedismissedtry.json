@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this link could not be dismissed. try again.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 88,
+  "source_revision": "0ba7061e71d26a3b3420d5ce61a96d2c4f6a96bc7e50767e120d0fd0388ea4d8",
+  "risk": "routine",
+  "auto_merge": true
+}

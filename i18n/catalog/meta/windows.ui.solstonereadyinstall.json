@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. solstone is ready to install",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 56,
+  "source_revision": "38cba4199d78d4247d938f64446dd08e3785efbde832e589eb89f58ce43e707b",
+  "risk": "routine",
+  "auto_merge": true
+}

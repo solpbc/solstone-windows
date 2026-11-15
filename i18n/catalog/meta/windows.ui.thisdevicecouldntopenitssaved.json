@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this PC couldn't open its saved connection to your journal. anything waiting to send is\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 248,
+  "source_revision": "f96263bbddd05320c4fa067b4f1efe555152f14029def893f04e9bed6dbc5c32",
+  "risk": "routine",
+  "auto_merge": true
+}

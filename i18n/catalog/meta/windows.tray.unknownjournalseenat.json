@@ -1,0 +1,21 @@
+{
+  "description": "Windows app. unknown journal seen at \u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "name",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 60,
+  "source_revision": "ee656ad501734f8080cb4328b5dc1d55bc6c5477cdb25424a56aae4c67e89f2a",
+  "risk": "routine",
+  "auto_merge": true
+}

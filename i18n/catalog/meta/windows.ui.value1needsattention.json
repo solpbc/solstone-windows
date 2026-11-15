@@ -1,0 +1,16 @@
+{
+  "description": "1 needs attention",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "5183d0fb6ecd3278151ede75be3c1dfe067a07ea98cf15199d0325c76500a91e",
+  "risk": "routine",
+  "auto_merge": true
+}

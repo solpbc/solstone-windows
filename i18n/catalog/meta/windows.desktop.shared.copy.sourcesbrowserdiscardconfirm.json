@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. browser pages still waiting to be sent will be removed from this PC.",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.sourcesbrowserdiscardconfirm.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 136,
+  "source_revision": "f161e246f73c9a3bb2c17429034c2c6f360328497e195c0ea10745550c055a27",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. couldn't reach your journal over your private network. join the same wi-fi as your jour\u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 298,
+  "source_revision": "6be8b1b45180c775f4c093c9a640ef434ca4ec9a868105cea0644cb48c7e6b6e",
+  "risk": "routine",
+  "auto_merge": true
+}

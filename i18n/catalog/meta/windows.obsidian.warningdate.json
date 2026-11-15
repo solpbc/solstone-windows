@@ -1,0 +1,25 @@
+{
+  "description": "Whole message: windows.obsidian.warningdate",
+  "context": "Windows app display. Preserve the exact English text, arguments and state distinction.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "vault",
+      "type": "string"
+    },
+    {
+      "name": "date",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "cfd22e2f0850708acbd85880c93ccdffa44e622aaa83fcdb8127500d0c562c68",
+  "risk": "routine",
+  "auto_merge": true
+}

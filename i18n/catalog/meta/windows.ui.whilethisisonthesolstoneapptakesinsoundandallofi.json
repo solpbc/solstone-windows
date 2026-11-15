@@ -1,0 +1,16 @@
+{
+  "description": "while this is on, the solstone app takes in sound, and all of it goes into your journal.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 176,
+  "source_revision": "53a16f10fb49d2ccfe29ba9d0433b7f5c414a97e82b0cda62d29c7c21e6a231c",
+  "risk": "routine",
+  "auto_merge": true
+}

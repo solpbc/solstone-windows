@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. couldn't read your saved source choices. sources are off. choose your sources again in \u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 192,
+  "source_revision": "f20bdea2fd49574aae9e7cce3c41424e9e145eabece5c1a2d70e474a7d7335e9",
+  "risk": "routine",
+  "auto_merge": true
+}

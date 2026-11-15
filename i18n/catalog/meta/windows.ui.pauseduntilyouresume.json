@@ -1,0 +1,16 @@
+{
+  "description": "paused until you resume",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "63dede504c3064807a299020d706c3b412bbb38a4c7e27092404eb60227a230f",
+  "risk": "routine",
+  "auto_merge": true
+}

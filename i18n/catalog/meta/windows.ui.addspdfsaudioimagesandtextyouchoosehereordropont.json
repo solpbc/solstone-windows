@@ -1,0 +1,16 @@
+{
+  "description": "adds PDFs, audio, images and text you choose here or drop on this window.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 146,
+  "source_revision": "a6083025abbd13f0f4780213aca41257368e33e39e77c49c8a8c6eb9808f614f",
+  "risk": "routine",
+  "auto_merge": true
+}

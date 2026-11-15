@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. too large to bring in",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "c40dd64e406b6016db0b15a065af408a8d52816774d7fd5cc0c25327de9f3baa",
+  "risk": "routine",
+  "auto_merge": true
+}

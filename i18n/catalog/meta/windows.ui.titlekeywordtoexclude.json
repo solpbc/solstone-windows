@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. title keyword to exclude",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "243ee2d10c1f443ff63becddc63e8374a410f9e6253be603ca11a54dd7fe76ae",
+  "risk": "routine",
+  "auto_merge": true
+}

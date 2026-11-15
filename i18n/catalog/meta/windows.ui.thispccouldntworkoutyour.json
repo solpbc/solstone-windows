@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. this PC couldn't work out your journal's mark, so there's nothing to compare. continue \u2026",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 278,
+  "source_revision": "64a90b0eedc8ae899a53c14db019fbf4749d8f81a6a271585ca8e58bb6632be4",
+  "risk": "routine",
+  "auto_merge": true
+}

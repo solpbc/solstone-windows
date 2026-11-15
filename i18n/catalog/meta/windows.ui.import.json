@@ -1,0 +1,16 @@
+{
+  "description": "import",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "108227e44552117a92d828981cbd635ddd25dd90680552baf9b2855002ae70fa",
+  "risk": "routine",
+  "auto_merge": true
+}

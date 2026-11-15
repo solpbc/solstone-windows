@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. technical details",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.copy.technicaldetails.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "c3189d69bac6ca72656625cc4d48917defe4b86752e031b227e8455a8a230659",
+  "risk": "routine",
+  "auto_merge": true
+}

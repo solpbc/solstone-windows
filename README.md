@@ -66,7 +66,7 @@ make build   # the binary + the webview bundle (Windows build box)
 ```
 
 See [INSTALL.md](INSTALL.md) for prerequisites and [AGENTS.md](AGENTS.md) for the
-full development guide.
+full development guide. The [string catalog](i18n/README.md) describes copy changes.
 
 ## License
 

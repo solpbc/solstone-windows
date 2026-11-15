@@ -1,0 +1,21 @@
+{
+  "description": "{arg0} need attention",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "3571e5922c72d588de18fb506b69121780e4ae9786dae121c69a0445aad86e78",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. waiting to reach your journal",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 58,
+  "source_revision": "ccab097937c41d2d1bef482f5eb63e9203d7b2f637a31ea083327e4bd2390578",
+  "risk": "routine",
+  "auto_merge": true
+}

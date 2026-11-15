@@ -1,0 +1,29 @@
+{
+  "description": "{arg0} {arg1}, {arg2}",
+  "context": "The Windows app: ui/src/shell/derive.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    },
+    {
+      "name": "arg1",
+      "type": "string"
+    },
+    {
+      "name": "arg2",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "41ab8846237e557c033aa7d3e5b3343e10459168d522e892b09ea2270af8e9b7",
+  "risk": "routine",
+  "auto_merge": true
+}

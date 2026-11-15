@@ -1,0 +1,16 @@
+{
+  "description": "could not resume. try again.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "bc6025935d4962fe6447c779de94038e4be182f324c1766674857e829ff31624",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -158,6 +158,7 @@ ui-test:
 # code for the Windows target. It never reaches a remote host or the private
 # advisory mirror. What it does not prove is printed at the end.
 ci: preflight-toolchain preflight-cargo-deny
+	node scripts/i18n.mjs --check
 	$(CARGO) fmt --check
 	$(CARGO) clippy --locked --workspace $(REMOTE_CRATES) --all-targets -- -D warnings
 	$(MAKE) check-windows-target

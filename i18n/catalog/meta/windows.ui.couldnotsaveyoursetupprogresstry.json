@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. could not save your setup progress. try again.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 92,
+  "source_revision": "d63064e7362134d836211e4ad87b1bddb4ece5f863e1045f94b38c9c59d882fd",
+  "risk": "routine",
+  "auto_merge": true
+}

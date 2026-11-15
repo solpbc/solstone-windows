@@ -7,6 +7,7 @@
 //! Everything scheduled, scanned or held lives in `obsidian-source`. What is
 //! here carries no journal identity into anything it holds.
 
+use observer_model::i18n::message;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
@@ -25,7 +26,6 @@ use tauri::Manager;
 static HANDLE: OnceLock<ObsidianHandle> = OnceLock::new();
 
 const FILE_CONTENT_TYPE: &str = "application/jsonl";
-const CHOOSER_TITLE: &str = "choose your Obsidian vault";
 
 type LoadClient = Arc<
     dyn Fn() -> Pin<Box<dyn Future<Output = Option<Arc<ObserverClient>>> + Send>> + Send + Sync,
@@ -292,7 +292,10 @@ pub async fn choose_folder(
     crate::logs::require_settings(&window)?;
     let owner = window.hwnd().map_err(|_| "obsidian_window_unavailable")?.0 as isize;
     let chosen = tauri::async_runtime::spawn_blocking(move || {
-        platform_win::folder_picker::choose_folder(owner, CHOOSER_TITLE)
+        platform_win::folder_picker::choose_folder(
+            owner,
+            &message("windows.obsidian.chooseobsidianvault", &[]),
+        )
     })
     .await
     .map_err(|_| "obsidian_dialog_failed")?

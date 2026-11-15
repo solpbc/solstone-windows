@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. download deferred while roaming",
+  "context": "The Windows app, speaking to the owner. Present at origin/main and absent from the 11-03 census.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 62,
+  "source_revision": "e08371694d1b02abb69b64cc6bc69455401cd4271bbcf56fedc92e7dd3748e8e",
+  "risk": "routine",
+  "auto_merge": true
+}

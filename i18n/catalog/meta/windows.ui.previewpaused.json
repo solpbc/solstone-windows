@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. preview paused",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "606522e742501c37c0db356341d4fd81370aaf7670ae33f8b7651042d19eaa45",
+  "risk": "routine",
+  "auto_merge": true
+}

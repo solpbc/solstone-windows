@@ -1,0 +1,16 @@
+{
+  "description": "couldn't find a Screenshots folder on this PC. choose the folder your screenshots save to.",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 180,
+  "source_revision": "83542e0676a9e9387b03023522532f6101a0a93ac6f56797dc399ab918107281",
+  "risk": "routine",
+  "auto_merge": true
+}

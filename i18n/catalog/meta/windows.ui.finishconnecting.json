@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. finish connecting",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "f3e0f030f89cdb8a12320e9c25eba0d563f2d6d1175d052337cb8c04c5295e9a",
+  "risk": "routine",
+  "auto_merge": true
+}

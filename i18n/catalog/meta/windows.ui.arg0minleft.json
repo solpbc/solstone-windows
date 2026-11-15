@@ -1,0 +1,21 @@
+{
+  "description": "{arg0} min left",
+  "context": "The Windows app: ui/src/main.ts. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "arg0",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "b141d8037339ce685d022701a0a2aa841de7d3e6265a9647b7f04be3a5fb9138",
+  "risk": "routine",
+  "auto_merge": true
+}

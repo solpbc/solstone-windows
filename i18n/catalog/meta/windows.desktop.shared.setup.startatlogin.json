@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. start at login",
+  "context": "The Windows app, speaking to the owner. The same sentence is on macOS as macos.desktop.shared.setup.startatlogin.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 48,
+  "source_revision": "400dc03cfecbca5197603b0fd8d2c4b78b13a71441042ed723cee3bfaef2a7c3",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "setup progress could not be saved",
+  "context": "The Windows app: setup action error display. Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "253bdce3adf275b81b1e850af7c55414afa6ddf707a4d074a9df69449152f2ef",
+  "risk": "routine",
+  "auto_merge": true
+}

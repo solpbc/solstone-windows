@@ -1,0 +1,16 @@
+{
+  "description": "Windows About: windows.about.app",
+  "context": "Owner-visible version facts. The native protocol base line is a separate untranslated contract.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 400,
+  "source_revision": "fc5c322a049c25ca3719235952b4e5e6e2def6ef6704bce4b60cc5f9932564b2",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app. pairing cancelled. paste a fresh link from your journal when you're ready.",
+  "context": "The Windows app, speaking to the owner.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 148,
+  "source_revision": "d95e1626995deb1968f08ff1982a4134c3a9ff2de8b6c7a5f0f891d334f447e8",
+  "risk": "routine",
+  "auto_merge": true
+}
