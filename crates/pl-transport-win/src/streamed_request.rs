@@ -243,8 +243,10 @@ pub(crate) async fn post<R: AsyncRead + Unpin>(
     }
     .await;
     let bridge = guard.0.take().expect("bridge alive");
-    let stop = client.note_streamed_attempt(&bridge.status(), exchange.is_ok());
-    bridge.shutdown_and_wait().await;
+    // A local HTTP failure can arrive before the bridge publishes its TLS
+    // refusal. Classify the quiescent status after every request task has ended.
+    let status = bridge.shutdown_and_wait().await;
+    let stop = client.note_streamed_attempt(&status, exchange.is_ok());
     if let Some(stop) = stop {
         return Err(RouteError::Transport(crate::pairing::map_shared_error(
             stop.error(),

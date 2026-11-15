@@ -148,7 +148,8 @@ async fn a_refused_device_stops_future_file_and_start_dials() {
         content_type: "text/plain",
         path: &path,
     };
-    assert!(client.save_import_file(file()).await.is_err());
+    let first = client.save_import_file(file()).await;
+    assert!(first.is_err(), "refused-device result: {first:?}");
     assert!(client.refusal_stop().is_some());
     assert!(client.save_import_file(file()).await.is_err());
     assert!(client
