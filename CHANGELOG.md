@@ -4,6 +4,16 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.50] - 2026-11-16
+
+### Changed
+
+- if this PC's language isn't English, the right-click menu in the app's text boxes is now in English too, like the rest of the app.
+
+### Fixed
+
+- if your journal stops accepting this PC while a file is importing, the app now always notices and stops, and your files wait on this PC. before, it could miss it and keep trying.
+
 ## [2.0.49] - 2026-11-15
 
 ### Added
