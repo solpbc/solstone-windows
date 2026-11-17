@@ -2877,6 +2877,18 @@
       "selector": null
     },
     {
+      "id": "windows.tray.checkforupdates",
+      "resource": "m77696e646f77732e747261792e636865636b666f7275706461746573",
+      "namespace": "windows.tray",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
       "id": "windows.tray.for15minutes",
       "resource": "m77696e646f77732e747261792e666f7231356d696e75746573",
       "namespace": "windows.tray",
@@ -3302,6 +3314,42 @@
       "namespace": "windows.tray",
       "owner": "windows",
       "tombstone": true,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.tray.updateavailable",
+      "resource": "m77696e646f77732e747261792e757064617465617661696c61626c65",
+      "namespace": "windows.tray",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.tray.updatecheckfailed",
+      "resource": "m77696e646f77732e747261792e757064617465636865636b6661696c6564",
+      "namespace": "windows.tray",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.tray.updateready",
+      "resource": "m77696e646f77732e747261792e7570646174657265616479",
+      "namespace": "windows.tray",
+      "owner": "windows",
+      "tombstone": false,
       "replacement": null,
       "format_intent": "text",
       "arguments": [],

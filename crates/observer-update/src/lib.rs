@@ -484,6 +484,12 @@ impl UpdateState {
             UpdateActivity::Installing => return UpdateDisplay::Staged,
             UpdateActivity::Idle => {}
         }
+        self.settled_display()
+    }
+
+    /// The display with no check or download in flight: what the owner is left with
+    /// once the current one ends, and what the update notice is read from.
+    fn settled_display(&self) -> UpdateDisplay {
         if self.is_staged() {
             return UpdateDisplay::Staged;
         }
@@ -523,6 +529,31 @@ impl UpdateState {
         }
     }
 
+    /// The update the tray menu names on its update line, if any. The icon's dot and
+    /// the updates row's badge show exactly when this is `Some`, so the dot always has
+    /// words in the menu. Read from the settled state, so a check or a download in
+    /// flight never takes the line away and puts it back.
+    pub fn notice(&self) -> Option<UpdateNotice> {
+        if !self.config_valid {
+            return None;
+        }
+        match self.settled_display() {
+            UpdateDisplay::Staged => Some(UpdateNotice::Ready),
+            UpdateDisplay::Available | UpdateDisplay::FailedWithAvailable => {
+                Some(UpdateNotice::Available)
+            }
+            // A download or install that failed still has a version waiting.
+            UpdateDisplay::Failed
+                if (self.download_failed || self.install_failed)
+                    && self.status.available_version.is_some() =>
+            {
+                Some(UpdateNotice::Available)
+            }
+            UpdateDisplay::Failed => Some(UpdateNotice::CheckFailed),
+            _ => None,
+        }
+    }
+
     /// The full computed snapshot pushed to the webview over `update://changed`.
     pub fn view(&self, explicit_allowed: bool) -> UpdateView {
         let display = self.display();
@@ -542,6 +573,7 @@ impl UpdateState {
         };
         UpdateView {
             display,
+            notice: self.notice(),
             activity: self.activity,
             last_checked_at: self.status.last_checked_at,
             available_version: self
@@ -590,6 +622,16 @@ pub enum UpdateDisplay {
     FailedWithAvailable,
     /// The updater cannot self-check (bad feed config / unconstructable manager).
     Unavailable,
+}
+
+/// The update line in the tray menu: downloaded and installing at the next start, found
+/// and not downloaded yet, or the last check failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateNotice {
+    Ready,
+    Available,
+    CheckFailed,
 }
 
 /// Recovery action available to the owner after a failure.
@@ -660,6 +702,8 @@ impl UpdateActions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateView {
     pub display: UpdateDisplay,
+    /// The tray menu's update line, the icon's dot and the updates row's badge.
+    pub notice: Option<UpdateNotice>,
     pub activity: UpdateActivity,
     pub last_checked_at: Option<u64>,
     pub available_version: Option<String>,
@@ -2053,5 +2097,92 @@ mod installed_offer_tests {
             assert_eq!(state.status.last_check_outcome, Some(outcome));
             assert_eq!(state.status.available_version.as_deref(), Some("2.0.46"));
         }
+    }
+
+    fn found(s: &mut UpdateState, version: &str) {
+        reduce(
+            s,
+            UpdateEvent::CheckResult {
+                now: 1,
+                result: CheckOutcome::UpdateAvailable {
+                    version: version.into(),
+                    notes: None,
+                },
+            },
+        );
+    }
+
+    #[test]
+    fn the_notice_names_each_waiting_update_and_nothing_else() {
+        let mut s = UpdateState::new();
+        assert_eq!(s.notice(), None, "never checked");
+        reduce(
+            &mut s,
+            UpdateEvent::CheckResult {
+                now: 1,
+                result: CheckOutcome::UpToDate,
+            },
+        );
+        assert_eq!(s.notice(), None, "up to date");
+
+        found(&mut s, "0.2.0");
+        assert_eq!(s.notice(), Some(UpdateNotice::Available));
+        reduce(&mut s, UpdateEvent::DownloadStarted);
+        assert_eq!(s.display(), UpdateDisplay::Downloading);
+        assert_eq!(
+            s.notice(),
+            Some(UpdateNotice::Available),
+            "a download in flight keeps the line"
+        );
+        reduce(
+            &mut s,
+            UpdateEvent::Downloaded {
+                version: "0.2.0".into(),
+            },
+        );
+        assert_eq!(s.notice(), Some(UpdateNotice::Ready));
+        reduce(&mut s, UpdateEvent::CheckStarted);
+        assert_eq!(s.display(), UpdateDisplay::Checking);
+        assert_eq!(
+            s.notice(),
+            Some(UpdateNotice::Ready),
+            "a check in flight keeps the line"
+        );
+    }
+
+    #[test]
+    fn a_failed_check_is_named_and_a_failed_download_still_has_its_update() {
+        let mut s = UpdateState::new();
+        reduce(&mut s, UpdateEvent::CheckFailed { now: 1 });
+        assert_eq!(s.display(), UpdateDisplay::Failed);
+        assert_eq!(s.notice(), Some(UpdateNotice::CheckFailed));
+
+        let mut s = UpdateState::new();
+        found(&mut s, "0.2.0");
+        reduce(&mut s, UpdateEvent::CheckFailed { now: 2 });
+        assert_eq!(s.display(), UpdateDisplay::FailedWithAvailable);
+        assert_eq!(s.notice(), Some(UpdateNotice::Available));
+
+        let mut s = UpdateState::new();
+        found(&mut s, "0.2.0");
+        reduce(&mut s, UpdateEvent::DownloadStarted);
+        reduce(&mut s, UpdateEvent::DownloadFailed);
+        assert_eq!(s.notice(), Some(UpdateNotice::Available));
+    }
+
+    #[test]
+    fn an_updater_that_cannot_check_names_nothing() {
+        let mut s = UpdateState::new();
+        reduce(&mut s, UpdateEvent::ConfigInvalid);
+        assert_eq!(s.notice(), None);
+    }
+
+    #[test]
+    fn the_view_carries_the_same_notice() {
+        let mut s = UpdateState::new();
+        found(&mut s, "0.2.0");
+        assert_eq!(s.view(true).notice, s.notice());
+        let json = serde_json::to_value(s.view(true)).unwrap();
+        assert_eq!(json["notice"], "available");
     }
 }

@@ -72,3 +72,32 @@ describe("a shelf page", () => {
     expect(shell.querySelector(".desk-deck .desk-back")).toBeNull();
   });
 });
+
+describe("the shelf button", () => {
+  const deckView = (width: DeskView["width"], badges: string[], shelfOpen = false): DeskView => ({
+    ...shelfPageView(width),
+    row: "home",
+    shelfPage: false,
+    shelfOpen,
+    badges,
+  });
+  const dot = (shell: HTMLElement) => shell.querySelector(".desk-shelf-button .desk-badge");
+
+  it.each(["narrower", "phone"] as const)("carries a hidden row's dot at %s width", (width) => {
+    const shell = renderDesk(deckView(width, ["updates"]), parts(), actions());
+    expect(dot(shell)).not.toBeNull();
+    expect(shell.querySelector(".desk-shelf-button")!.getAttribute("aria-description")).toBeTruthy();
+  });
+
+  it("has no dot when no row has one", () => {
+    expect(dot(renderDesk(deckView("narrower", []), parts(), actions()))).toBeNull();
+  });
+
+  it("has no dot while the shelf is open and shows its rows' own", () => {
+    expect(dot(renderDesk(deckView("narrower", ["journal"], true), parts(), actions()))).toBeNull();
+  });
+
+  it("is not there at full width, where the rail shows each row's dot", () => {
+    expect(renderDesk(deckView("full", ["updates"]), parts(), actions()).querySelector(".desk-shelf-button")).toBeNull();
+  });
+});

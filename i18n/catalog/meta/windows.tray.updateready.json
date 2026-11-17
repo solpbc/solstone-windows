@@ -1,0 +1,16 @@
+{
+  "description": "update ready \u00b7 installs when you quit and reopen",
+  "context": "The tray menu's update line when an update is downloaded and installs at the next start. It opens the updates page. The same sentence is on macOS as macos.desktopshellmodel.updateready.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 64,
+  "source_revision": "4146893b4b2c9ea5c459f8dbe3bdfe8f0bb20287bdef57eb76d44596c635a011",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -123,6 +123,7 @@ export const automationContract = {
     "tray.menu.about": "tray.menu.about",
     "tray.menu.attention": "tray.menu.attention",
     "tray.menu.browsers": "tray.menu.browsers",
+    "tray.menu.checkUpdates": "tray.menu.checkUpdates",
     "tray.menu.getHelp": "tray.menu.getHelp",
     "tray.menu.openJournal": "tray.menu.openJournal",
     "tray.menu.openSettings": "tray.menu.openSettings",
@@ -136,6 +137,7 @@ export const automationContract = {
     "tray.menu.restartObserving": "tray.menu.restartObserving",
     "tray.menu.resume": "tray.menu.resume",
     "tray.menu.status": "tray.menu.status",
+    "tray.menu.update": "tray.menu.update",
     "tray.root": "tray.root"
   },
   "endpoints": {

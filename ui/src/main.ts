@@ -480,6 +480,8 @@ interface UpdateActions {
 
 interface UpdateView {
   display: UpdateDisplayKind;
+  /** The tray menu's update line; the updates row badges exactly when it is set. */
+  notice: "ready" | "available" | "check_failed" | null;
   activity: UpdateActivityKind;
   last_checked_at: number | null;
   available_version: string | null;
@@ -6621,7 +6623,6 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
           return notice;
         })()
       : null;
-  const updateDisplay = latestUpdate?.display;
   const journal = deskJournalInput(dump);
   const lead = statusLead(journal);
   const pill = journalPill(journal);
@@ -6650,11 +6651,7 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
       unknownJournal: (dump.sync.unknown_journals?.length ?? 0) > 0,
       journalOffline: journal.offline,
       shortcutNeedsRepair: latestHotkey?.registration === "combo_taken" || latestHotkey?.registration === "failed",
-      updateAvailable:
-        updateDisplay === "available" ||
-        updateDisplay === "downloading" ||
-        updateDisplay === "staged" ||
-        updateDisplay === "failed_with_available",
+      updateAvailable: (latestUpdate?.notice ?? null) !== null,
     }),
     tiles,
     rows: deskStatusRows(),

@@ -2004,6 +2004,13 @@
       "locales": []
     },
     {
+      "id": "windows.tray.checkforupdates",
+      "source": "965b205de51fb17bb5842d202e0e63440fa006d5d04edfa568e58e04a35c2d0f",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
       "id": "windows.tray.hrmin",
       "source": "466f4be85bbaf529fd7eb3e34ea202414aa4100106ae4ff66c0664f2b1135805",
       "contract": "0731b5b72ab5d0a3bb2f87ac7db7fa1fc19b22b21cbb15c123b9b931056542b3",
@@ -2226,6 +2233,27 @@
           "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc"
         }
       ]
+    },
+    {
+      "id": "windows.tray.updateavailable",
+      "source": "63e5b85be48b73137f03ab3050af881019ee2d3de4ca580f1281fe8c34126d7a",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.tray.updatecheckfailed",
+      "source": "7b3952733c3461f586eba56bb776f2dabf5c5c6421ffe4c3b4174ccac9877dcc",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.tray.updateready",
+      "source": "4146893b4b2c9ea5c459f8dbe3bdfe8f0bb20287bdef57eb76d44596c635a011",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
     },
     {
       "id": "windows.ui.accesswasdenied",

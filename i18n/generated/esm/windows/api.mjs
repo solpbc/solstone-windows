@@ -1114,6 +1114,12 @@ const MESSAGES = {
       { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
     ],
   },
+  "windows.tray.checkforupdates": {
+    resourceKey: "m77696e646f77732e747261792e636865636b666f7275706461746573",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
   "windows.tray.hrmin": {
     resourceKey: "m77696e646f77732e747261792e68726d696e",
     formatIntent: "text",
@@ -1215,6 +1221,24 @@ const MESSAGES = {
   },
   "windows.tray.unknownjournalseenthroughtherelay": {
     resourceKey: "m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e7468726f75676874686572656c6179",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.tray.updateavailable": {
+    resourceKey: "m77696e646f77732e747261792e757064617465617661696c61626c65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.tray.updatecheckfailed": {
+    resourceKey: "m77696e646f77732e747261792e757064617465636865636b6661696c6564",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.tray.updateready": {
+    resourceKey: "m77696e646f77732e747261792e7570646174657265616479",
     formatIntent: "text",
     arguments: [
     ],

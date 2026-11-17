@@ -222,7 +222,10 @@ fn build_settings(app: &tauri::AppHandle, destination: &str) -> tauri::Result<()
 
     let url = if destination == "sources" {
         WebviewUrl::App("index.html?route=sources".into())
-    } else if matches!(destination, "audio" | "screen" | "browsers" | "obsidian") {
+    } else if matches!(
+        destination,
+        "audio" | "screen" | "browsers" | "obsidian" | "updates"
+    ) {
         WebviewUrl::App(format!("index.html?route={destination}").into())
     } else {
         WebviewUrl::App("index.html".into())
@@ -273,6 +276,11 @@ pub fn open_settings(app: &tauri::AppHandle) -> tauri::Result<()> {
 /// Open (or focus) the Settings window on the deck. Same destination as [`open_settings`].
 pub fn open_settings_sources(app: &tauri::AppHandle) -> tauri::Result<()> {
     open_settings_internal(app, "sources")
+}
+
+/// Open (or focus) the Settings window on the updates page.
+pub fn open_settings_updates(app: &tauri::AppHandle) -> tauri::Result<()> {
+    open_settings_internal(app, "updates")
 }
 
 /// Open (or focus) the Settings window on one source's page.

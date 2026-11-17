@@ -1,0 +1,16 @@
+{
+  "description": "check for updates\u2026",
+  "context": "The tray menu row under about solstone while no update line shows. It opens the updates page and starts a check. The same words are on macOS as macos.desktopshellmodel.checkforupdates.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 64,
+  "source_revision": "965b205de51fb17bb5842d202e0e63440fa006d5d04edfa568e58e04a35c2d0f",
+  "risk": "routine",
+  "auto_merge": true
+}

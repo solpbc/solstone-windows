@@ -4,6 +4,14 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- the tray menu now has an update line: "update ready · installs when you quit and reopen" once an update is downloaded, "update available" before that, or "update check failed". each opens the updates page. with nothing to report, the menu has "check for updates…". before, the tray menu never mentioned updates.
+- while that line shows, the tray icon shows an orange dot.
+- while the sidebar is tucked away in a narrow window, its button shows a dot when something in it needs attention.
+
 ## [2.0.50] - 2026-11-16
 
 ### Changed

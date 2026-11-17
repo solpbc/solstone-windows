@@ -1,0 +1,16 @@
+{
+  "description": "update check failed",
+  "context": "The tray menu's update line when the last check for updates failed. It opens the updates page. The same words are on macOS.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 64,
+  "source_revision": "7b3952733c3461f586eba56bb776f2dabf5c5c6421ffe4c3b4174ccac9877dcc",
+  "risk": "routine",
+  "auto_merge": true
+}

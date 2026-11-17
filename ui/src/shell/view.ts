@@ -171,6 +171,13 @@ function renderDeck(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
     opener.type = "button";
     opener.setAttribute("aria-label", t("windows.ui.home"));
     opener.append(glyph("side"));
+    // The tucked-away shelf hides its rows' badges, so the button carries their dot.
+    if (!view.shelfOpen && view.badges.length > 0) {
+      const dot = el("span", "desk-badge");
+      dot.setAttribute("aria-hidden", "true");
+      opener.append(dot);
+      opener.setAttribute("aria-description", t("windows.desktop.shared.copy.settingstabattentiona11y"));
+    }
     opener.onclick = () => actions.onShelfToggle();
     head.append(opener);
   }

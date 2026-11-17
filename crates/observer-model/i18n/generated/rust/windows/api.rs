@@ -193,6 +193,7 @@ pub enum MessageId {
     m77696e646f77732e74696d652e636865636b65646d696e757465,
     m77696e646f77732e74696d652e6e65787473617665,
     m77696e646f77732e74696d652e74616b656e686f757273,
+    m77696e646f77732e747261792e636865636b666f7275706461746573,
     m77696e646f77732e747261792e68726d696e,
     m77696e646f77732e747261792e6c6573737468616e616d696e757465,
     m77696e646f77732e747261792e6e656564736172657374617274,
@@ -209,6 +210,9 @@ pub enum MessageId {
     m77696e646f77732e747261792e74686573746f70706564676f696e67696e746f796f75726a6f75726e616c,
     m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e6174,
     m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e7468726f75676874686572656c6179,
+    m77696e646f77732e747261792e757064617465617661696c61626c65,
+    m77696e646f77732e747261792e757064617465636865636b6661696c6564,
+    m77696e646f77732e747261792e7570646174657265616479,
     m77696e646f77732e75692e61636365737377617364656e696564,
     m77696e646f77732e75692e61636365737377617364656e696564636865636b77696e646f77737065726d697373696f6e73666f72,
     m77696e646f77732e75692e616374697665783437346431623735,
@@ -851,6 +855,7 @@ pub fn render_dotted_with_options(locale: &str, dotted_id: &str, args: &[(&str, 
         "windows.time.checkedminute" => MessageId::m77696e646f77732e74696d652e636865636b65646d696e757465,
         "windows.time.nextsave" => MessageId::m77696e646f77732e74696d652e6e65787473617665,
         "windows.time.takenhours" => MessageId::m77696e646f77732e74696d652e74616b656e686f757273,
+        "windows.tray.checkforupdates" => MessageId::m77696e646f77732e747261792e636865636b666f7275706461746573,
         "windows.tray.hrmin" => MessageId::m77696e646f77732e747261792e68726d696e,
         "windows.tray.lessthanaminute" => MessageId::m77696e646f77732e747261792e6c6573737468616e616d696e757465,
         "windows.tray.needsarestart" => MessageId::m77696e646f77732e747261792e6e656564736172657374617274,
@@ -867,6 +872,9 @@ pub fn render_dotted_with_options(locale: &str, dotted_id: &str, args: &[(&str, 
         "windows.tray.thestoppedgoingintoyourjournal" => MessageId::m77696e646f77732e747261792e74686573746f70706564676f696e67696e746f796f75726a6f75726e616c,
         "windows.tray.unknownjournalseenat" => MessageId::m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e6174,
         "windows.tray.unknownjournalseenthroughtherelay" => MessageId::m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e7468726f75676874686572656c6179,
+        "windows.tray.updateavailable" => MessageId::m77696e646f77732e747261792e757064617465617661696c61626c65,
+        "windows.tray.updatecheckfailed" => MessageId::m77696e646f77732e747261792e757064617465636865636b6661696c6564,
+        "windows.tray.updateready" => MessageId::m77696e646f77732e747261792e7570646174657265616479,
         "windows.ui.accesswasdenied" => MessageId::m77696e646f77732e75692e61636365737377617364656e696564,
         "windows.ui.accesswasdeniedcheckwindowspermissionsfor" => MessageId::m77696e646f77732e75692e61636365737377617364656e696564636865636b77696e646f77737065726d697373696f6e73666f72,
         "windows.ui.activex474d1b75" => MessageId::m77696e646f77732e75692e616374697665783437346431623735,
@@ -3716,6 +3724,17 @@ pub fn render_with_options(locale: &str, id: MessageId, args: &[(&str, Value)], 
             f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
             ("m77696e646f77732e74696d652e74616b656e686f757273".to_string(), f_args)
         }
+        MessageId::m77696e646f77732e747261792e636865636b666f7275706461746573 => {
+            const DECLARED: &[&str] = &[];
+            for (name, _) in args {
+                if !DECLARED.contains(name) {
+                    return Err(RenderError::UnknownArgument((*name).to_string()));
+                }
+            }
+            #[allow(unused_mut)]
+            let mut f_args = FluentArgs::new();
+            ("m77696e646f77732e747261792e636865636b666f7275706461746573".to_string(), f_args)
+        }
         MessageId::m77696e646f77732e747261792e68726d696e => {
             const DECLARED: &[&str] = &["count", "count2"];
             for (name, _) in args {
@@ -3947,6 +3966,39 @@ pub fn render_with_options(locale: &str, id: MessageId, args: &[(&str, Value)], 
             #[allow(unused_mut)]
             let mut f_args = FluentArgs::new();
             ("m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e7468726f75676874686572656c6179".to_string(), f_args)
+        }
+        MessageId::m77696e646f77732e747261792e757064617465617661696c61626c65 => {
+            const DECLARED: &[&str] = &[];
+            for (name, _) in args {
+                if !DECLARED.contains(name) {
+                    return Err(RenderError::UnknownArgument((*name).to_string()));
+                }
+            }
+            #[allow(unused_mut)]
+            let mut f_args = FluentArgs::new();
+            ("m77696e646f77732e747261792e757064617465617661696c61626c65".to_string(), f_args)
+        }
+        MessageId::m77696e646f77732e747261792e757064617465636865636b6661696c6564 => {
+            const DECLARED: &[&str] = &[];
+            for (name, _) in args {
+                if !DECLARED.contains(name) {
+                    return Err(RenderError::UnknownArgument((*name).to_string()));
+                }
+            }
+            #[allow(unused_mut)]
+            let mut f_args = FluentArgs::new();
+            ("m77696e646f77732e747261792e757064617465636865636b6661696c6564".to_string(), f_args)
+        }
+        MessageId::m77696e646f77732e747261792e7570646174657265616479 => {
+            const DECLARED: &[&str] = &[];
+            for (name, _) in args {
+                if !DECLARED.contains(name) {
+                    return Err(RenderError::UnknownArgument((*name).to_string()));
+                }
+            }
+            #[allow(unused_mut)]
+            let mut f_args = FluentArgs::new();
+            ("m77696e646f77732e747261792e7570646174657265616479".to_string(), f_args)
         }
         MessageId::m77696e646f77732e75692e61636365737377617364656e696564 => {
             const DECLARED: &[&str] = &[];

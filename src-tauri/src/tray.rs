@@ -23,6 +23,7 @@ use observer_model::{
     AppPhase, HealthDump, JournalLink, PairingPhase, PauseReason, SourceKind, SyncSnapshot,
     TrayVisual,
 };
+use observer_update::UpdateNotice;
 use tauri::image::Image;
 use tauri::menu::{
     IsMenuItem, Menu, MenuBuilder, MenuItem, MenuItemBuilder, Submenu, SubmenuBuilder,
@@ -47,19 +48,25 @@ pub struct TrayMenu {
     tray: TrayIcon,
     menu: Menu<Wry>,
     attention: MenuItem<Wry>,
+    update: MenuItem<Wry>,
     status: MenuItem<Wry>,
     pause: Submenu<Wry>,
     resume: MenuItem<Wry>,
     journal: MenuItem<Wry>,
+    check_updates: MenuItem<Wry>,
     attention_target: Arc<Mutex<String>>,
     attention_shown: bool,
     pause_shown: bool,
     resume_shown: bool,
     journal_shown: bool,
-    icon_shown: Option<TrayVisual>,
+    update_shown: bool,
+    check_updates_shown: bool,
+    /// The icon's visual, and whether it carries the attention dot.
+    icon_shown: Option<(TrayVisual, bool)>,
     tooltip_shown: Option<String>,
     status_shown: Option<String>,
     attention_text_shown: Option<String>,
+    update_text_shown: Option<String>,
 }
 
 /// Install the tray icon and its native menu.
@@ -109,6 +116,16 @@ pub fn init(
         &message("windows.desktop.shared.copy.settingstabattentiona11y", &[]),
     )
     .build(app)?;
+    let update = MenuItemBuilder::with_id(
+        observer_contract::tray::MENU_UPDATE,
+        &message("windows.tray.updateavailable", &[]),
+    )
+    .build(app)?;
+    let check_updates = MenuItemBuilder::with_id(
+        observer_contract::tray::MENU_CHECK_UPDATES,
+        &message("windows.tray.checkforupdates", &[]),
+    )
+    .build(app)?;
     let status = MenuItemBuilder::with_id(
         observer_contract::tray::MENU_STATUS,
         &message("windows.ui.connecting", &[]),
@@ -136,13 +153,15 @@ pub fn init(
     )
     .build(app)?;
 
-    // Status, pause, settings, about, quit. Attention, resume, and the journal
-    // are inserted when the state calls for them. Pause and resume are never both here.
+    // Status, pause, settings, about, check for updates, quit. Attention, the
+    // update line, resume, and the journal are inserted when the state calls for
+    // them. Pause and resume are never both here, nor the update line and the check.
     let menu = MenuBuilder::new(app)
         .item(&status)
         .item(&pause)
         .item(&open_settings)
         .item(&about)
+        .item(&check_updates)
         .item(&quit)
         .build()?;
 
@@ -159,7 +178,7 @@ pub fn init(
     let attention_for_event = Arc::clone(&attention_target);
     let tray = TrayIconBuilder::with_id(observer_contract::tray::ROOT)
         .menu(&menu)
-        .icon(icon_for(visual))
+        .icon(icon_for(visual, false))
         // Windows keeps the first tooltip as the icon's name in the taskbar and
         // its settings, ahead of every later one, so it is the app's name.
         .tooltip("solstone")
@@ -173,6 +192,20 @@ pub fn init(
                 let app = app.clone();
                 std::thread::spawn(move || {
                     let _ = crate::windows::open_settings_source(&app, &source);
+                });
+            }
+            observer_contract::tray::MENU_UPDATE => {
+                let app = app.clone();
+                std::thread::spawn(move || {
+                    let _ = crate::windows::open_settings_updates(&app);
+                });
+            }
+            observer_contract::tray::MENU_CHECK_UPDATES => {
+                use tauri::Manager;
+                app.state::<crate::update::UpdateController>().check();
+                let app = app.clone();
+                std::thread::spawn(move || {
+                    let _ = crate::windows::open_settings_updates(&app);
                 });
             }
             observer_contract::tray::MENU_PAUSE_15M => {
@@ -244,19 +277,24 @@ pub fn init(
         tray,
         menu,
         attention,
+        update,
         status,
         pause,
         resume,
         journal,
+        check_updates,
         attention_target,
         attention_shown: false,
         pause_shown: true,
         resume_shown: false,
         journal_shown: false,
+        update_shown: false,
+        check_updates_shown: true,
         icon_shown: None,
         tooltip_shown: None,
         status_shown: None,
         attention_text_shown: None,
+        update_text_shown: None,
     })
 }
 
@@ -294,8 +332,23 @@ fn show<T: PartialEq>(shown: &mut Option<T>, value: T, apply: impl FnOnce(&T) ->
     }
 }
 
-/// Re-render the tray from `dump`; returns what it shows, for the notifier.
-pub fn apply_state(menu: &mut TrayMenu, dump: &HealthDump) -> (TrayVisual, Option<SourceKind>) {
+/// The tray menu's update line for `notice`.
+fn update_line(notice: UpdateNotice) -> String {
+    match notice {
+        UpdateNotice::Ready => message("windows.tray.updateready", &[]),
+        UpdateNotice::Available => message("windows.tray.updateavailable", &[]),
+        UpdateNotice::CheckFailed => message("windows.tray.updatecheckfailed", &[]),
+    }
+}
+
+/// Re-render the tray from `dump` and the update `notice`; returns what it
+/// shows, for the notifier. The icon carries its dot exactly when the menu
+/// names an update, so the dot always has words.
+pub fn apply_state(
+    menu: &mut TrayMenu,
+    dump: &HealthDump,
+    notice: Option<UpdateNotice>,
+) -> (TrayVisual, Option<SourceKind>) {
     let fault_detail = owner_fault_detail(&dump.sources, dump.storage.as_ref(), |kind| {
         dump.setup.is_enabled(kind)
     });
@@ -310,9 +363,11 @@ pub fn apply_state(menu: &mut TrayMenu, dump: &HealthDump) -> (TrayVisual, Optio
         deliberate_off,
     );
     let tray = &menu.tray;
-    show(&mut menu.icon_shown, visual, |visual| {
-        tray.set_icon(Some(icon_for(*visual))).is_ok()
-    });
+    show(
+        &mut menu.icon_shown,
+        (visual, notice.is_some()),
+        |(visual, dot)| tray.set_icon(Some(icon_for(*visual, *dot))).is_ok(),
+    );
     show(&mut menu.tooltip_shown, tooltip, |tooltip| {
         tray.set_tooltip(Some(tooltip.as_str())).is_ok()
     });
@@ -358,8 +413,24 @@ pub fn apply_state(menu: &mut TrayMenu, dump: &HealthDump) -> (TrayVisual, Optio
         0,
     );
 
+    if let Some(notice) = notice {
+        let update = &menu.update;
+        show(&mut menu.update_text_shown, update_line(notice), |text| {
+            update.set_text(text).is_ok()
+        });
+    }
+    let update_at = usize::from(menu.attention_shown);
+    place(
+        &menu.menu,
+        &menu.update,
+        &mut menu.update_shown,
+        notice.is_some(),
+        update_at,
+    );
+    let above_status = usize::from(menu.attention_shown) + usize::from(menu.update_shown);
+
     let paused = dump.app_state == AppPhase::Paused;
-    let pause_at = usize::from(menu.attention_shown) + 1;
+    let pause_at = above_status + 1;
     if paused {
         place(
             &menu.menu,
@@ -393,7 +464,7 @@ pub fn apply_state(menu: &mut TrayMenu, dump: &HealthDump) -> (TrayVisual, Optio
     }
 
     let paired = dump.sync.pairing.phase == PairingPhase::Paired;
-    let journal_at = usize::from(menu.attention_shown) + 3;
+    let journal_at = above_status + 3;
     place(
         &menu.menu,
         &menu.journal,
@@ -405,19 +476,42 @@ pub fn apply_state(menu: &mut TrayMenu, dump: &HealthDump) -> (TrayVisual, Optio
         let reachable = matches!(dump.sync.journal_link, Some(JournalLink::Connected));
         let _ = menu.journal.set_enabled(reachable);
     }
+
+    // Under about, while no update line shows.
+    let check_at = above_status + 4 + usize::from(menu.journal_shown);
+    place(
+        &menu.menu,
+        &menu.check_updates,
+        &mut menu.check_updates_shown,
+        notice.is_none(),
+        check_at,
+    );
     (visual, blocked)
 }
 
-fn icon_for(visual: TrayVisual) -> Image<'static> {
-    let bytes = match visual {
-        TrayVisual::Healthy => include_bytes!("../icons/tray/healthy.ico").as_slice(),
-        TrayVisual::Connecting => include_bytes!("../icons/tray/connecting.ico").as_slice(),
-        TrayVisual::Paused | TrayVisual::Off => {
+fn icon_for(visual: TrayVisual, dot: bool) -> Image<'static> {
+    let bytes = match (visual, dot) {
+        (TrayVisual::Healthy, false) => include_bytes!("../icons/tray/healthy.ico").as_slice(),
+        (TrayVisual::Healthy, true) => include_bytes!("../icons/tray/healthy-dot.ico").as_slice(),
+        (TrayVisual::Connecting, false) => {
+            include_bytes!("../icons/tray/connecting.ico").as_slice()
+        }
+        (TrayVisual::Connecting, true) => {
+            include_bytes!("../icons/tray/connecting-dot.ico").as_slice()
+        }
+        (TrayVisual::Paused | TrayVisual::Off, false) => {
             include_bytes!("../icons/tray/paused.ico").as_slice()
         }
-        TrayVisual::Offline => include_bytes!("../icons/tray/offline.ico").as_slice(),
-        TrayVisual::Error | TrayVisual::NeedsPermission => {
+        (TrayVisual::Paused | TrayVisual::Off, true) => {
+            include_bytes!("../icons/tray/paused-dot.ico").as_slice()
+        }
+        (TrayVisual::Offline, false) => include_bytes!("../icons/tray/offline.ico").as_slice(),
+        (TrayVisual::Offline, true) => include_bytes!("../icons/tray/offline-dot.ico").as_slice(),
+        (TrayVisual::Error | TrayVisual::NeedsPermission, false) => {
             include_bytes!("../icons/tray/error.ico").as_slice()
+        }
+        (TrayVisual::Error | TrayVisual::NeedsPermission, true) => {
+            include_bytes!("../icons/tray/error-dot.ico").as_slice()
         }
     };
     Image::from_bytes(bytes).expect("bundled tray icon is a valid ICO")

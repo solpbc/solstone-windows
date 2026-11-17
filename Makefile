@@ -75,7 +75,7 @@ ui-deps-update:
 # copied as-is. The tray set has no committed raster anywhere: it is built from
 # the brand status marks by scripts/build-tray-icons.sh, which needs
 # rsvg-convert and icotool. See that script for the frame table. Each of the
-# five tray visuals has its own brand mark.
+# five tray visuals has its own brand mark, and a twin carrying the attention dot.
 brand-sync:
 	@test -n "$(BRAND_DIR)" || { echo "brand: BRAND_DIR is required — point it at your brand asset directory (BRAND_DIR=/path/to/brand make brand-sync)"; exit 1; }
 	@test -d "$(BRAND_DIR)" || { echo "brand: BRAND_DIR=$(BRAND_DIR) not found"; exit 1; }

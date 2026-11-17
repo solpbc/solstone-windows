@@ -1107,6 +1107,8 @@ pub fn run(
                     // So does the screenshots folder going away.
                     let mut screenshots_state = crate::screenshots::state_changes();
                     let mut import_changes = crate::import::on_changes();
+                    // And an update the menu names, or stops naming.
+                    let mut update_notice = app.state::<crate::update::UpdateController>().notice();
                     loop {
                         let mut dump = rx.borrow_and_update().clone();
                         if let Ok(sync) = shared_sync.lock() {
@@ -1156,7 +1158,9 @@ pub fn run(
                             .as_ref()
                             .is_none_or(|prev| should_emit(prev, &dump));
                         previous = Some(dump.clone());
-                        let (visual, blocked) = crate::tray::apply_state(&mut tray_menu, &dump);
+                        let notice = *update_notice.borrow_and_update();
+                        let (visual, blocked) =
+                            crate::tray::apply_state(&mut tray_menu, &dump, notice);
                         if let Some(notice) =
                             notifier.observe(visual, blocked, started.elapsed().as_secs())
                         {
@@ -1208,6 +1212,11 @@ pub fn run(
                                         }
                                     }
                                     None => std::future::pending::<()>().await,
+                                }
+                            } => {}
+                            _ = async {
+                                if update_notice.changed().await.is_err() {
+                                    std::future::pending::<()>().await;
                                 }
                             } => {}
                         }
@@ -1268,7 +1277,7 @@ pub fn run(
                     if let Ok(mut health) = health.lock() {
                         *health = terminal.clone();
                     }
-                    crate::tray::apply_state(&mut tray_menu, &terminal);
+                    crate::tray::apply_state(&mut tray_menu, &terminal, *update_notice.borrow());
                     let _ = app.emit("health://changed", &terminal);
                 }
             });

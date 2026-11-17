@@ -270,6 +270,14 @@ windows.tray.onnotconnectedtoajournal = on, not connected to a journal
 
 windows.tray.onsavedonthispc = on, saved on this PC
 
+windows.tray.updateready = update ready · installs when you quit and reopen
+
+windows.tray.updateavailable = update available
+
+windows.tray.updatecheckfailed = update check failed
+
+windows.tray.checkforupdates = check for updates…
+
 
 
 

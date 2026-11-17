@@ -37,7 +37,8 @@ use observer_update::admission::{
 };
 use observer_update::{
     classify_update_plan, format_update_plan, reduce, CheckInterval, CheckOutcome, CostDeferral,
-    UpdateActivity, UpdateAssetDescriptor, UpdateEvent, UpdateOutcome, UpdateState, UpdateView,
+    UpdateActivity, UpdateAssetDescriptor, UpdateEvent, UpdateNotice, UpdateOutcome, UpdateState,
+    UpdateView,
 };
 use pl_transport_win::release_signature::ProductionReleaseVerifier;
 use tauri::{AppHandle, Emitter};
@@ -138,6 +139,8 @@ struct Inner {
     state_path: PathBuf,
     /// Serializes the one in-flight Velopack op (check/download) against the timer.
     busy: AtomicBool,
+    /// The tray menu's update line, for the tray loop to wake on.
+    notice: tokio::sync::watch::Sender<Option<UpdateNotice>>,
 }
 
 /// Cheaply-clonable handle shared by the IPC commands and the background timer.
@@ -713,6 +716,7 @@ impl UpdateController {
         if startup_apply_failed {
             reduce(&mut state, UpdateEvent::InstallFailed);
         }
+        let notice = tokio::sync::watch::Sender::new(state.notice());
         let inner = Arc::new(Inner {
             rt: Mutex::new(Runtime {
                 state,
@@ -724,6 +728,7 @@ impl UpdateController {
             app,
             state_path,
             busy: AtomicBool::new(false),
+            notice,
         });
         let ctrl = Self { inner };
         ctrl.persist();
@@ -743,7 +748,17 @@ impl UpdateController {
 
     fn emit(&self) {
         let view = self.view();
+        self.inner.notice.send_if_modified(|shown| {
+            let changed = *shown != view.notice;
+            *shown = view.notice;
+            changed
+        });
         let _ = self.inner.app.emit(UPDATE_EVENT, &view);
+    }
+
+    /// The tray menu's update line; it changes whenever the snapshot's notice does.
+    pub fn notice(&self) -> tokio::sync::watch::Receiver<Option<UpdateNotice>> {
+        self.inner.notice.subscribe()
     }
 
     fn persist(&self) {

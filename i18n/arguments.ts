@@ -543,6 +543,7 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
       "string"
     ]
   ],
+  "windows.tray.checkforupdates": [],
   "windows.tray.hrmin": [
     [
       "count",
@@ -602,6 +603,9 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
     ]
   ],
   "windows.tray.unknownjournalseenthroughtherelay": [],
+  "windows.tray.updateavailable": [],
+  "windows.tray.updatecheckfailed": [],
+  "windows.tray.updateready": [],
   "windows.ui.accesswasdenied": [],
   "windows.ui.accesswasdeniedcheckwindowspermissionsfor": [],
   "windows.ui.activex474d1b75": [],

@@ -26,6 +26,19 @@ TRAY_MARKS="healthy:mark connecting:mark-connecting paused:mark-paused offline:m
 
 # Each of the five tray visuals has its own brand mark.
 
+# The attention dot: each mark also gets a "-dot" twin, shown while the tray
+# menu names an update. The dot sits in the corner in the mark's orange, on a
+# cut-out gap that parts it from the mark, with a thin dark rim that keeps it
+# visible on any taskbar colour (an ICO cannot follow the taskbar's theme).
+# Units are the mark's own viewBox (2.5 2.5 27 27).
+DOT_CX=24.75
+DOT_CY=24.75
+DOT_R=4.15
+DOT_GAP_R=5.75
+DOT_RIM=1.2
+DOT_FILL="#E8913A"
+DOT_RIM_INK="#1F1F1F"
+
 OUT_DIR="${OUT_DIR:-src-tauri/icons/tray}"
 
 if [ -z "${BRAND_DIR:-}" ]; then
@@ -48,6 +61,29 @@ mkdir -p "$OUT_DIR"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT INT TERM
 
+# The mark with the attention dot. The mark's first line opens the svg and its
+# last line closes it; everything between is drawn under the gap's mask.
+dotted() {
+    head -n1 "$1"
+    printf '  <mask id="dot-gap" maskUnits="userSpaceOnUse" x="0" y="0" width="32" height="32"><rect width="32" height="32" fill="#fff"/><circle cx="%s" cy="%s" r="%s" fill="#000"/></mask>\n' \
+        "$DOT_CX" "$DOT_CY" "$DOT_GAP_R"
+    printf '  <g mask="url(#dot-gap)">\n'
+    sed '1d;$d' "$1"
+    printf '  </g>\n  <circle fill="%s" stroke="%s" stroke-width="%s" cx="%s" cy="%s" r="%s"/>\n</svg>\n' \
+        "$DOT_FILL" "$DOT_RIM_INK" "$DOT_RIM" "$DOT_CX" "$DOT_CY" "$DOT_R"
+}
+
+pack() {
+    frames=""
+    for size in $FRAME_SIZES; do
+        frame="$work/$1-$size.png"
+        rsvg-convert -w "$size" -h "$size" "$2" -o "$frame"
+        frames="$frames $frame"
+    done
+    # shellcheck disable=SC2086
+    icotool -c -o "$OUT_DIR/$1.ico" $frames
+}
+
 for entry in $TRAY_MARKS; do
     name=${entry%%:*}
     stem=${entry#*:}
@@ -56,13 +92,9 @@ for entry in $TRAY_MARKS; do
         echo "brand: missing source $src" >&2
         exit 1
     fi
-    frames=""
-    for size in $FRAME_SIZES; do
-        frame="$work/$name-$size.png"
-        rsvg-convert -w "$size" -h "$size" "$src" -o "$frame"
-        frames="$frames $frame"
-    done
-    # shellcheck disable=SC2086
-    icotool -c -o "$OUT_DIR/$name.ico" $frames
+    pack "$name" "$src"
     echo "  tray: $name.ico  <- $stem.svg  ($FRAME_SIZES)"
+    dotted "$src" > "$work/$name-dot.svg"
+    pack "$name-dot" "$work/$name-dot.svg"
+    echo "  tray: $name-dot.ico  <- $stem.svg + dot  ($FRAME_SIZES)"
 done
