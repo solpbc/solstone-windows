@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+pub use solstone_folder_sync::worker::Journal;
+use solstone_folder_sync::worker::{
+    self as folder_worker, CapabilityCache, CheckSchedule, Event, Wake,
+};
+pub use solstone_folder_sync::worker::{BoxFuture, Capability};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use observer_model::ScreenshotsState;
 use serde::Serialize;
-use tokio::sync::{mpsc, oneshot, watch, Notify};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::engine::{prepare, Engine, Pause, Prepared, Sent, Status, Upload};
 use crate::rules::{route_answer, Answer, Span};
@@ -21,25 +24,12 @@ pub const CAPABILITY: &str = "screenshots";
 pub const SENDS_PER_LOOK: usize = 8;
 /// A journal that doesn't take screenshots is asked again after this.
 pub const CAPABILITY_RETRY: Duration = Duration::from_secs(60);
-const CAPABILITY_TTL: Duration = Duration::from_secs(5 * 60);
 /// How often the pause is read. A pause skips from the moment it starts.
 const TICK: Duration = Duration::from_secs(1);
 const SCAN_IDLE: Duration = Duration::from_secs(15);
 
 /// The computer's pause, read on every tick.
 pub type Paused = Arc<dyn Fn() -> Option<Pause> + Send + Sync>;
-
-/// A boxed future, so the journal seam stays object-safe.
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
-
-/// Whether the paired journal takes screenshots.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Capability {
-    Supported,
-    NotListed,
-    /// Not paired, or no answer.
-    Unknown,
-}
 
 /// What the journal said to one upload.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,15 +41,6 @@ pub enum Delivery {
     },
     /// No answer to act on: unreachable, or the journal's mark isn't confirmed.
     NoAnswer,
-}
-
-/// The journal, as far as the source needs it. The app implements this over
-/// its paired upload path; nothing here knows which journal is on the other end.
-pub trait Journal: Send + Sync + 'static {
-    fn capability(&self) -> BoxFuture<'_, Capability>;
-    fn deliver<'a>(&'a self, upload: &'a Upload) -> BoxFuture<'a, Delivery>;
-    /// Whether the journal this was last asked of is still the paired one.
-    fn pairing_unchanged(&self) -> BoxFuture<'_, bool>;
 }
 
 /// What the app says about the source to its window.
@@ -88,9 +69,8 @@ struct HandleInner {
     commands: mpsc::Sender<Command>,
     status: Arc<Mutex<Option<Status>>>,
     state: watch::Receiver<Option<ScreenshotsState>>,
-    restart: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
-    wake: Arc<Notify>,
+    wake: Arc<Wake>,
 }
 
 impl ScreenshotsHandle {
@@ -154,48 +134,43 @@ impl ScreenshotsHandle {
     pub fn restart_setup(&self) {
         let Some(inner) = &self.inner else { return };
         inner.generation.fetch_add(1, Ordering::AcqRel);
-        inner.restart.store(true, Ordering::Release);
-        inner.wake.notify_one();
+        inner.wake.restart();
     }
 
     /// Look again soon: the pause changed.
     pub fn nudge(&self) {
         if let Some(inner) = &self.inner {
-            inner.wake.notify_one();
+            inner.wake.nudge();
         }
     }
 }
 
 /// The source's task state.
-pub(crate) struct Worker<J: Journal> {
+pub(crate) struct Worker<J: Journal<Upload = Upload, Reply = Delivery>> {
     engine: Option<Engine>,
     journal: J,
     paused: Paused,
     status: Arc<Mutex<Option<Status>>>,
     state: watch::Sender<Option<ScreenshotsState>>,
     commands: mpsc::Receiver<Command>,
-    restart: Arc<AtomicBool>,
     generation: Arc<AtomicU64>,
-    wake: Arc<Notify>,
-    next_scan: Instant,
-    capability: Option<bool>,
-    capability_checked: Option<Instant>,
+    wake: Arc<Wake>,
+    next_scan: CheckSchedule,
+    capability: CapabilityCache,
 }
 
-impl<J: Journal> Worker<J> {
+impl<J: Journal<Upload = Upload, Reply = Delivery>> Worker<J> {
     pub(crate) fn new(journal: J, paused: Paused) -> (ScreenshotsHandle, Self) {
         let (commands, receiver) = mpsc::channel(8);
         let status = Arc::new(Mutex::new(None));
         let (state, state_rx) = watch::channel(None);
-        let restart = Arc::new(AtomicBool::new(false));
         let generation = Arc::new(AtomicU64::new(0));
-        let wake = Arc::new(Notify::new());
+        let wake = Arc::new(Wake::default());
         let handle = ScreenshotsHandle {
             inner: Some(Arc::new(HandleInner {
                 commands,
                 status: Arc::clone(&status),
                 state: state_rx,
-                restart: Arc::clone(&restart),
                 generation: Arc::clone(&generation),
                 wake: Arc::clone(&wake),
             })),
@@ -207,12 +182,10 @@ impl<J: Journal> Worker<J> {
             status,
             state,
             commands: receiver,
-            restart,
             generation,
             wake,
-            next_scan: Instant::now(),
-            capability: None,
-            capability_checked: None,
+            next_scan: CheckSchedule::default(),
+            capability: CapabilityCache::default(),
         };
         (handle, worker)
     }
@@ -229,17 +202,8 @@ impl<J: Journal> Worker<J> {
         &mut self,
         call: impl FnOnce(&mut Engine) -> R + Send + 'static,
     ) -> Option<R> {
-        let mut engine = self.engine.take()?;
-        let result = tokio::task::spawn_blocking(move || {
-            let result = call(&mut engine);
-            (engine, result)
-        })
-        .await;
-        match result {
-            Ok((engine, result)) => {
-                self.engine = Some(engine);
-                Some(result)
-            }
+        match folder_worker::with_state(&mut self.engine, call).await {
+            Ok(result) => result,
             Err(error) => {
                 tracing::error!(target: "screenshots", %error, "screenshots source stopped");
                 None
@@ -253,7 +217,10 @@ impl<J: Journal> Worker<J> {
 
     pub(crate) fn publish(&self) {
         let Some(engine) = &self.engine else { return };
-        let status = engine.status(self.pause().is_some(), self.capability == Some(false));
+        let status = engine.status(
+            self.pause().is_some(),
+            self.capability.listed() == Some(false),
+        );
         let state = status.state;
         self.state.send_if_modified(|current| {
             let changed = *current != Some(state);
@@ -284,13 +251,11 @@ impl<J: Journal> Worker<J> {
             let busy = self.step().await;
             self.publish();
             let wait = if busy { Duration::ZERO } else { TICK };
-            tokio::select! {
-                () = self.wake.notified() => {}
-                command = self.commands.recv() => {
-                    let Some(command) = command else { break };
-                    self.handle(command).await;
-                }
-                () = tokio::time::sleep(wait) => {}
+            let event = folder_worker::wait(&mut self.commands, &self.wake, wait).await;
+            match event {
+                Event::Command(command) => self.handle(command).await,
+                Event::Closed => break,
+                Event::Wake => {}
             }
         }
     }
@@ -314,7 +279,7 @@ impl<J: Journal> Worker<J> {
             }
             Command::Confirm(span, reply) => {
                 self.with_engine(move |engine| engine.confirm(span)).await;
-                self.next_scan = Instant::now();
+                self.next_scan.defer(Duration::ZERO);
                 self.reply(reply);
             }
             Command::TryAgain(reply) => {
@@ -332,17 +297,16 @@ impl<J: Journal> Worker<J> {
             engine.scan();
         })
         .await;
-        self.next_scan = Instant::now() + SCAN_IDLE;
+        self.next_scan.defer(SCAN_IDLE);
     }
 
     pub(crate) async fn restart_if_asked(&mut self) {
-        if !self.restart.swap(false, Ordering::AcqRel) {
+        if !self.wake.take_restart() {
             return;
         }
         self.with_engine(Engine::restart_setup).await;
-        self.capability = None;
-        self.capability_checked = None;
-        self.next_scan = Instant::now();
+        self.capability.clear();
+        self.next_scan.defer(Duration::ZERO);
         self.publish();
     }
 
@@ -354,9 +318,9 @@ impl<J: Journal> Worker<J> {
         if !self.engine.as_ref().is_some_and(Engine::is_enabled) {
             return false;
         }
-        if Instant::now() >= self.next_scan {
+        if self.next_scan.due() {
             self.with_engine(Engine::scan).await;
-            self.next_scan = Instant::now() + SCAN_IDLE;
+            self.next_scan.defer(SCAN_IDLE);
         }
         if !self.engine.as_ref().is_some_and(Engine::is_confirmed) {
             return false;
@@ -370,27 +334,7 @@ impl<J: Journal> Worker<J> {
     /// Whether the paired journal takes screenshots, asking again after a no,
     /// now and then after a yes, and whenever the pairing has changed.
     async fn journal_takes_screenshots(&mut self) -> bool {
-        let stale = match self.capability_checked {
-            None => true,
-            Some(_) if !self.journal.pairing_unchanged().await => true,
-            Some(checked) => {
-                let ttl = if self.capability == Some(true) {
-                    CAPABILITY_TTL
-                } else {
-                    CAPABILITY_RETRY
-                };
-                checked.elapsed() >= ttl
-            }
-        };
-        if stale {
-            self.capability = match self.journal.capability().await {
-                Capability::Supported => Some(true),
-                Capability::NotListed => Some(false),
-                Capability::Unknown => None,
-            };
-            self.capability_checked = Some(Instant::now());
-        }
-        self.capability == Some(true)
+        self.capability.check(&self.journal, CAPABILITY_RETRY).await
     }
 
     /// Send up to [`SENDS_PER_LOOK`]. A screenshot that has to wait ends the
@@ -410,17 +354,22 @@ impl<J: Journal> Worker<J> {
                     .unwrap_or(Prepared::Retry)
             };
             let sent = match prepared {
-                Prepared::Upload(upload) => match self.journal.deliver(&upload).await {
-                    Delivery::Answered {
-                        http_status,
-                        status,
-                        reason_code,
-                    } => Sent::Answer(
-                        route_answer(http_status, status.as_deref(), reason_code.as_deref()),
-                        Some(upload.file_hash.clone()),
-                    ),
-                    Delivery::NoAnswer => Sent::Retry,
-                },
+                Prepared::Upload(upload) => {
+                    if self.wake.restart_pending() {
+                        return false;
+                    }
+                    match folder_worker::deliver(&self.journal, &upload, None).await {
+                        Some(Delivery::Answered {
+                            http_status,
+                            status,
+                            reason_code,
+                        }) => Sent::Answer(
+                            route_answer(http_status, status.as_deref(), reason_code.as_deref()),
+                            Some(upload.file_hash.clone()),
+                        ),
+                        Some(Delivery::NoAnswer) | None => Sent::Retry,
+                    }
+                }
                 Prepared::Refused => Sent::Refused,
                 Prepared::Missing => Sent::Missing,
                 Prepared::Retry => Sent::Retry,
@@ -432,7 +381,7 @@ impl<J: Journal> Worker<J> {
                     .await;
             }
             self.publish();
-            if waits || self.restart.load(Ordering::Acquire) {
+            if waits || self.wake.restart_pending() {
                 return false;
             }
         }

@@ -10,6 +10,7 @@
 
 mod worker;
 
+pub use solstone_folder_sync::worker::Journal as FolderJournal;
 pub use solstone_vault::platform::DirFileIds as ReadDirFileIds;
 pub use solstone_vault::{
     Answer, Attention, Delivery, FoundVault, ListedVault, Phase, Refusal, State, Status, Window,

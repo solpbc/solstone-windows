@@ -10,14 +10,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use solstone_folder_sync::files as folder_sync;
+
 use observer_model::LocalOffset;
 use screenshots_source::{ConvertError, ListError, Listed, Platform};
 
 const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
-const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
-const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x4_0000;
-const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
 
 /// The screenshots source's view of this computer.
 #[derive(Debug, Default)]
@@ -53,6 +52,10 @@ impl Platform for WindowsScreenshots {
         std::fs::read(path)
     }
 
+    fn read_for_scan(&self, path: &Path) -> io::Result<Vec<u8>> {
+        folder_sync::read_local(path)
+    }
+
     fn to_png(&self, bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
         to_png(bytes)
     }
@@ -61,18 +64,13 @@ impl Platform for WindowsScreenshots {
 /// The top level of a folder. Each entry's facts come from the directory
 /// listing itself, so no file is opened.
 pub fn list_folder(dir: &Path) -> Result<Vec<Listed>, ListError> {
-    let entries = std::fs::read_dir(dir).map_err(|error| match error.kind() {
-        io::ErrorKind::NotFound => ListError::Missing,
-        _ => ListError::Unreadable,
-    })?;
     let mut listed = Vec::new();
-    for entry in entries {
-        let Ok(entry) = entry else { continue };
-        // On Windows this is the enumeration's own record, not an open.
-        let Ok(meta) = entry.metadata() else { continue };
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
+    folder_sync::visit_directory(dir, |entry| {
+        let Some(name) = entry.file_name().into_string().ok() else {
+            return Ok(());
         };
+        // On Windows this is the enumeration's own record, not an open.
+        let meta = entry.metadata()?;
         let attributes = attributes(&meta);
         listed.push(Listed {
             path: entry.path(),
@@ -83,13 +81,14 @@ pub fn list_folder(dir: &Path) -> Result<Vec<Listed>, ListError> {
             regular: meta.file_type().is_file(),
             hidden: attributes & FILE_ATTRIBUTE_HIDDEN != 0,
             system: attributes & FILE_ATTRIBUTE_SYSTEM != 0,
-            cloud_only: attributes
-                & (FILE_ATTRIBUTE_OFFLINE
-                    | FILE_ATTRIBUTE_RECALL_ON_OPEN
-                    | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
-                != 0,
+            cloud_only: folder_sync::is_placeholder(&meta),
         });
-    }
+        Ok(())
+    })
+    .map_err(|error| match error {
+        folder_sync::ListingError::Missing => ListError::Missing,
+        folder_sync::ListingError::Incomplete(_) => ListError::Unreadable,
+    })?;
     Ok(listed)
 }
 

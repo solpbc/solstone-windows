@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-use std::future::Future;
-use std::pin::Pin;
+use solstone_folder_sync::worker::Journal as FolderJournal;
+use solstone_folder_sync::worker::{
+    self as folder_worker, CapabilityCache, CheckSchedule, Event, Wake,
+};
+pub use solstone_folder_sync::worker::{BoxFuture, Capability};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use solstone_vault::engine::TurnOnError;
@@ -18,16 +21,12 @@ pub const SOURCE: &str = "obsidian";
 pub const CAPABILITY: &str = "obsidian_notes";
 
 const TICK: Duration = Duration::from_secs(2);
-const CAPABILITY_TTL: Duration = Duration::from_secs(5 * 60);
 const CAPABILITY_RETRY: Duration = Duration::from_secs(30);
 const VAULT_CHECK_RETRY: Duration = Duration::from_secs(30);
 const CLOSE_BATCH: usize = 500;
 
 /// Whether the owner has paused. Scanning goes on; delivery waits.
 pub type Paused = Arc<dyn Fn() -> bool + Send + Sync>;
-
-/// A boxed future, so the journal seam stays object-safe across edition limits.
-pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// What the app says about the source to its window.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -58,15 +57,6 @@ fn off_status() -> Status {
     }
 }
 
-/// Whether the paired journal has said it accepts note changes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Capability {
-    Supported,
-    NotListed,
-    /// Not paired, or no answer.
-    Unknown,
-}
-
 /// What became of one attempt to send a waiting file.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeliveryResult {
@@ -84,13 +74,8 @@ pub enum VaultList {
 
 /// The journal, as far as the source needs it. The app implements this over
 /// its paired upload path; nothing here knows which journal is on the other end.
-pub trait Journal: Send + Sync + 'static {
-    fn capability(&self) -> BoxFuture<'_, Capability>;
+pub trait Journal: FolderJournal<Upload = Delivery, Reply = DeliveryResult> {
     fn vault_list(&self) -> BoxFuture<'_, VaultList>;
-    /// Send one file.
-    fn deliver<'a>(&'a self, delivery: &'a Delivery) -> BoxFuture<'a, DeliveryResult>;
-    /// Whether the journal this was last asked of is still the paired one.
-    fn pairing_unchanged(&self) -> BoxFuture<'_, bool>;
 }
 
 enum Command {
@@ -116,8 +101,7 @@ struct HandleInner {
     cancel: Arc<AtomicBool>,
     cancel_notify: Arc<Notify>,
     on: watch::Receiver<bool>,
-    restart: Arc<AtomicBool>,
-    restart_notify: Arc<Notify>,
+    wake: Arc<Wake>,
 }
 
 impl ObsidianHandle {
@@ -188,8 +172,7 @@ impl ObsidianHandle {
         let Some(inner) = &self.inner else { return };
         // A scan under way stops early, so the restart isn't kept waiting.
         inner.cancel.store(true, Ordering::Release);
-        inner.restart.store(true, Ordering::Release);
-        inner.restart_notify.notify_one();
+        inner.wake.restart();
     }
 }
 
@@ -203,12 +186,10 @@ pub(crate) struct Worker<J: Journal> {
     cancel: Arc<AtomicBool>,
     cancel_notify: Arc<Notify>,
     on: watch::Sender<bool>,
-    restart: Arc<AtomicBool>,
-    restart_notify: Arc<Notify>,
-    next_scan: Instant,
-    next_vault_check: Instant,
-    capability: Option<bool>,
-    capability_checked: Option<Instant>,
+    wake: Arc<Wake>,
+    next_scan: CheckSchedule,
+    next_vault_check: CheckSchedule,
+    capability: CapabilityCache,
 }
 
 impl<J: Journal> Worker<J> {
@@ -225,8 +206,7 @@ impl<J: Journal> Worker<J> {
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_notify = Arc::new(Notify::new());
         let (on, on_rx) = watch::channel(false);
-        let restart = Arc::new(AtomicBool::new(false));
-        let restart_notify = Arc::new(Notify::new());
+        let wake = Arc::new(Wake::default());
         let handle = ObsidianHandle {
             inner: Some(Arc::new(HandleInner {
                 commands,
@@ -234,8 +214,7 @@ impl<J: Journal> Worker<J> {
                 cancel: Arc::clone(&cancel),
                 cancel_notify: Arc::clone(&cancel_notify),
                 on: on_rx,
-                restart: Arc::clone(&restart),
-                restart_notify: Arc::clone(&restart_notify),
+                wake: Arc::clone(&wake),
             })),
         };
         let worker = Self {
@@ -247,12 +226,10 @@ impl<J: Journal> Worker<J> {
             cancel,
             cancel_notify,
             on,
-            restart,
-            restart_notify,
-            next_scan: Instant::now(),
-            next_vault_check: Instant::now(),
-            capability: None,
-            capability_checked: None,
+            wake,
+            next_scan: CheckSchedule::default(),
+            next_vault_check: CheckSchedule::default(),
+            capability: CapabilityCache::default(),
         };
         (handle, worker)
     }
@@ -266,17 +243,8 @@ impl<J: Journal> Worker<J> {
         &mut self,
         call: impl FnOnce(&mut Engine) -> R + Send + 'static,
     ) -> Option<R> {
-        let mut engine = self.engine.take()?;
-        let result = tokio::task::spawn_blocking(move || {
-            let result = call(&mut engine);
-            (engine, result)
-        })
-        .await;
-        match result {
-            Ok((engine, result)) => {
-                self.engine = Some(engine);
-                Some(result)
-            }
+        match folder_worker::with_state(&mut self.engine, call).await {
+            Ok(result) => result,
             Err(error) => {
                 tracing::error!(target: "obsidian", %error, "Obsidian vault source stopped");
                 None
@@ -303,13 +271,11 @@ impl<J: Journal> Worker<J> {
                 break;
             }
             let wait = if busy { Duration::ZERO } else { TICK };
-            tokio::select! {
-                () = self.restart_notify.notified() => {}
-                command = self.commands.recv() => {
-                    let Some(command) = command else { break };
-                    self.handle(command).await;
-                }
-                () = tokio::time::sleep(wait) => {}
+            let event = folder_worker::wait(&mut self.commands, &self.wake, wait).await;
+            match event {
+                Event::Command(command) => self.handle(command).await,
+                Event::Closed => break,
+                Event::Wake => {}
             }
         }
         if let Some(mut engine) = self.engine.take() {
@@ -319,9 +285,9 @@ impl<J: Journal> Worker<J> {
 
     pub(crate) fn publish(&self) {
         let Some(engine) = &self.engine else { return };
-        let mut status = engine.status(self.paused(), self.capability);
+        let mut status = engine.status(self.paused(), self.capability.listed());
         // The vault check waits for a journal that takes notes.
-        if status.state == State::Checking && self.capability == Some(false) {
+        if status.state == State::Checking && self.capability.listed() == Some(false) {
             status.state = State::WaitingForJournalUpdate;
         }
         let on = status.state != State::Off;
@@ -362,10 +328,9 @@ impl<J: Journal> Worker<J> {
                     _ => None,
                 };
                 if refusal.is_none() {
-                    self.next_scan = Instant::now();
-                    self.next_vault_check = Instant::now();
-                    self.capability = None;
-                    self.capability_checked = None;
+                    self.next_scan.defer(Duration::ZERO);
+                    self.next_vault_check.defer(Duration::ZERO);
+                    self.capability.clear();
                 }
                 let _ = reply.send(self.document(refusal));
             }
@@ -375,7 +340,7 @@ impl<J: Journal> Worker<J> {
             }
             Command::Continue(reply) => {
                 let _ = self.with_engine(|engine| engine.continue_warning()).await;
-                self.next_scan = Instant::now();
+                self.next_scan.defer(Duration::ZERO);
                 let _ = reply.send(self.document(None));
             }
             Command::Cancel(reply) => {
@@ -386,17 +351,16 @@ impl<J: Journal> Worker<J> {
     }
 
     async fn restart_if_asked(&mut self) {
-        if !self.restart.swap(false, Ordering::AcqRel) {
+        if !self.wake.take_restart() {
             return;
         }
         self.cancel.store(false, Ordering::Release);
         if let Some(Err(error)) = self.with_engine(Engine::restart_send).await {
             tracing::warn!(target: "obsidian", %error, "Couldn't start the Obsidian first send again");
         }
-        self.next_scan = Instant::now();
-        self.next_vault_check = Instant::now();
-        self.capability = None;
-        self.capability_checked = None;
+        self.next_scan.defer(Duration::ZERO);
+        self.next_vault_check.defer(Duration::ZERO);
+        self.capability.clear();
         self.publish();
     }
 
@@ -417,7 +381,7 @@ impl<J: Journal> Worker<J> {
             return false;
         }
         let mut busy = false;
-        if Instant::now() >= self.next_scan {
+        if self.next_scan.due() {
             let cancel = Arc::clone(&self.cancel);
             let outcome = self.with_engine(move |engine| engine.scan(&cancel)).await;
             match outcome {
@@ -431,7 +395,8 @@ impl<J: Journal> Worker<J> {
                 .engine
                 .as_ref()
                 .map_or(Duration::ZERO, Engine::last_scan_duration);
-            self.next_scan = Instant::now() + solstone_vault::next_scan_delay(duration);
+            self.next_scan
+                .defer(solstone_vault::next_scan_delay(duration));
         }
         if !self.paused() {
             let closed = self
@@ -452,18 +417,21 @@ impl<J: Journal> Worker<J> {
     }
 
     async fn check_vault_list(&mut self) -> bool {
-        if Instant::now() < self.next_vault_check {
+        if !self.next_vault_check.due() {
             return false;
         }
-        self.next_vault_check = Instant::now() + VAULT_CHECK_RETRY;
+        self.next_vault_check.defer(VAULT_CHECK_RETRY);
         if let VaultList::Listed(listed) = self.journal.vault_list().await {
+            if self.wake.restart_pending() || !self.journal.pairing_unchanged().await {
+                return false;
+            }
             if let Some(Err(error)) = self
                 .with_engine(move |engine| engine.apply_vault_list(&listed))
                 .await
             {
                 tracing::warn!(target: "obsidian", %error, "Couldn't save the Obsidian vault check");
             }
-            self.next_scan = Instant::now();
+            self.next_scan.defer(Duration::ZERO);
             return true;
         }
         false
@@ -472,27 +440,7 @@ impl<J: Journal> Worker<J> {
     /// Whether the paired journal takes note changes, re-asking now and then or
     /// when the pairing has changed.
     async fn journal_supports_notes(&mut self) -> bool {
-        let stale = match self.capability_checked {
-            None => true,
-            Some(_) if !self.journal.pairing_unchanged().await => true,
-            Some(checked) => {
-                let ttl = if self.capability == Some(true) {
-                    CAPABILITY_TTL
-                } else {
-                    CAPABILITY_RETRY
-                };
-                checked.elapsed() >= ttl
-            }
-        };
-        if stale {
-            self.capability = match self.journal.capability().await {
-                Capability::Supported => Some(true),
-                Capability::NotListed => Some(false),
-                Capability::Unknown => None,
-            };
-            self.capability_checked = Some(Instant::now());
-        }
-        self.capability == Some(true)
+        self.capability.check(&self.journal, CAPABILITY_RETRY).await
     }
 
     /// Deliver one file if the journal allows it. True if one went.
@@ -505,10 +453,14 @@ impl<J: Journal> Worker<J> {
         };
         // Turning off doesn't wait on the journal. The file stays in the outbox, and
         // if the journal did take it, sending it again answers `duplicate`.
-        let result = tokio::select! {
-            result = self.journal.deliver(&delivery) => result,
-            () = self.cancel_notify.notified() => return false,
+        let Some(result) =
+            folder_worker::deliver(&self.journal, &delivery, Some(&self.cancel_notify)).await
+        else {
+            return false;
         };
+        if self.wake.restart_pending() {
+            return false;
+        }
         let answer = match result {
             DeliveryResult::NoAnswer => return false,
             DeliveryResult::FileMissing => {

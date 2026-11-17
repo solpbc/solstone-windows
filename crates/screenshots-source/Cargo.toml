@@ -16,7 +16,7 @@ observer-model.workspace = true
 source-counters.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
+solstone-folder-sync.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
 

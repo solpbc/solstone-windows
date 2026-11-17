@@ -19,6 +19,7 @@ observer-recovery.workspace = true
 observer-hotkey.workspace = true
 source-counters.workspace = true
 screenshots-source.workspace = true
+solstone-folder-sync.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 
@@ -68,8 +69,8 @@ tokio = { workspace = true, features = ["net", "time", "io-util"] }
 winreg = "0.55"
 
 [dev-dependencies]
+solstone-vault.workspace = true
 tempfile = "3"
 
 [target.'cfg(windows)'.dev-dependencies]
-solstone-vault.workspace = true
 serde_json.workspace = true

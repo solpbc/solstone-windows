@@ -12,6 +12,7 @@ description = "The Obsidian vault source: the shared vault engine run as a backg
 workspace = true
 
 [dependencies]
+solstone-folder-sync.workspace = true
 solstone-vault.workspace = true
 source-counters.workspace = true
 serde.workspace = true

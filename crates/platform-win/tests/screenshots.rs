@@ -6,8 +6,8 @@
 
 #![cfg(windows)]
 
-use platform_win::screenshots::{list_folder, own_folder, to_png};
-use screenshots_source::{ConvertError, ListError};
+use platform_win::screenshots::{list_folder, own_folder, to_png, WindowsScreenshots};
+use screenshots_source::{ConvertError, ListError, Platform};
 
 /// A 2 by 1, 24-bit BMP: one red pixel, one blue.
 fn tiny_bmp() -> Vec<u8> {
@@ -59,6 +59,26 @@ fn the_listing_reads_the_top_level_without_opening_anything() {
         list_folder(&dir.path().join("gone")).unwrap_err(),
         ListError::Missing
     );
+}
+
+#[test]
+fn an_offline_screenshot_is_listed_without_a_probe_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("Screenshot (2).png");
+    std::fs::write(&path, b"screenshot").unwrap();
+    let marked = std::process::Command::new("attrib")
+        .arg("+O")
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(marked.success(), "attrib +O: {marked}");
+
+    let listing = list_folder(dir.path()).unwrap();
+    assert_eq!(listing.len(), 1);
+    assert!(listing[0].cloud_only);
+    assert!(WindowsScreenshots.read_for_scan(&path).is_err());
+    // Only the delivery read is allowed to retrieve marked contents.
+    assert_eq!(WindowsScreenshots.read(&path).unwrap(), b"screenshot");
 }
 
 #[test]

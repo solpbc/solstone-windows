@@ -53,6 +53,9 @@ impl ClientJournal {
 }
 
 impl Journal for ClientJournal {
+    type Upload = Upload;
+    type Reply = Delivery;
+
     fn capability(&self) -> BoxFuture<'_, Capability> {
         Box::pin(async move {
             let Some(client) = (self.load_client)().await else {
@@ -77,6 +80,15 @@ impl Journal for ClientJournal {
             let Some(client) = (self.load_client)().await else {
                 return Delivery::NoAnswer;
             };
+            if !self
+                .asked
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .is_some_and(|asked| Arc::ptr_eq(asked, &client))
+            {
+                return Delivery::NoAnswer;
+            }
             let reply = upload_screenshot(
                 &client,
                 ScreenshotFile {

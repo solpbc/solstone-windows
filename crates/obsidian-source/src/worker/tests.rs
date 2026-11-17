@@ -53,7 +53,10 @@ impl FakeJournal {
     }
 }
 
-impl Journal for Arc<FakeJournal> {
+impl FolderJournal for FakeJournal {
+    type Upload = Delivery;
+    type Reply = DeliveryResult;
+
     fn capability(&self) -> BoxFuture<'_, Capability> {
         Box::pin(async move {
             *self.capability_calls.lock().unwrap() += 1;
@@ -65,15 +68,6 @@ impl Journal for Arc<FakeJournal> {
                 .lock()
                 .unwrap()
                 .unwrap_or(Capability::Supported)
-        })
-    }
-    fn vault_list(&self) -> BoxFuture<'_, VaultList> {
-        Box::pin(async move {
-            self.vaults
-                .lock()
-                .unwrap()
-                .take()
-                .unwrap_or(VaultList::Listed(Vec::new()))
         })
     }
     fn deliver<'a>(&'a self, delivery: &'a Delivery) -> BoxFuture<'a, DeliveryResult> {
@@ -97,6 +91,18 @@ impl Journal for Arc<FakeJournal> {
     }
     fn pairing_unchanged(&self) -> BoxFuture<'_, bool> {
         Box::pin(async move { !self.pairing_changed.swap(false, Ordering::AcqRel) })
+    }
+}
+
+impl Journal for Arc<FakeJournal> {
+    fn vault_list(&self) -> BoxFuture<'_, VaultList> {
+        Box::pin(async move {
+            self.vaults
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap_or(VaultList::Listed(Vec::new()))
+        })
     }
 }
 
@@ -168,7 +174,7 @@ async fn turn_on(f: &mut Fixture) -> ObsidianDocument {
 
 async fn steps_until_quiet(f: &mut Fixture) {
     for _ in 0..50 {
-        f.worker.next_scan = Instant::now() + Duration::from_secs(3600);
+        f.worker.next_scan.defer(Duration::from_secs(3600));
         if !f.worker.step().await {
             return;
         }
@@ -228,9 +234,9 @@ async fn a_journal_without_the_capability_holds_and_delivers_later() {
 
     // The journal is updated: only now does the vault check happen, then the send.
     *f.journal.current_capability.lock().unwrap() = Some(Capability::Supported);
-    f.worker.capability_checked = None;
+    f.worker.capability.clear();
     f.worker.step().await;
-    f.worker.next_scan = Instant::now();
+    f.worker.next_scan.defer(Duration::ZERO);
     f.worker.step().await;
     assert_eq!(f.journal.delivered_count(), 1, "delivered now");
     assert_eq!(state(&f).status.state, State::On);
@@ -252,7 +258,7 @@ async fn the_vault_check_waits_for_a_journal_that_takes_notes() {
     );
 
     *f.journal.current_capability.lock().unwrap() = Some(Capability::Supported);
-    f.worker.capability_checked = None;
+    f.worker.capability.clear();
     f.worker.step().await;
     assert_eq!(state(&f).status.state, State::Confirm);
     assert_eq!(f.journal.delivered_count(), 0);
@@ -274,10 +280,10 @@ async fn a_file_gone_from_the_outbox_is_sent_again_from_the_vault() {
     assert_eq!(doc.status.waiting, 0, "the entry was dropped");
 
     // The next scan reports the note again, and it goes through.
-    f.worker.next_scan = Instant::now();
+    f.worker.next_scan.defer(Duration::ZERO);
     f.clock.fetch_add(11 * 60_000, Ordering::SeqCst);
     f.worker.step().await;
-    f.worker.next_scan = Instant::now() + Duration::from_secs(3600);
+    f.worker.next_scan.defer(Duration::from_secs(3600));
     f.clock.fetch_add(11 * 60_000, Ordering::SeqCst);
     f.worker.step().await;
     assert_eq!(f.journal.delivered_count(), 2, "sent again");
@@ -290,7 +296,7 @@ async fn pause_holds_windows_and_delivery_and_resume_delivers() {
     write_note(&f.vault, "a.md", "alpha", T0 - 3_600_000);
     f.paused.store(true, Ordering::SeqCst);
     turn_on(&mut f).await;
-    f.worker.next_scan = Instant::now() + Duration::from_secs(3600);
+    f.worker.next_scan.defer(Duration::from_secs(3600));
     f.worker.step().await;
     assert_eq!(f.journal.delivered_count(), 0);
     let doc = state(&f);
@@ -298,7 +304,7 @@ async fn pause_holds_windows_and_delivery_and_resume_delivers() {
     assert_eq!(doc.status.waiting, 1, "scanned but held");
 
     f.paused.store(false, Ordering::SeqCst);
-    f.worker.next_scan = Instant::now() + Duration::from_secs(3600);
+    f.worker.next_scan.defer(Duration::from_secs(3600));
     f.worker.step().await;
     assert_eq!(f.journal.delivered_count(), 1);
     assert_eq!(state(&f).status.state, State::On);
@@ -333,7 +339,7 @@ async fn a_vault_listed_by_the_journal_sends_nothing_until_the_owner_continues()
     let (reply, _answer) = oneshot::channel();
     f.worker.handle(Command::Continue(reply)).await;
     f.worker.step().await;
-    f.worker.next_scan = Instant::now() + Duration::from_secs(3600);
+    f.worker.next_scan.defer(Duration::from_secs(3600));
     f.worker.step().await;
     assert_eq!(f.journal.delivered_count(), 1);
     assert_eq!(state(&f).status.state, State::On);
@@ -363,7 +369,7 @@ async fn an_older_journal_without_the_route_is_an_empty_list() {
     write_note(&f.vault, "a.md", "alpha", T0 - 3_600_000);
     *f.journal.vaults.lock().unwrap() = Some(VaultList::Listed(Vec::new()));
     turn_on(&mut f).await;
-    f.worker.next_scan = Instant::now() + Duration::from_secs(3600);
+    f.worker.next_scan.defer(Duration::from_secs(3600));
     f.worker.step().await;
     assert_eq!(state(&f).status.state, State::On);
     assert_eq!(f.journal.delivered_count(), 1);
@@ -379,7 +385,7 @@ async fn a_new_pairing_re_asks_the_journal_before_sending() {
     let asks = *f.journal.capability_calls.lock().unwrap();
 
     write_note(&f.vault, "b.md", "bbb", T0 - 3_600_000);
-    f.worker.next_scan = Instant::now();
+    f.worker.next_scan.defer(Duration::ZERO);
     f.journal.pairing_changed.store(true, Ordering::Release);
     *f.journal.current_capability.lock().unwrap() = Some(Capability::NotListed);
     f.worker.step().await;
@@ -452,7 +458,7 @@ async fn the_answers_table_is_honoured_end_to_end() {
     assert_eq!(state(&f).status.waiting, 2);
     f.clock.fetch_add(6 * 60_000, Ordering::SeqCst);
     for _ in 0..3 {
-        f.worker.next_scan = Instant::now() + Duration::from_secs(3600);
+        f.worker.next_scan.defer(Duration::from_secs(3600));
         f.worker.step().await;
     }
     let names: Vec<String> = f
@@ -476,7 +482,7 @@ async fn held_files_carry_no_journal_identity_and_go_to_the_journal_paired_now()
     f.paused.store(true, Ordering::SeqCst);
     write_note(&f.vault, "a.md", "held while paused", T0 - 3_600_000);
     turn_on(&mut f).await;
-    f.worker.next_scan = Instant::now() + Duration::from_secs(3600);
+    f.worker.next_scan.defer(Duration::from_secs(3600));
     f.worker.step().await;
     assert!(
         !state_dir_holds(f.temp.path(), JOURNAL_MARKER),
@@ -487,7 +493,7 @@ async fn held_files_carry_no_journal_identity_and_go_to_the_journal_paired_now()
     *f.journal.name.lock().unwrap() = "the journal paired now".to_owned();
     f.journal.pairing_changed.store(true, Ordering::Release);
     f.paused.store(false, Ordering::SeqCst);
-    f.worker.next_scan = Instant::now() + Duration::from_secs(3600);
+    f.worker.next_scan.defer(Duration::from_secs(3600));
     f.worker.step().await;
     let delivered = f.journal.delivered.lock().unwrap().clone();
     assert_eq!(delivered.len(), 1);
@@ -501,7 +507,7 @@ async fn turning_it_off_keeps_what_is_waiting_for_later() {
     f.paused.store(true, Ordering::SeqCst);
     write_note(&f.vault, "a.md", "kept", T0 - 3_600_000);
     turn_on(&mut f).await;
-    f.worker.next_scan = Instant::now() + Duration::from_secs(3600);
+    f.worker.next_scan.defer(Duration::from_secs(3600));
     f.worker.step().await;
     assert_eq!(state(&f).status.waiting, 1);
 
@@ -512,7 +518,7 @@ async fn turning_it_off_keeps_what_is_waiting_for_later() {
 
     f.paused.store(false, Ordering::SeqCst);
     turn_on(&mut f).await;
-    f.worker.next_scan = Instant::now() + Duration::from_secs(3600);
+    f.worker.next_scan.defer(Duration::from_secs(3600));
     f.worker.step().await;
     assert_eq!(f.journal.delivered_count(), 1, "the waiting file went");
 }
@@ -533,7 +539,7 @@ async fn turning_off_does_not_wait_on_an_upload() {
     assert_eq!(state(&f).status.waiting, 1, "and the file is still held");
 
     // Cancelled before an upload starts, nothing is attempted.
-    f.worker.next_scan = Instant::now() + Duration::from_secs(3600);
+    f.worker.next_scan.defer(Duration::from_secs(3600));
     f.worker.step().await;
     assert_eq!(f.journal.delivered_count(), 1);
 }
@@ -622,7 +628,7 @@ async fn a_changed_pairing_alone_sends_nothing_again() {
     // A reconnect or a relaunch: asked again, but no restart.
     f.journal.pairing_changed.store(true, Ordering::Release);
     f.worker.restart_if_asked().await;
-    f.worker.next_scan = Instant::now();
+    f.worker.next_scan.defer(Duration::ZERO);
     f.worker.step().await;
     steps_until_quiet(&mut f).await;
     assert_eq!(f.journal.delivered_count(), 1);

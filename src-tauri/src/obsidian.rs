@@ -16,8 +16,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use observer_model::{LocalOffset, LocalZone, PauseReason};
 use obsidian_source::{
-    Answer, BoxFuture, Capability, Delivery, DeliveryResult, FoundVault, Journal, ListedVault,
-    ObsidianDocument, ObsidianHandle, VaultList, CAPABILITY, SOURCE,
+    Answer, BoxFuture, Capability, Delivery, DeliveryResult, FolderJournal, FoundVault, Journal,
+    ListedVault, ObsidianDocument, ObsidianHandle, VaultList, CAPABILITY, SOURCE,
 };
 use pl_transport_win::source_upload::{upload_source_file_for_reply, SourceFile, SourceFileReply};
 use pl_transport_win::{ObserverClient, TransportError};
@@ -54,7 +54,10 @@ impl ClientJournal {
     }
 }
 
-impl Journal for ClientJournal {
+impl FolderJournal for ClientJournal {
+    type Upload = Delivery;
+    type Reply = DeliveryResult;
+
     fn capability(&self) -> BoxFuture<'_, Capability> {
         Box::pin(async move {
             let Some(client) = (self.load_client)().await else {
@@ -74,26 +77,20 @@ impl Journal for ClientJournal {
         })
     }
 
-    fn vault_list(&self) -> BoxFuture<'_, VaultList> {
-        Box::pin(async move {
-            let Some(client) = (self.load_client)().await else {
-                return VaultList::Unavailable;
-            };
-            match client.obsidian_vaults().await {
-                Ok(response) if response.status == 200 => parse_vault_list(&response.body)
-                    .map_or(VaultList::Unavailable, VaultList::Listed),
-                // An older journal without the route: no vault is known from elsewhere.
-                Ok(response) if response.status == 404 => VaultList::Listed(Vec::new()),
-                _ => VaultList::Unavailable,
-            }
-        })
-    }
-
     fn deliver<'a>(&'a self, delivery: &'a Delivery) -> BoxFuture<'a, DeliveryResult> {
         Box::pin(async move {
             let Some(client) = (self.load_client)().await else {
                 return DeliveryResult::NoAnswer;
             };
+            if !self
+                .asked
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .is_some_and(|asked| Arc::ptr_eq(asked, &client))
+            {
+                return DeliveryResult::NoAnswer;
+            }
             let Some(zone) = (self.load_zone)() else {
                 return DeliveryResult::NoAnswer;
             };
@@ -132,6 +129,23 @@ impl Journal for ClientJournal {
                 (Some(asked), Some(current)) => Arc::ptr_eq(&asked, &current),
                 (None, None) => true,
                 _ => false,
+            }
+        })
+    }
+}
+
+impl Journal for ClientJournal {
+    fn vault_list(&self) -> BoxFuture<'_, VaultList> {
+        Box::pin(async move {
+            let Some(client) = (self.load_client)().await else {
+                return VaultList::Unavailable;
+            };
+            match client.obsidian_vaults().await {
+                Ok(response) if response.status == 200 => parse_vault_list(&response.body)
+                    .map_or(VaultList::Unavailable, VaultList::Listed),
+                // An older journal without the route: no vault is known from elsewhere.
+                Ok(response) if response.status == 404 => VaultList::Listed(Vec::new()),
+                _ => VaultList::Unavailable,
             }
         })
     }
@@ -488,6 +502,7 @@ mod tests {
         }
     }
 
+    const CAPABILITY_BODY: &str = r#"{"capabilities":["obsidian_notes"]}"#;
     const OK_BODY: &str = r#"{"status":"ok","segment":"094000_300","files":["note_transcript.md"],"bytes":60,"file_descriptors":[{"submitted":"note_transcript.md","written":"note_transcript.md","size":60,"sha256":"0000000000000000000000000000000000000000000000000000000000000000","disposition":"written"}],"meta":{}}"#;
     const DUPLICATE_BODY: &str = r#"{"status":"duplicate","existing_segment":"094000_300","message":"Nothing new in this file","file_descriptors":[],"meta":{}}"#;
 
@@ -526,12 +541,15 @@ mod tests {
             ),
             (503, "busy".into(), Answer::Retry),
         ];
-        let answers = cases
-            .iter()
-            .map(|(status, body, _)| (*status, body.clone()))
-            .collect();
+        let mut answers = vec![(200, CAPABILITY_BODY.into())];
+        answers.extend(
+            cases
+                .iter()
+                .map(|(status, body, _)| (*status, body.clone())),
+        );
         let (client, requests) = start_journal(answers).await;
         let journal = journal_for(client);
+        assert_eq!(journal.capability().await, Capability::Supported);
         for (index, (_, _, expected)) in cases.iter().enumerate() {
             assert_eq!(
                 journal.deliver(&delivery).await,
@@ -542,7 +560,7 @@ mod tests {
         }
         // The envelope carries the source and the window; the part is named by its hash.
         let requests = requests.lock().unwrap();
-        let body = String::from_utf8_lossy(&requests[0]);
+        let body = String::from_utf8_lossy(&requests[1]);
         assert!(body.contains(r#""source":"obsidian""#), "{body}");
         assert!(body.contains(r#""day":"20261108""#), "{body}");
         assert!(body.contains(r#""segment":"094000_300""#), "{body}");
@@ -554,30 +572,37 @@ mod tests {
 
     #[tokio::test]
     async fn a_delivery_the_journal_answers_counts_as_reaching_it() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::atomic::Ordering;
         let dir = tempfile::tempdir().unwrap();
         let delivery = delivery_file(dir.path());
 
-        let (client, _requests) = start_journal(vec![(200, OK_BODY.into())]).await;
+        let (client, _requests) =
+            start_journal(vec![(200, CAPABILITY_BODY.into()), (200, OK_BODY.into())]).await;
         let (journal, heard) = journal_counting_answers(client);
+        assert_eq!(journal.capability().await, Capability::Supported);
         assert_eq!(
             journal.deliver(&delivery).await,
             DeliveryResult::Answer(Answer::Delivered)
         );
-        assert_eq!(heard.load(Ordering::SeqCst), 1, "answered: reached");
-
-        // Nothing listening: not reached.
-        let (cert, _) = self_signed();
-        let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
-        let unreachable = Arc::new(
-            ObserverClient::new(credential(pin, 1), Arc::new(AtomicBool::new(true))).unwrap(),
+        assert_eq!(
+            heard.load(Ordering::SeqCst),
+            2,
+            "capability and delivery both answered"
         );
-        let (journal, heard) = journal_counting_answers(unreachable);
+
+        // The journal answers the capability check and closes its listener.
+        let (client, _requests) = start_journal(vec![(200, CAPABILITY_BODY.into())]).await;
+        let (journal, heard) = journal_counting_answers(client);
+        assert_eq!(journal.capability().await, Capability::Supported);
         assert_eq!(
             journal.deliver(&delivery).await,
             DeliveryResult::Answer(Answer::Retry)
         );
-        assert_eq!(heard.load(Ordering::SeqCst), 0, "no answer: not reached");
+        assert_eq!(
+            heard.load(Ordering::SeqCst),
+            1,
+            "only the capability check answered"
+        );
     }
 
     #[tokio::test]
@@ -633,29 +658,27 @@ mod tests {
             )
             .unwrap(),
         );
-        assert_eq!(
-            journal_for(client).deliver(&delivery).await,
-            DeliveryResult::NoAnswer
-        );
+        let journal = journal_for(client);
+        assert_eq!(journal.capability().await, Capability::Unknown);
+        assert_eq!(journal.deliver(&delivery).await, DeliveryResult::NoAnswer);
     }
 
     #[tokio::test]
     async fn a_file_gone_from_disk_is_its_own_outcome() {
         let dir = tempfile::tempdir().unwrap();
         let delivery = delivery_file(dir.path());
+        let (client, requests) = start_journal(vec![(200, CAPABILITY_BODY.into())]).await;
+        let journal = journal_for(client);
+        assert_eq!(journal.capability().await, Capability::Supported);
         std::fs::remove_file(&delivery.path).unwrap();
-        let (cert, _) = self_signed();
-        let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
-        let client = Arc::new(
-            ObserverClient::new(
-                credential(pin, 1),
-                Arc::new(std::sync::atomic::AtomicBool::new(true)),
-            )
-            .unwrap(),
+        assert_eq!(
+            journal.deliver(&delivery).await,
+            DeliveryResult::FileMissing
         );
         assert_eq!(
-            journal_for(client).deliver(&delivery).await,
-            DeliveryResult::FileMissing
+            requests.lock().unwrap().len(),
+            1,
+            "only the capability check"
         );
     }
 }

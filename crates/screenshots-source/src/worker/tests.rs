@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::sync::oneshot;
 
@@ -220,7 +220,10 @@ impl FakeJournal {
     }
 }
 
-impl Journal for Arc<FakeJournal> {
+impl Journal for FakeJournal {
+    type Upload = Upload;
+    type Reply = Delivery;
+
     fn capability(&self) -> BoxFuture<'_, Capability> {
         Box::pin(async move {
             self.capability_calls.fetch_add(1, Ordering::SeqCst);
@@ -327,7 +330,7 @@ async fn confirm(f: &mut Fixture, span: Span) -> Status {
 
 /// Look at the folder now and send until nothing more goes.
 async fn look(f: &mut Fixture) {
-    f.worker.next_scan = Instant::now();
+    f.worker.next_scan.defer(Duration::ZERO);
     for _ in 0..50 {
         if !f.worker.step().await {
             break;
@@ -416,6 +419,23 @@ async fn a_count_that_failed_waits_to_be_set_up() {
     let s = call(&mut f, Command::TryAgain).await;
     assert!(!s.count_failed);
     assert!(s.counts.is_some());
+}
+
+#[tokio::test]
+async fn an_unreadable_listing_holds_backfill_until_the_folder_returns() {
+    let mut f = fixture();
+    shot(&f, "waiting.png", DAY);
+    turn_on(&mut f).await;
+    confirm(&mut f, Span::ThirtyDays).await;
+    *f.fs.list_error.lock().unwrap() = Some(ListError::Unreadable);
+
+    look(&mut f).await;
+    assert_eq!(f.journal.count(), 0);
+    assert_eq!(status(&f).waiting, 1);
+
+    *f.fs.list_error.lock().unwrap() = None;
+    look(&mut f).await;
+    assert_eq!(f.journal.count(), 1);
 }
 
 #[tokio::test]
@@ -871,7 +891,7 @@ async fn at_most_eight_go_in_one_look() {
     }
     turn_on(&mut f).await;
     confirm(&mut f, Span::ThirtyDays).await;
-    f.worker.next_scan = Instant::now();
+    f.worker.next_scan.defer(Duration::ZERO);
     assert!(f.worker.step().await, "a full look asks for another");
     assert_eq!(f.journal.count(), SENDS_PER_LOOK);
     assert!(!f.worker.step().await);
@@ -893,7 +913,7 @@ async fn an_older_journal_holds_the_shots() {
     assert_eq!(s.state, ScreenshotsState::BringingIn, "on, not a fault");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_journal_that_updates_is_asked_again() {
     let mut f = fixture();
     shot(&f, "a.png", DAY);
@@ -905,7 +925,7 @@ async fn a_journal_that_updates_is_asked_again() {
     *f.journal.capability.lock().unwrap() = Capability::Supported;
     look(&mut f).await;
     assert_eq!(f.journal.count(), 0, "not before the minute is up");
-    f.worker.capability_checked = Some(Instant::now() - CAPABILITY_RETRY - Duration::from_secs(1));
+    tokio::time::advance(CAPABILITY_RETRY + Duration::from_secs(1)).await;
     look(&mut f).await;
     assert!(f.journal.capability_calls.load(Ordering::SeqCst) > asked);
     assert_eq!(f.journal.count(), 1);
@@ -924,7 +944,7 @@ async fn a_new_screenshot_that_waits_across_ticks_does_not_trap() {
     }
     assert_eq!(status(&f).waiting, 1, "still waiting, still there");
     *f.journal.capability.lock().unwrap() = Capability::Supported;
-    f.worker.capability_checked = None;
+    f.worker.capability.clear();
     look(&mut f).await;
     assert_eq!(f.journal.count(), 1);
 }
@@ -1081,7 +1101,7 @@ async fn a_new_pairing_during_a_send_leaves_no_outcome_and_does_not_trap() {
     turn_on(&mut f).await;
     confirm(&mut f, Span::ThirtyDays).await;
     *f.journal.during_send.lock().unwrap() = Some(f.handle.clone());
-    f.worker.next_scan = Instant::now();
+    f.worker.next_scan.defer(Duration::ZERO);
     f.worker.step().await;
     assert_eq!(f.journal.count(), 1, "the look stopped at the new pairing");
     assert!(

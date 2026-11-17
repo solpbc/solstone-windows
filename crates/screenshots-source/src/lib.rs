@@ -21,11 +21,12 @@ pub mod rules;
 mod worker;
 
 pub use engine::{
-    prepare, sha256_hex, Backlog, ConvertError, Engine, ListError, Listed, Pause, Platform,
-    Prepared, SendJob, Sent, Status, Upload,
+    prepare, Backlog, ConvertError, Engine, ListError, Listed, Pause, Platform, Prepared, SendJob,
+    Sent, Status, Upload,
 };
 pub use observer_model::ScreenshotsState;
 pub use rules::{Answer, Span, TakenFrom};
+pub use solstone_folder_sync::files::sha256_hex;
 pub use worker::{
     BoxFuture, Capability, Delivery, Journal, Paused, ScreenshotsDocument, ScreenshotsHandle,
     CAPABILITY, CAPABILITY_RETRY, SENDS_PER_LOOK, SOURCE,
@@ -41,7 +42,7 @@ use worker::Worker;
 /// which the caller runs on its async runtime. The ledger is read with the
 /// source's own work, never in the way of the app starting. A failure to open
 /// leaves the rest of the app running, with this source unavailable.
-pub fn start<J: Journal>(
+pub fn start<J: Journal<Upload = Upload, Reply = Delivery>>(
     dir: PathBuf,
     platform: Arc<dyn Platform>,
     journal: J,

@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use observer_model::ScreenshotsState;
 use serde::Serialize;
-use sha2::{Digest, Sha256};
+use solstone_folder_sync::files::{settled, sha256_hex};
 
 use crate::ledger::{Item, Ledger, Outcome, PauseWindow, Shot, FILE_NAME};
 use crate::rules::{
@@ -68,6 +68,9 @@ pub trait Platform: Send + Sync + 'static {
     /// The folder's top level.
     fn list(&self, dir: &Path) -> Result<Vec<Listed>, ListError>;
     fn read(&self, path: &Path) -> io::Result<Vec<u8>>;
+    fn read_for_scan(&self, path: &Path) -> io::Result<Vec<u8>> {
+        self.read(path)
+    }
     /// Convert an image to PNG, keeping its colour profile and what metadata
     /// the converter can carry.
     fn to_png(&self, bytes: &[u8]) -> Result<Vec<u8>, ConvertError>;
@@ -225,17 +228,6 @@ pub fn prepare(platform: &dyn Platform, job: &SendJob) -> Prepared {
     })
 }
 
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(64);
-    for byte in digest {
-        out.push(HEX[usize::from(byte >> 4)] as char);
-        out.push(HEX[usize::from(byte & 0xf)] as char);
-    }
-    out
-}
-
 pub struct Engine {
     dir: PathBuf,
     platform: Arc<dyn Platform>,
@@ -243,6 +235,7 @@ pub struct Engine {
     cache: HashMap<CacheKey, Read>,
     count: Count,
     missing: bool,
+    listing_incomplete: bool,
     generation: Arc<AtomicU64>,
     counters: Option<source_counters::SharedCounters>,
 }
@@ -275,6 +268,7 @@ impl Engine {
             cache: HashMap::new(),
             count: Count::Unknown,
             missing: false,
+            listing_incomplete: false,
             generation: Arc::new(AtomicU64::new(0)),
             counters,
         })
@@ -543,7 +537,9 @@ impl Engine {
         // The look's time is shown, not kept: the ledger is written only when
         // a look changed what it holds.
         let before = self.ledger.clone();
-        let listing = match self.platform.list(&dir) {
+        let listing = self.platform.list(&dir);
+        self.listing_incomplete = matches!(&listing, Err(ListError::Unreadable));
+        let listing = match listing {
             Ok(listing) => {
                 self.missing = false;
                 if !self.ledger.folder_seen {
@@ -602,7 +598,7 @@ impl Engine {
         if !entry.regular || entry.hidden || entry.system || is_scratch_name(&entry.name) {
             return None;
         }
-        if now_ms - entry.modified_ms < STABLE_MS {
+        if !settled(now_ms, entry.modified_ms, STABLE_MS) {
             return None;
         }
         let path = entry.path.to_str()?.to_owned();
@@ -665,7 +661,7 @@ impl Engine {
         if let Some(read) = self.cache.get(&key) {
             return Some(read.clone());
         }
-        let bytes = self.platform.read(&entry.path).ok()?;
+        let bytes = self.platform.read_for_scan(&entry.path).ok()?;
         let read = Read {
             hash: sha256_hex(&bytes),
             pixels: (kind == ImageKind::Accepted)
@@ -763,7 +759,8 @@ impl Engine {
 
     /// The next screenshot to send, in the order they were taken in.
     pub fn next_send(&self) -> Option<SendJob> {
-        if !self.ledger.enabled || !self.ledger.confirmed || self.missing {
+        if !self.ledger.enabled || !self.ledger.confirmed || self.missing || self.listing_incomplete
+        {
             return None;
         }
         self.ledger

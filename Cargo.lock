@@ -3400,6 +3400,7 @@ version = "2.0.51"
 dependencies = [
  "serde",
  "serde_json",
+ "solstone-folder-sync",
  "solstone-vault",
  "source-counters",
  "tempfile",
@@ -3697,6 +3698,7 @@ dependencies = [
  "observer-segment",
  "screenshots-source",
  "serde_json",
+ "solstone-folder-sync",
  "solstone-vault",
  "source-counters",
  "tempfile",
@@ -4397,7 +4399,7 @@ dependencies = [
  "observer-model",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "solstone-folder-sync",
  "source-counters",
  "tempfile",
  "tokio",
@@ -4774,6 +4776,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "solstone-folder-sync"
+version = "0.1.0"
+dependencies = [
+ "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
 name = "solstone-vault"
 version = "0.1.0"
 dependencies = [
@@ -4781,7 +4791,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "solstone-folder-sync",
 ]
 
 [[package]]
