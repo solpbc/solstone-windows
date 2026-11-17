@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.50
+PackageVersion: 2.0.51
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -22,10 +22,11 @@ Tags:
   - self-determination
   - solstone
 ReleaseNotes: |-
-  Changed
-  - if this PC's language isn't English, the right-click menu in the app's text boxes is now in English too, like the rest of the app.
+  Added
+  - the tray menu now has an update line: "update ready · installs when you quit and reopen" once an update is downloaded, "update available" before that, or "update check failed". each opens the updates page. with nothing to report, the menu has "check for updates…".
+  - while an update line shows, the tray icon has an orange dot.
   Fixed
-  - if your journal stops accepting this PC while a file is importing, the app now always notices and stops, and your files wait on this PC. before, it could miss it and keep trying.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.50
+  - while the sidebar is tucked away in a narrow window, its button shows a dot when something in it needs attention.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.51
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0
