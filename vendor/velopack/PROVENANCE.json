@@ -4,7 +4,7 @@
   "archive_url": "https://static.crates.io/crates/velopack/velopack-1.2.0.crate",
   "archive_sha256": "bd3fd8e7b771e0d0fc4ca67249273ad4eacfabe2562617b3ca42065a5972a58c",
   "changes": {
-    "Cargo.toml": "Pin zip9.0.3 with the existing default-features=false and deflate feature.",
+    "Cargo.toml": "Pin zip9.0.5 with the existing default-features=false and deflate feature.",
     "src/bundle.rs": "Backport the three fallible ZipFile::name API adaptations from upstream1.3.39-g8d2844f, commit8d2844f.",
     "LICENSE": "Existing upstream MIT license text reproduced from the dependency-notices override.",
     "src/manager.rs": "Call source admission for cached and newly renamed packages and retain its read handle through helper extraction. Skip cached delta discovery when deltas are disabled and expose the selected package cache directory.",

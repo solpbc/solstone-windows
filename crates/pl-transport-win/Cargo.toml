@@ -45,7 +45,7 @@ windows = { version = "0.58", features = ["Win32_Security", "Win32_Security_Cryp
 
 [dev-dependencies]
 tempfile = "3"
-zip = { version = "=9.0.3", default-features = false, features = ["deflate"] }
+zip = { version = "=9.0.5", default-features = false, features = ["deflate"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "test-util"] }
 rcgen = { workspace = true, features = ["x509-parser"] }
 observer-segment.workspace = true

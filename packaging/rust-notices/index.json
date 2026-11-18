@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "3e91dcbd425557c89ce12f55a7db9a921b15f9a59567eec674148bed9d1ac729",
+  "cargo_lock_sha256": "cc7de20acf61d8004681682369c66208c3ef6a2353ee05097545770965e7a081",
   "notice_texts": [
     {
       "byte_end_exclusive": 1418,
@@ -10643,7 +10643,7 @@
       "version": "0.11.6"
     },
     {
-      "identity": "zip@9.0.3 (registry+https://github.com/rust-lang/crates.io-index)",
+      "identity": "zip@9.0.5 (registry+https://github.com/rust-lang/crates.io-index)",
       "license_expression": "MIT",
       "name": "zip",
       "notice_references": [
@@ -10655,7 +10655,7 @@
         }
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "9.0.3"
+      "version": "9.0.5"
     },
     {
       "identity": "zlib-rs@0.6.3 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -10708,7 +10708,7 @@
     "filter_platform": "x86_64-pc-windows-msvc",
     "notice_text_count": 297,
     "query": "cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc; follow non-dev edges from solstone-windows-app",
-    "query_utc": "2026-11-18T02:07:07.520166+00:00",
+    "query_utc": "2026-11-18T06:51:38.696402+00:00",
     "root_package": "solstone-windows-app",
     "source": "non-dev dependency closure; conservative inclusion, not exact PE link graph",
     "workspace_package_count": 29
