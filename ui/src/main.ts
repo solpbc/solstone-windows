@@ -1365,7 +1365,11 @@ a:focus-visible,
 	}
 
 	.settings-status-button {
-	  width: 100%;
+	  /* Pull the button's own padding and border outside the strip, so its label
+	     lines up with the plain rows above and below it. */
+	  width: calc(100% + 14px);
+	  margin-inline: -7px;
+	  padding-inline: 6px;
 	  border: 1px solid transparent;
 	  border-radius: var(--radius-control);
 	  background: transparent;
@@ -1570,7 +1574,6 @@ function section(title: string): HTMLElement {
   heading.style.margin = "0 0 12px";
   heading.style.fontSize = "13px";
   heading.style.fontWeight = "700";
-  heading.style.textTransform = "uppercase";
   heading.style.letterSpacing = "0";
   heading.style.color = "var(--fg-subtle)";
   node.append(heading);
@@ -3140,10 +3143,11 @@ function resetRoot(rootId: string): void {
 // Pause detail for the status line: "paused — 14 min left" while a bounded pause
 // counts down, plain "paused" otherwise (indefinite, or no detail yet).
 function pauseRemainingLabel(secs: number): string {
-  const mins = Math.floor(secs / 60);
-  if (mins <= 0) {
+  // Rounds a part minute up, like the header's "paused, N min left" beside it.
+  if (secs < 60) {
     return t("windows.ui.lessthanaminuteleft");
   }
+  const mins = Math.ceil(secs / 60);
   if (mins < 60) {
     return t("windows.ui.arg0minleft", { "arg0": String(mins) });
   }

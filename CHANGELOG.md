@@ -4,6 +4,14 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- when you pause, the tray icon's hover text now shows the same minutes left as the tray menu and the settings window.
+- section titles on the "your journal", "this PC" and "updates" pages are now lowercase, like the rest of the app.
+- on the "technical details" page, every row now lines up.
+
 ## [2.0.52] - 2026-11-18
 
 ### Changed

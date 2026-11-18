@@ -439,12 +439,14 @@ fn classify_phase(
 }
 
 /// Human countdown for the tray tooltip: "14 min", "1 hr 2 min", "less than a
-/// minute". Whole-minute granularity matches the tooltip's once-a-second refresh.
+/// minute". It rounds a part minute up, the same as the menu's status line, so
+/// the tooltip and the menu read the same number at the same moment.
 fn format_remaining(secs: u64) -> String {
-    let mins = secs / 60;
-    if mins == 0 {
-        message("windows.tray.lessthanaminute", &[])
-    } else if mins < 60 {
+    if secs < 60 {
+        return message("windows.tray.lessthanaminute", &[]);
+    }
+    let mins = secs.div_ceil(60);
+    if mins < 60 {
         message(
             "windows.ui.arg0min",
             &[("arg0", Value::String(&(mins).to_string()))],
@@ -701,9 +703,19 @@ mod tests {
         assert_eq!(format_remaining(0), "less than a minute");
         assert_eq!(format_remaining(59), "less than a minute");
         assert_eq!(format_remaining(60), "1 min");
-        assert_eq!(format_remaining(14 * 60 + 30), "14 min");
+        assert_eq!(format_remaining(14 * 60 + 30), "15 min");
         assert_eq!(format_remaining(60 * 60), "1 hr");
         assert_eq!(format_remaining(62 * 60), "1 hr 2 min");
+    }
+
+    #[test]
+    fn tooltip_and_menu_read_the_same_minutes() {
+        for secs in [60, 61, 14 * 60 + 1, 14 * 60 + 30, 15 * 60, 58 * 60 + 1] {
+            let PausedMenuStatus::Minutes(menu) = paused_menu_status(Some(secs)) else {
+                panic!("{secs}s should read in minutes");
+            };
+            assert_eq!(format_remaining(secs), format!("{menu} min"), "{secs}s");
+        }
     }
 
     fn sample_mark() -> crate::MarkRenderSpec {
