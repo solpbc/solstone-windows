@@ -13,7 +13,8 @@ mod worker;
 pub use solstone_folder_sync::worker::Journal as FolderJournal;
 pub use solstone_vault::platform::DirFileIds as ReadDirFileIds;
 pub use solstone_vault::{
-    Answer, Attention, Delivery, FoundVault, ListedVault, Phase, Refusal, State, Status, Window,
+    Answer, Attention, Clock, Delivery, FoundVault, ListedVault, Phase, Refusal, State, Status,
+    Window,
 };
 pub use worker::{
     decode_document, BoxFuture, Capability, DeliveryResult, Journal, ObsidianDocument,
@@ -25,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use solstone_vault::platform::DirFileIds;
-use solstone_vault::{Engine, SystemClock};
+use solstone_vault::Engine;
 use worker::Worker;
 
 /// Where Obsidian keeps its list of vaults, given `%APPDATA%`.
@@ -42,9 +43,11 @@ pub fn found_vaults(app_data: &Path) -> Vec<FoundVault> {
 /// which the caller runs on its async runtime. The first read of what's held can
 /// be long, so it happens with the source's own work, never in the way of the app
 /// starting. A failure to open leaves the rest of the app running, with this
-/// source unavailable.
+/// source unavailable. `clock` is the device's clock: the time now, and the
+/// local offset at an instant.
 pub fn start<J: Journal>(
     root: PathBuf,
+    clock: Arc<dyn Clock>,
     dir_file_ids: Option<Arc<DirFileIds>>,
     journal: J,
     paused: Paused,
@@ -52,7 +55,7 @@ pub fn start<J: Journal>(
 ) -> (ObsidianHandle, impl Future<Output = ()> + Send + 'static) {
     let (handle, worker) = Worker::new(None, journal, paused);
     (handle, async move {
-        open_and_run(root, dir_file_ids, counters, worker).await
+        open_and_run(root, clock, dir_file_ids, counters, worker).await
     })
 }
 
@@ -71,12 +74,13 @@ fn note_intake(intake: &solstone_vault::Intake) -> source_counters::NoteIntake {
 
 async fn open_and_run<J: Journal>(
     root: PathBuf,
+    clock: Arc<dyn Clock>,
     dir_file_ids: Option<Arc<DirFileIds>>,
     counters: Option<source_counters::SharedCounters>,
     mut worker: Worker<J>,
 ) {
     let opened = tokio::task::spawn_blocking(move || {
-        let mut engine = Engine::open(root, Arc::new(SystemClock))?;
+        let mut engine = Engine::open(root, clock)?;
         if let Some(read) = dir_file_ids {
             engine = engine.with_dir_file_ids(read);
         }

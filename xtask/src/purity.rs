@@ -71,8 +71,8 @@ pub const WINDOWS_ALLOWED_MEMBERS: &[&str] = &[
     "capture-wasapi",
     "capture-wgc",
     // Pure logic with no Windows API of its own; reaches `windows-link` only
-    // through chrono's clock support in the shared vault engine. Reviewed as
-    // Windows-capable for that edge alone.
+    // through jiff's system time zone lookup in the shared vault engine.
+    // Reviewed as Windows-capable for that edge alone.
     "obsidian-source",
     "pl-transport-win",
     "platform-win",

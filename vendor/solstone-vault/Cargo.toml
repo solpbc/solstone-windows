@@ -7,7 +7,7 @@ rust-version = "1.97.1"
 publish = false
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+jiff = { version = "1.0.0", features = ["tzdb-bundle-always"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 solstone-folder-sync = { path = "../solstone-folder-sync" }

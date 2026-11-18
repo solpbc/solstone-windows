@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "2f78851b5f73272f47484596007fee72f753ba33cb2d7ee8e7baec530b74c5ef",
+  "cargo_lock_sha256": "3e91dcbd425557c89ce12f55a7db9a921b15f9a59567eec674148bed9d1ac729",
   "notice_texts": [
     {
       "byte_end_exclusive": 1418,
@@ -4976,6 +4976,111 @@
       "version": "1.0.18"
     },
     {
+      "identity": "jiff-core@1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+      "license_expression": "Unlicense OR MIT",
+      "name": "jiff-core",
+      "notice_references": [
+        {
+          "bytes": 126,
+          "member": "COPYING",
+          "sha256": "01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f",
+          "source_kind": "crate-archive"
+        },
+        {
+          "bytes": 1081,
+          "member": "LICENSE-MIT",
+          "sha256": "0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f",
+          "source_kind": "crate-archive"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.0"
+    },
+    {
+      "identity": "jiff-static@1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+      "license_expression": "Unlicense OR MIT",
+      "name": "jiff-static",
+      "notice_references": [
+        {
+          "bytes": 126,
+          "member": "COPYING",
+          "sha256": "01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f",
+          "source_kind": "crate-archive"
+        },
+        {
+          "bytes": 1081,
+          "member": "LICENSE-MIT",
+          "sha256": "0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f",
+          "source_kind": "crate-archive"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.0"
+    },
+    {
+      "identity": "jiff-tzdb-platform@1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+      "license_expression": "Unlicense OR MIT",
+      "name": "jiff-tzdb-platform",
+      "notice_references": [
+        {
+          "bytes": 126,
+          "member": "COPYING",
+          "sha256": "01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f",
+          "source_kind": "crate-archive"
+        },
+        {
+          "bytes": 1081,
+          "member": "LICENSE-MIT",
+          "sha256": "0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f",
+          "source_kind": "crate-archive"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.0"
+    },
+    {
+      "identity": "jiff-tzdb@1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+      "license_expression": "Unlicense OR MIT",
+      "name": "jiff-tzdb",
+      "notice_references": [
+        {
+          "bytes": 126,
+          "member": "COPYING",
+          "sha256": "01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f",
+          "source_kind": "crate-archive"
+        },
+        {
+          "bytes": 1081,
+          "member": "LICENSE-MIT",
+          "sha256": "0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f",
+          "source_kind": "crate-archive"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.0"
+    },
+    {
+      "identity": "jiff@1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
+      "license_expression": "Unlicense OR MIT",
+      "name": "jiff",
+      "notice_references": [
+        {
+          "bytes": 126,
+          "member": "COPYING",
+          "sha256": "01c266bced4a434da0051174d6bee16a4c82cf634e2679b6155d40d75012390f",
+          "source_kind": "crate-archive"
+        },
+        {
+          "bytes": 1081,
+          "member": "LICENSE-MIT",
+          "sha256": "0f96a83840e146e43c0ec96a22ec1f392e0680e6c1226e6f3ba87e0740af850f",
+          "source_kind": "crate-archive"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.0"
+    },
+    {
       "identity": "json-patch@3.0.1 (registry+https://github.com/rust-lang/crates.io-index)",
       "license_expression": "MIT/Apache-2.0",
       "name": "json-patch",
@@ -7940,6 +8045,27 @@
       "version": "2.0.118"
     },
     {
+      "identity": "syn@3.0.10 (registry+https://github.com/rust-lang/crates.io-index)",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "syn",
+      "notice_references": [
+        {
+          "bytes": 9723,
+          "member": "LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+          "source_kind": "crate-archive"
+        },
+        {
+          "bytes": 1023,
+          "member": "LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+          "source_kind": "crate-archive"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "3.0.10"
+    },
+    {
       "identity": "synstructure@0.13.2 (registry+https://github.com/rust-lang/crates.io-index)",
       "license_expression": "MIT",
       "name": "synstructure",
@@ -10578,11 +10704,11 @@
     }
   ],
   "population": {
-    "external_package_count": 444,
+    "external_package_count": 450,
     "filter_platform": "x86_64-pc-windows-msvc",
     "notice_text_count": 297,
     "query": "cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc; follow non-dev edges from solstone-windows-app",
-    "query_utc": "2026-11-17T20:54:26.337226+00:00",
+    "query_utc": "2026-11-18T02:07:07.520166+00:00",
     "root_package": "solstone-windows-app",
     "source": "non-dev dependency closure; conservative inclusion, not exact PE link graph",
     "workspace_package_count": 29

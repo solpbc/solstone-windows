@@ -195,6 +195,25 @@ fn local_zone() -> Option<LocalZone> {
     platform_win::WindowsLocalOffset.local_zone(now_secs()).ok()
 }
 
+/// The vault engine's clock: the system time, and Windows' own zone and
+/// daylight-saving setting at each instant, read afresh on every call, as the
+/// segment keys read them. A failed lookup reads as UTC.
+struct DeviceClock;
+
+impl obsidian_source::Clock for DeviceClock {
+    fn now_ms(&self) -> i64 {
+        i64::try_from(now_millis()).unwrap_or(i64::MAX)
+    }
+
+    fn offset_s_at(&self, ms: i64) -> i32 {
+        u64::try_from(ms.div_euclid(1000))
+            .ok()
+            .and_then(|secs| platform_win::WindowsLocalOffset.local_zone(secs).ok())
+            .and_then(|zone| i32::try_from(zone.utc_offset_seconds).ok())
+            .unwrap_or(0)
+    }
+}
+
 /// Open the source and start its work, off the setup path.
 pub fn start(app: tauri::AppHandle, counters: Option<source_counters::SharedCounters>) {
     let client_app = app.clone();
@@ -227,7 +246,14 @@ pub fn start(app: tauri::AppHandle, counters: Option<source_counters::SharedCoun
     });
     let journal = ClientJournal::new(load_client, Arc::new(local_zone), heard);
     let root = platform_win::local_data_root().join("obsidian");
-    let (handle, work) = obsidian_source::start(root, Some(dir_ids), journal, paused, counters);
+    let (handle, work) = obsidian_source::start(
+        root,
+        Arc::new(DeviceClock),
+        Some(dir_ids),
+        journal,
+        paused,
+        counters,
+    );
     let _ = HANDLE.set(handle);
     tauri::async_runtime::spawn(work);
 }
