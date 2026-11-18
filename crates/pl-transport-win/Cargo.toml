@@ -32,6 +32,7 @@ webpki-roots.workspace = true
 futures-util.workspace = true
 observer-update.workspace = true
 minisign = "=0.9.1"
+toml_edit = { version = "=0.25.12", default-features = false, features = ["parse"] }
 ureq = "=3.3.0"
 tracing.workspace = true
 

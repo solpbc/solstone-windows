@@ -183,28 +183,11 @@ fn journal_folder(home: &Path) -> PathBuf {
         .unwrap_or_else(|| home.join("journal"))
 }
 
-/// Reads the one line the journal's setup writes: `journal = "<escaped path>"`.
+/// Reads the top-level journal folder written by setup.
 fn journal_from_config(config: &str) -> Option<PathBuf> {
-    config.lines().find_map(|line| {
-        let (key, value) = line.split_once('=')?;
-        if key.trim() != "journal" {
-            return None;
-        }
-        let quoted = value.trim().strip_prefix('"')?.strip_suffix('"')?;
-        let mut path = String::with_capacity(quoted.len());
-        let mut chars = quoted.chars();
-        while let Some(c) = chars.next() {
-            if c == '\\' {
-                match chars.next()? {
-                    escaped @ ('\\' | '"') => path.push(escaped),
-                    _ => return None,
-                }
-            } else {
-                path.push(c);
-            }
-        }
-        (!path.is_empty()).then(|| PathBuf::from(path))
-    })
+    let document = config.parse::<toml_edit::Document<_>>().ok()?;
+    let path = document.get("journal")?.as_str()?;
+    (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
 #[cfg(test)]
@@ -219,23 +202,33 @@ mod tests {
         std::fs::write(journal.join("health").join("convey.port"), "5016\n").unwrap();
         let config = home.path().join(".config").join("solstone");
         std::fs::create_dir_all(&config).unwrap();
-        let escaped = journal.display().to_string().replace('\\', "\\\\");
-        std::fs::write(
-            config.join("config.toml"),
-            format!("journal = \"{escaped}\"\n"),
-        )
-        .unwrap();
-        assert_eq!(published_port(home.path()), 5016);
+        let path = journal.to_str().unwrap();
+        let legacy_path = path.replace('\\', "\\\\").replace('"', "\\\"");
+        for contents in [
+            format!("journal = '{path}'\r\n"),
+            format!("journal = \"{legacy_path}\"\n"),
+        ] {
+            std::fs::write(config.join("config.toml"), &contents).unwrap();
+            assert_eq!(published_port(home.path()), 5016, "{contents:?}");
+        }
     }
 
     #[test]
-    fn the_setup_configs_one_line_is_read_as_its_writer_escapes_it() {
+    fn the_setup_config_reads_the_top_level_journal_string() {
         assert_eq!(
             journal_from_config("journal = \"D:\\\\my \\\"journal\\\"\"\n"),
             Some(PathBuf::from("D:\\my \"journal\""))
         );
-        assert_eq!(journal_from_config("journal = 'D:\\x'\n"), None);
-        assert_eq!(journal_from_config("journal = \"bad \\n escape\"\n"), None);
+        assert_eq!(
+            journal_from_config(
+                "journal = 'D:\\my journal' # chosen folder\n[other]\njournal = 'ignored'\n"
+            ),
+            Some(PathBuf::from("D:\\my journal"))
+        );
+        assert_eq!(journal_from_config("[other]\njournal = 'ignored'\n"), None);
+        assert_eq!(journal_from_config("journal = 'unterminated\n"), None);
+        assert_eq!(journal_from_config("journal = ''\n"), None);
+        assert_eq!(journal_from_config("journal = 5016\n"), None);
         assert_eq!(journal_from_config("other = \"x\"\n"), None);
     }
 
@@ -393,19 +386,36 @@ mod door_tests {
     }
 
     #[test]
-    fn a_mint_asks_for_a_same_computer_link_for_this_device() {
+    fn the_configured_journal_is_offered_and_mints_a_same_computer_link() {
         let fixture = serve(vec![
+            (200, identity_body(INSTANCE)),
             (200, identity_body(INSTANCE)),
             (200, minted_body()),
             (200, identity_body(INSTANCE)),
         ]);
-        let minted = LocalJournalDoor::at_port(fixture.port)
-            .mint_link(INSTANCE, "this pc")
-            .unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let journal = home.path().join("chosen journal");
+        let health = journal.join("health");
+        let config = home.path().join(".config").join("solstone");
+        std::fs::create_dir_all(&health).unwrap();
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(health.join("convey.port"), fixture.port.to_string()).unwrap();
+        std::fs::write(
+            config.join("config.toml"),
+            format!("journal = '{}'\n", journal.display()),
+        )
+        .unwrap();
+
+        let port = published_port(home.path());
+        assert_eq!(port, fixture.port);
+        let door = LocalJournalDoor::at_port(port);
+        let found = door.identify().unwrap();
+        assert_eq!(found.instance_id, INSTANCE);
+        let minted = door.mint_link(&found.instance_id, "this pc").unwrap();
         assert_eq!(minted.ca_fingerprint, "ab".repeat(32));
         let requests = fixture.requests.lock().unwrap();
-        assert!(requests[1].starts_with("POST /app/network/pair-start "));
-        let (_, body) = requests[1].split_once("\r\n\r\n").unwrap();
+        assert!(requests[2].starts_with("POST /app/network/pair-start "));
+        let (_, body) = requests[2].split_once("\r\n\r\n").unwrap();
         let body: serde_json::Value = serde_json::from_str(body).unwrap();
         assert_eq!(body["same_machine"], true);
         assert_eq!(body["device_label"], "this pc");

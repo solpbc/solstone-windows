@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "bb025841eb4cb69576dabe3e90e051aa30fa3b9b59080d81d1615e1195b952f9",
+  "cargo_lock_sha256": "f6623707b865a054e3aa1ea81b6e842fc2824bdc7ddb7f0ab36bd3073c0cb53d",
   "notice_texts": [
     {
       "byte_end_exclusive": 1418,
@@ -8720,6 +8720,27 @@
       "version": "1.1.1+spec-1.1.0"
     },
     {
+      "identity": "toml_edit@0.25.12+spec-1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+      "license_expression": "MIT OR Apache-2.0",
+      "name": "toml_edit",
+      "notice_references": [
+        {
+          "bytes": 11358,
+          "member": "LICENSE-APACHE",
+          "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+          "source_kind": "crate-archive"
+        },
+        {
+          "bytes": 1062,
+          "member": "LICENSE-MIT",
+          "sha256": "6efb0476a1cc085077ed49357026d8c173bf33017278ef440f222fb9cbcb66e6",
+          "source_kind": "crate-archive"
+        }
+      ],
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.25.12+spec-1.1.0"
+    },
+    {
       "identity": "toml_parser@1.1.2+spec-1.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
       "license_expression": "MIT OR Apache-2.0",
       "name": "toml_parser",
@@ -10704,11 +10725,11 @@
     }
   ],
   "population": {
-    "external_package_count": 450,
+    "external_package_count": 451,
     "filter_platform": "x86_64-pc-windows-msvc",
     "notice_text_count": 297,
     "query": "cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc; follow non-dev edges from solstone-windows-app",
-    "query_utc": "2026-11-18T06:52:27.774168+00:00",
+    "query_utc": "2026-11-18T13:05:59.164768+00:00",
     "root_package": "solstone-windows-app",
     "source": "non-dev dependency closure; conservative inclusion, not exact PE link graph",
     "workspace_package_count": 29

@@ -3731,6 +3731,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
+ "toml_edit 0.25.12+spec-1.1.0",
  "tracing",
  "ureq",
  "webpki-roots",
