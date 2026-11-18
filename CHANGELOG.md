@@ -8,6 +8,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Fixed
 
+- on the last setup step, the heading now says "connected to" your journal only while your journal is answering. otherwise it says "paired with" it.
 - the solstone app can find your journal on this PC when you chose a custom folder during setup.
 - when you pause, the tray icon's hover text now shows the same minutes left as the tray menu and the settings window.
 - section titles on the "your journal", "this PC" and "updates" pages are now lowercase, like the rest of the app.

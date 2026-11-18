@@ -5217,10 +5217,15 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
   if (step === "connection") {
     const isPaired = dump.sync.pairing.phase === "paired";
     if (isPaired) {
-      if (dump.sync.pairing.mark != null) {
-        heading.textContent = t("windows.ui.connectedto", { "value": String(markTextForm(dump.sync.pairing.mark)) });
-      } else {
-        heading.textContent = t("windows.desktop.shared.copy.setupconnectedtoyourjournal");
+      // A pairing alone is not evidence: the heading says connected only while the
+      // journal link has recently heard from the journal, as the journal pane does.
+      const mark = dump.sync.pairing.mark;
+      if (dump.sync.journal_link === "connected") {
+        heading.textContent = mark != null
+          ? t("windows.ui.connectedto", { "value": String(markTextForm(mark)) })
+          : t("windows.desktop.shared.copy.setupconnectedtoyourjournal");
+      } else if (mark != null) {
+        heading.textContent = t("windows.ui.pairedwith", { "value": String(markTextForm(mark)) });
       }
       automation(heading, ids["settings.pairing.state"]);
       heading.classList.add("selectable");

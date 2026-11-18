@@ -3194,8 +3194,16 @@ describe("setup frame design and lifecycle", () => {
         notice_dismissed: false,
       },
     };
-    app.__test__.renderSettings(pairedDump);
-    const pairingStateEls = document.querySelectorAll(`[data-automation-id="${ids["settings.pairing.state"]}"]`);
+    const stateEls = () => document.querySelectorAll(`[data-automation-id="${ids["settings.pairing.state"]}"]`);
+    // A pairing with no recent word from the journal says paired, never connected.
+    for (const journal_link of [undefined, null, "connecting", "offline"] as const) {
+      app.__test__.renderSettings({ ...pairedDump, sync: { ...pairedDump.sync, journal_link } });
+      expect(stateEls().length).toBe(1);
+      expect(stateEls()[0].classList.contains("wizard-step-title")).toBe(true);
+      expect(stateEls()[0].textContent).toBe("paired with catatonic\u00B7flattop");
+    }
+    app.__test__.renderSettings({ ...pairedDump, sync: { ...pairedDump.sync, journal_link: "connected" as const } });
+    const pairingStateEls = stateEls();
     expect(pairingStateEls.length).toBe(1);
     expect(pairingStateEls[0].classList.contains("wizard-step-title")).toBe(true);
     expect(pairingStateEls[0].textContent).toBe("connected to catatonic\u00B7flattop");
@@ -3217,7 +3225,13 @@ describe("setup frame design and lifecycle", () => {
       },
     };
     app.__test__.renderSettings(pairedNoMarkDump);
-    const pairingStateElsNoMark = document.querySelectorAll(`[data-automation-id="${ids["settings.pairing.state"]}"]`);
+    expect(stateEls().length).toBe(1);
+    expect(stateEls()[0].textContent).toBe("connect your journal");
+    app.__test__.renderSettings({
+      ...pairedNoMarkDump,
+      sync: { ...pairedNoMarkDump.sync, journal_link: "connected" as const },
+    });
+    const pairingStateElsNoMark = stateEls();
     expect(pairingStateElsNoMark.length).toBe(1);
     expect(pairingStateElsNoMark[0].textContent).toBe("connected to your journal");
     expect(pairingStateElsNoMark[0].textContent).not.toContain("mark\u00B7unavailable");
