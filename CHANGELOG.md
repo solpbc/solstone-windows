@@ -4,6 +4,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- importing a HEIC or HEIF photo through the solstone app on windows now converts it to JPEG on your PC while keeping the date it was taken and its orientation, so your journal can accept it. if your PC can't convert a photo, the app says so and doesn't add it to your journal.
+
 ## [2.0.53] - 2026-11-19
 
 ### Fixed
