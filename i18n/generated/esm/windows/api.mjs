@@ -3605,6 +3605,12 @@ const MESSAGES = {
     arguments: [
     ],
   },
+  "windows.ui.thisdevicecantconvertthisphoto": {
+    resourceKey: "m77696e646f77732e75692e7468697364657669636563616e74636f6e766572747468697370686f746f",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
   "windows.ui.thisdevicecouldntopenitssaved": {
     resourceKey: "m77696e646f77732e75692e74686973646576696365636f756c646e746f70656e6974737361766564",
     formatIntent: "text",

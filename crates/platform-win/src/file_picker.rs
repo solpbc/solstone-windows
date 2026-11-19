@@ -51,7 +51,7 @@ pub fn choose_files(owner: isize) -> std::io::Result<Vec<PathBuf>> {
             )
             .map_err(io_error)?;
         let label = HSTRING::from(message("windows.ui.files", &[]));
-        let pattern = HSTRING::from("*.pdf;*.txt;*.md;*.markdown;*.log;*.png;*.jpg;*.jpeg;*.gif;*.webp;*.mp3;*.m4a;*.aac;*.ogg;*.oga;*.opus;*.flac;*.wav;*.amr;*.aif;*.aiff");
+        let pattern = HSTRING::from("*.pdf;*.txt;*.md;*.markdown;*.log;*.png;*.jpg;*.jpeg;*.gif;*.webp;*.heic;*.heif;*.mp3;*.m4a;*.aac;*.ogg;*.oga;*.opus;*.flac;*.wav;*.amr;*.aif;*.aiff");
         dialog
             .SetFileTypes(&[COMDLG_FILTERSPEC {
                 pszName: windows::core::PCWSTR(label.as_ptr()),

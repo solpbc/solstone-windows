@@ -6127,6 +6127,13 @@
       "locales": []
     },
     {
+      "id": "windows.ui.thisdevicecantconvertthisphoto",
+      "source": "a49333075b0c447aeb57a5428ef244bd8f297f26943b32c45699cc70b7cb4331",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
       "id": "windows.ui.thisdevicecouldntopenitssaved",
       "source": "f96263bbddd05320c4fa067b4f1efe555152f14029def893f04e9bed6dbc5c32",
       "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",

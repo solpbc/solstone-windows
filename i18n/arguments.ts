@@ -1363,6 +1363,7 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
   "windows.ui.thisconnectioncouldnotfinishtryagain": [],
   "windows.ui.thisconnectioncouldnotfinishtryagain2": [],
   "windows.ui.thiscouldntbereadadditagain": [],
+  "windows.ui.thisdevicecantconvertthisphoto": [],
   "windows.ui.thisdevicecouldntopenitssaved": [],
   "windows.ui.thisdeviceisnotpairedwithyourjournalimportswaith": [],
   "windows.ui.thisdeviceisntonanetwork": [],

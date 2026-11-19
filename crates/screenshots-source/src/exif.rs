@@ -15,6 +15,7 @@ const MAX_DEPTH: u8 = 3;
 const EXIF_IFD: u16 = 34_665;
 const GPS_IFD: u16 = 34_853;
 const INTEROP_IFD: u16 = 40_965;
+const ORIENTATION_TAG: u16 = 274;
 
 /// IFD0 tags that describe the image's own pixels and storage, or that the
 /// PNG carries another way (XMP, the ICC profile). They don't go in `eXIf`.
@@ -36,15 +37,99 @@ pub fn carry_exif(source: &[u8], png: Vec<u8>) -> Vec<u8> {
     }
 }
 
+/// The JPEG with the source's EXIF in an `APP1` (`Exif\0\0`) segment right
+/// after SOI (and any leading `APP0`). Set `strip_orientation` when the decoder
+/// already rotated the pixels upright so the viewer doesn't rotate twice.
+/// Unchanged when the JPEG already carries EXIF or the source has none that reads.
+pub fn carry_exif_to_jpeg(source: &[u8], jpeg: Vec<u8>, strip_orientation: bool) -> Vec<u8> {
+    if jpeg_has_exif(&jpeg) {
+        return jpeg;
+    }
+    match exif_blob_filtered(source, strip_orientation)
+        .and_then(|blob| insert_jpeg_app1_exif(&jpeg, &blob))
+    {
+        Some(with) => with,
+        None => jpeg,
+    }
+}
+
 /// The source's EXIF as a TIFF-structured blob (header and IFDs, no `Exif\0\0`).
 pub fn exif_blob(source: &[u8]) -> Option<Vec<u8>> {
+    exif_blob_filtered(source, false)
+}
+
+fn exif_blob_filtered(source: &[u8], strip_orientation: bool) -> Option<Vec<u8>> {
     if source.starts_with(b"II*\0") || source.starts_with(b"MM\0*") {
-        return tiff_exif(source);
+        return tiff_exif(source, strip_orientation);
     }
     if source.get(4..8) == Some(b"ftyp") {
-        return heif_exif(source).and_then(|tiff| tiff_exif(&tiff));
+        return heif_exif(source).and_then(|tiff| tiff_exif(&tiff, strip_orientation));
     }
     None
+}
+
+fn jpeg_has_exif(jpeg: &[u8]) -> bool {
+    if !jpeg.starts_with(&[0xff, 0xd8]) {
+        return false;
+    }
+    let mut at = 2usize;
+    while at + 1 < jpeg.len() {
+        if jpeg[at] != 0xff {
+            return false;
+        }
+        while at < jpeg.len() && jpeg[at] == 0xff {
+            at += 1;
+        }
+        if at >= jpeg.len() {
+            return false;
+        }
+        let marker = jpeg[at];
+        at += 1;
+        if marker == 0xd9 || marker == 0xda {
+            return false;
+        }
+        if (0xd0..=0xd7).contains(&marker) || marker == 0x01 {
+            continue;
+        }
+        let Some(len_bytes) = jpeg.get(at..at + 2) else {
+            return false;
+        };
+        let seg_len = usize::from(u16::from_be_bytes([len_bytes[0], len_bytes[1]]));
+        if seg_len < 2 || at + seg_len > jpeg.len() {
+            return false;
+        }
+        if marker == 0xe1 && jpeg.get(at + 2..at + 8) == Some(b"Exif\0\0") {
+            return true;
+        }
+        at += seg_len;
+    }
+    false
+}
+
+fn insert_jpeg_app1_exif(jpeg: &[u8], tiff_blob: &[u8]) -> Option<Vec<u8>> {
+    if !jpeg.starts_with(&[0xff, 0xd8]) {
+        return None;
+    }
+    let seg_len = u16::try_from(2usize.checked_add(6)?.checked_add(tiff_blob.len())?).ok()?;
+    let mut insert_at = 2usize;
+    while insert_at + 4 <= jpeg.len() && jpeg[insert_at] == 0xff && jpeg[insert_at + 1] == 0xe0 {
+        let len = usize::from(u16::from_be_bytes([
+            jpeg[insert_at + 2],
+            jpeg[insert_at + 3],
+        ]));
+        if len < 2 || insert_at + 2 + len > jpeg.len() {
+            break;
+        }
+        insert_at += 2 + len;
+    }
+    let mut out = Vec::with_capacity(jpeg.len() + 2 + usize::from(seg_len));
+    out.extend_from_slice(&jpeg[..insert_at]);
+    out.extend_from_slice(&[0xff, 0xe1]);
+    out.extend_from_slice(&seg_len.to_be_bytes());
+    out.extend_from_slice(b"Exif\0\0");
+    out.extend_from_slice(tiff_blob);
+    out.extend_from_slice(&jpeg[insert_at..]);
+    Some(out)
 }
 
 // ── PNG chunks ──────────────────────────────────────────────────────────────
@@ -169,7 +254,13 @@ fn child_tags(depth: u8) -> &'static [u16] {
     }
 }
 
-fn read_ifd(tiff: &Tiff<'_>, offset: usize, depth: u8, seen: &mut Vec<usize>) -> Option<Ifd> {
+fn read_ifd(
+    tiff: &Tiff<'_>,
+    offset: usize,
+    depth: u8,
+    strip_orientation: bool,
+    seen: &mut Vec<usize>,
+) -> Option<Ifd> {
     if depth > MAX_DEPTH || seen.contains(&offset) {
         return None;
     }
@@ -185,13 +276,15 @@ fn read_ifd(tiff: &Tiff<'_>, offset: usize, depth: u8, seen: &mut Vec<usize>) ->
         else {
             return None;
         };
-        if depth == 0 && IMAGE_TAGS.contains(&tag) {
+        if depth == 0
+            && (IMAGE_TAGS.contains(&tag) || (strip_orientation && tag == ORIENTATION_TAG))
+        {
             continue;
         }
         if child_tags(depth).contains(&tag) {
             if let Some(child) = tiff
                 .u32(at + 8)
-                .and_then(|to| read_ifd(tiff, to as usize, depth + 1, seen))
+                .and_then(|to| read_ifd(tiff, to as usize, depth + 1, strip_orientation, seen))
             {
                 entries.push(Entry {
                     tag,
@@ -277,7 +370,7 @@ fn write_ifd(out: &mut Vec<u8>, ifd: &Ifd, little: bool) -> Option<u32> {
 
 /// A TIFF's EXIF as its own TIFF structure: IFD0 without the image's storage
 /// tags, and its Exif, GPS and interoperability IFDs. No thumbnail IFD.
-fn tiff_exif(source: &[u8]) -> Option<Vec<u8>> {
+fn tiff_exif(source: &[u8], strip_orientation: bool) -> Option<Vec<u8>> {
     let little = source.starts_with(b"II");
     let tiff = Tiff {
         bytes: source,
@@ -287,7 +380,7 @@ fn tiff_exif(source: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let first = tiff.u32(4)? as usize;
-    let ifd = read_ifd(&tiff, first, 0, &mut Vec::new())?;
+    let ifd = read_ifd(&tiff, first, 0, strip_orientation, &mut Vec::new())?;
     if ifd.entries.is_empty() {
         return None;
     }
@@ -361,6 +454,10 @@ fn heif_exif(bytes: &[u8]) -> Option<Vec<u8>> {
             };
             (bytes.get(type_at..type_at + 4)? == b"Exif").then_some(id)
         })?;
+    let idat = children
+        .iter()
+        .find(|(k, _, _)| k == b"idat")
+        .map(|&(_, from, to)| &bytes[from..to]);
     let (_, iloc_from, _) = *children.iter().find(|(k, _, _)| k == b"iloc")?;
     let version = *bytes.get(iloc_from)?;
     let mut at = iloc_from + 4;
@@ -409,12 +506,13 @@ fn heif_exif(bytes: &[u8]) -> Option<Vec<u8>> {
             at += length_size;
             first.get_or_insert((offset, length));
         }
-        if id != item || method != 0 {
+        if id != item || (method != 0 && method != 1) {
             continue;
         }
         let (offset, length) = first?;
+        let source_slice = if method == 1 { idat? } else { bytes };
         let from = usize::try_from(base.checked_add(offset)?).ok()?;
-        let payload = bytes.get(from..from.checked_add(usize::try_from(length).ok()?)?)?;
+        let payload = source_slice.get(from..from.checked_add(usize::try_from(length).ok()?)?)?;
         // The payload starts with where the TIFF header is, after itself.
         let skip = usize::try_from(be(payload, 0, 4)?).ok()?;
         return payload.get(4usize.checked_add(skip)?..).map(<[u8]>::to_vec);
@@ -535,7 +633,14 @@ mod tests {
             bytes: &blob,
             little: true,
         };
-        let ifd = read_ifd(&tiff, tiff.u32(4).unwrap() as usize, 0, &mut Vec::new()).unwrap();
+        let ifd = read_ifd(
+            &tiff,
+            tiff.u32(4).unwrap() as usize,
+            0,
+            false,
+            &mut Vec::new(),
+        )
+        .unwrap();
         let tags: Vec<u16> = ifd.entries.iter().map(|e| e.tag).collect();
         assert_eq!(tags, [271, EXIF_IFD], "no strips, sizes or samples");
         let exif = ifd.entries[1].child.as_ref().unwrap();
@@ -600,5 +705,121 @@ mod tests {
         // One eXIf only: a PNG that has one keeps it.
         let once = carry_exif(&tiff_with_make("first"), png);
         assert_eq!(carry_exif(&tiff_with_make("second"), once.clone()), once);
+    }
+
+    fn tiff_with_orientation_and_offset() -> Vec<u8> {
+        let date = b"2026:11:12 08:30:00\0";
+        let offset = b"+09:00\0";
+        let ifd0_at = 8u32;
+        let ifd0_entries = 2u16;
+        let exif_at = ifd0_at + 2 + u32::from(ifd0_entries) * 12 + 4;
+        let exif_entries = 2u16;
+        let date_at = exif_at + 2 + u32::from(exif_entries) * 12 + 4;
+        let offset_at = date_at + date.len() as u32;
+        let mut out = b"II*\0".to_vec();
+        out.extend_from_slice(&le32(ifd0_at));
+        out.extend_from_slice(&le16(ifd0_entries));
+        // Orientation = 6
+        out.extend_from_slice(&le16(ORIENTATION_TAG));
+        out.extend_from_slice(&le16(3));
+        out.extend_from_slice(&le32(1));
+        out.extend_from_slice(&le16(6));
+        out.extend_from_slice(&le16(0));
+        // ExifIFDPointer
+        out.extend_from_slice(&le16(EXIF_IFD));
+        out.extend_from_slice(&le16(4));
+        out.extend_from_slice(&le32(1));
+        out.extend_from_slice(&le32(exif_at));
+        out.extend_from_slice(&le32(0));
+        // Exif IFD
+        out.extend_from_slice(&le16(exif_entries));
+        out.extend_from_slice(&le16(36_867));
+        out.extend_from_slice(&le16(2));
+        out.extend_from_slice(&le32(date.len() as u32));
+        out.extend_from_slice(&le32(date_at));
+        out.extend_from_slice(&le16(36_881));
+        out.extend_from_slice(&le16(2));
+        out.extend_from_slice(&le32(offset.len() as u32));
+        out.extend_from_slice(&le32(offset_at));
+        out.extend_from_slice(&le32(0));
+        out.extend_from_slice(date);
+        out.extend_from_slice(offset);
+        out
+    }
+
+    #[test]
+    fn carry_exif_to_jpeg_preserves_capture_date_and_optionally_strips_orientation() {
+        let tiff = tiff_with_orientation_and_offset();
+        let mut payload = 6u32.to_be_bytes().to_vec();
+        payload.extend_from_slice(b"Exif\0\0");
+        payload.extend_from_slice(&tiff);
+        let full = |kind: &[u8; 4], body: &[u8]| {
+            let mut b = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+            b.extend_from_slice(kind);
+            b.extend_from_slice(body);
+            b
+        };
+        let mut infe = vec![2, 0, 0, 0, 0, 7, 0, 0];
+        infe.extend_from_slice(b"Exif");
+        infe.push(0);
+        let mut iinf = vec![0, 0, 0, 0, 0, 1];
+        iinf.extend(full(b"infe", &infe));
+        // iloc v1 with construction_method = 1 (idat)
+        let mut iloc = vec![1, 0, 0, 0, 0x44, 0x00, 0, 1, 0, 7, 0, 1, 0, 0, 0, 1];
+        iloc.extend_from_slice(&0u32.to_be_bytes());
+        iloc.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        let mut meta = vec![0, 0, 0, 0];
+        meta.extend(full(b"iinf", &iinf));
+        meta.extend(full(b"iloc", &iloc));
+        meta.extend(full(b"idat", &payload));
+        let mut heif = full(b"ftyp", b"heic\0\0\0\0mif1heic");
+        heif.extend(full(b"meta", &meta));
+
+        // Minimal JPEG with SOI + APP0 (JFIF) + SOS + EOI
+        let mut jpeg = vec![
+            0xff, 0xd8, 0xff, 0xe0, 0x00, 0x07, b'J', b'F', b'I', b'F', 0x00,
+        ];
+        jpeg.extend_from_slice(&[0xff, 0xda, 0x00, 0x02, 0xff, 0xd9]);
+
+        let stripped = carry_exif_to_jpeg(&heif, jpeg.clone(), true);
+        assert!(jpeg_has_exif(&stripped));
+        // APP1 placed right after APP0 (offset 11).
+        assert_eq!(&stripped[11..13], &[0xff, 0xe1]);
+        assert_eq!(&stripped[15..21], b"Exif\0\0");
+        let embedded =
+            &stripped[21..13 + usize::from(u16::from_be_bytes([stripped[13], stripped[14]]))];
+        assert!(embedded.windows(19).any(|w| w == b"2026:11:12 08:30:00"));
+        assert!(embedded.windows(6).any(|w| w == b"+09:00"));
+        let parsed = Tiff {
+            bytes: embedded,
+            little: true,
+        };
+        let ifd0 = read_ifd(
+            &parsed,
+            parsed.u32(4).unwrap() as usize,
+            0,
+            false,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert!(!ifd0.entries.iter().any(|e| e.tag == ORIENTATION_TAG));
+        // Already having APP1 leaves it alone.
+        assert_eq!(carry_exif_to_jpeg(&heif, stripped.clone(), true), stripped);
+
+        let kept = carry_exif_to_jpeg(&heif, jpeg, false);
+        let embedded_kept = &kept[21..13 + usize::from(u16::from_be_bytes([kept[13], kept[14]]))];
+        let parsed_kept = Tiff {
+            bytes: embedded_kept,
+            little: true,
+        };
+        let ifd0_kept = read_ifd(
+            &parsed_kept,
+            parsed_kept.u32(4).unwrap() as usize,
+            0,
+            false,
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert!(ifd0_kept.entries.iter().any(|e| e.tag == ORIENTATION_TAG));
     }
 }

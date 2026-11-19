@@ -490,7 +490,11 @@ pub fn add_paths(app: tauri::AppHandle, paths: Vec<PathBuf>) {
                         name: message("windows.ui.file", &[]),
                         reason: message("windows.ui.thiscouldntbereadadditagain", &[]),
                     })
-                    .and_then(|id| import_store::stage(&root, &path, id, now()))
+                    .and_then(|id| {
+                        import_store::stage_with_converter(&root, &path, id, now(), |bytes| {
+                            platform_win::screenshots::to_jpeg(bytes).map_err(|_| ())
+                        })
+                    })
             })
             .await;
             let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());

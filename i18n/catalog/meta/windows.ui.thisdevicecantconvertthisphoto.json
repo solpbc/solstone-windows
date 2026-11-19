@@ -1,0 +1,16 @@
+{
+  "description": "this device can't convert this photo",
+  "context": "The Windows app: native dialogs and imported files. Shown when a HEIC or HEIF photo chosen for import cannot be decoded on this PC (for example when Windows HEIF image extensions are missing or the file is unreadable). Preserve the state distinction and the exact source wording.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "a49333075b0c447aeb57a5428ef244bd8f297f26943b32c45699cc70b7cb4331",
+  "risk": "routine",
+  "auto_merge": true
+}

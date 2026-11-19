@@ -255,6 +255,21 @@ impl Store {
 /// Copy once at the owner's gesture. A staging directory is never deliverable;
 /// only the final rename publishes both the complete bytes and their identity.
 pub fn stage(root: &Path, source: &Path, id: String, now: u64) -> Result<Item, IntakeRefusal> {
+    stage_with_converter(root, source, id, now, |_| Err(()))
+}
+
+/// Copy once at the owner's gesture, converting HEIC/HEIF photos into JPEG with
+/// the platform decoder when selected.
+pub fn stage_with_converter<F>(
+    root: &Path,
+    source: &Path,
+    id: String,
+    now: u64,
+    convert_photo: F,
+) -> Result<Item, IntakeRefusal>
+where
+    F: FnOnce(&[u8]) -> Result<Vec<u8>, ()>,
+{
     let name = source
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
@@ -269,8 +284,13 @@ pub fn stage(root: &Path, source: &Path, id: String, now: u64) -> Result<Item, I
             &[],
         )));
     }
-    let mime = mime_for(source)
-        .ok_or_else(|| refuse(message("windows.ui.yourjournalcanttakethiskindoffile", &[])))?;
+    let convertible = is_convertible_photo(source);
+    let mime = if convertible {
+        "image/jpeg"
+    } else {
+        mime_for(source)
+            .ok_or_else(|| refuse(message("windows.ui.yourjournalcanttakethiskindoffile", &[])))?
+    };
     let mut input = File::open(source)
         .map_err(|_| refuse(message("windows.ui.thiscouldntbereadadditagain", &[])))?;
     let info = input
@@ -282,10 +302,36 @@ pub fn stage(root: &Path, source: &Path, id: String, now: u64) -> Result<Item, I
             &[],
         )));
     }
-    let size = info.len();
+    let source_size = info.len();
+    if source_size > MAX_IMPORT_FILE_BYTES {
+        return Err(refuse(message(
+            "windows.ui.itslargerthanyourjournaltakes",
+            &[],
+        )));
+    }
+
+    let (staged_name, converted_bytes, size, mut source_file) = if convertible {
+        let mut raw = Vec::with_capacity(usize::try_from(source_size).unwrap_or(0));
+        let copied = io::copy(&mut Read::by_ref(&mut input).take(source_size), &mut raw)
+            .map_err(|_| refuse(message("windows.ui.thiscouldntbereadadditagain", &[])))?;
+        if copied != source_size {
+            return Err(refuse(message(
+                "windows.ui.thiscouldntbereadadditagain",
+                &[],
+            )));
+        }
+        drop(input);
+        let jpeg = convert_photo(&raw)
+            .map_err(|_| refuse(message("windows.ui.thisdevicecantconvertthisphoto", &[])))?;
+        let jpeg_size = jpeg.len() as u64;
+        (converted_jpeg_name(source), Some(jpeg), jpeg_size, None)
+    } else {
+        (name.clone(), None, source_size, Some(input))
+    };
+
     let item = Item {
         id,
-        name: name.clone(),
+        name: staged_name,
         mime: mime.into(),
         size,
         added: now,
@@ -311,16 +357,20 @@ pub fn stage(root: &Path, source: &Path, id: String, now: u64) -> Result<Item, I
         fs::create_dir(&staging)?;
         atomic_json(&staging.join("item.json"), &item)?;
         let mut output = File::create(staging.join("payload"))?;
-        let copied = io::copy(&mut Read::by_ref(&mut input).take(size), &mut output)?;
-        if copied != size {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "import source changed",
-            ));
+        if let Some(bytes) = converted_bytes {
+            output.write_all(&bytes)?;
+        } else if let Some(mut input) = source_file.take() {
+            let copied = io::copy(&mut Read::by_ref(&mut input).take(size), &mut output)?;
+            if copied != size {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "import source changed",
+                ));
+            }
+            drop(input);
         }
         output.sync_all()?;
         drop(output);
-        drop(input);
         fs::rename(&staging, root.join(&item.id))
     })();
     if let Err(error) = result {
@@ -332,6 +382,21 @@ pub fn stage(root: &Path, source: &Path, id: String, now: u64) -> Result<Item, I
         }));
     }
     Ok(item)
+}
+
+pub fn is_convertible_photo(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "heic" | "heif"))
+}
+
+pub fn converted_jpeg_name(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "photo".into());
+    format!("{stem}.jpg")
 }
 
 /// The phones' four kinds. Video containers are not inferred as audio.
@@ -520,5 +585,34 @@ mod tests {
         fs::write(partial.join("payload"), b"partial").unwrap();
         assert!(Store::open(root.path().into()).is_err());
         assert_eq!(fs::read(partial.join("payload")).unwrap(), b"partial");
+    }
+
+    #[cfg(feature = "transport-tests")]
+    #[test]
+    fn heic_photo_converts_to_jpeg_in_custody_and_refuses_when_undecodable() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path().join("import")).unwrap();
+        let heic = root.path().join("IMG_0412.HEIC");
+        fs::write(&heic, b"fake-heic-bytes").unwrap();
+
+        let item = stage_with_converter(store.root(), &heic, new_id().unwrap(), 10, |raw| {
+            assert_eq!(raw, b"fake-heic-bytes");
+            Ok(b"\xff\xd8converted-jpeg\xff\xd9".to_vec())
+        })
+        .unwrap();
+        assert_eq!(item.name, "IMG_0412.jpg");
+        assert_eq!(item.mime, "image/jpeg");
+        assert_eq!(
+            fs::read(store.payload(&item.id)).unwrap(),
+            b"\xff\xd8converted-jpeg\xff\xd9"
+        );
+
+        let heif = root.path().join("IMG_0413.heif");
+        fs::write(&heif, b"bad-heif").unwrap();
+        let err = stage_with_converter(store.root(), &heif, new_id().unwrap(), 11, |_| Err(()))
+            .unwrap_err();
+        assert_eq!(err.name, "IMG_0413.heif");
+        assert!(!err.reason.is_empty());
+        assert_eq!(Store::open(store.root().into()).unwrap().items.len(), 1);
     }
 }

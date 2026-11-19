@@ -1411,6 +1411,8 @@ windows.ui.failedtoacquiresetuplock = failed to acquire setup lock
 
 windows.ui.setupsequenceisunavailableinthisbuild = setup sequence is unavailable in this build
 
+windows.ui.thisdevicecantconvertthisphoto = this device can't convert this photo
+
 windows.browser.discarded = discarded
 
 windows.obsidian.vault = vault

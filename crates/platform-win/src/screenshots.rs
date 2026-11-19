@@ -346,3 +346,184 @@ pub fn to_png(bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
 pub fn to_png(_bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
     Err(ConvertError::Unavailable)
 }
+
+/// Convert one photo (such as HEIC/HEIF) to JPEG through WIC: the first frame,
+/// converted to a JPEG-compatible pixel format, encoded at quality 0.92 with
+/// its ICC colour profile, and the source's EXIF written into an `APP1`
+/// segment. Returns `ConvertError::Undecodable` when no codec on this PC can
+/// decode the input (for example when Windows HEIF Image Extensions are not
+/// installed or the file is damaged).
+#[cfg(windows)]
+pub fn to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
+    use windows::core::{Interface, GUID, HSTRING, PWSTR, VARIANT};
+    use windows::Win32::Foundation::WINCODEC_ERR_COMPONENTNOTFOUND;
+    use windows::Win32::Graphics::Imaging::{
+        CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR,
+        GUID_WICPixelFormat8bppGray, IWICBitmapFrameEncode, IWICBitmapSource, IWICColorContext,
+        IWICImagingFactory, WICBitmapDitherTypeNone, WICBitmapEncoderNoCache,
+        WICBitmapPaletteTypeCustom, WICColorContextProfile, WICDecodeMetadataCacheOnDemand,
+    };
+    use windows::Win32::System::Com::StructuredStorage::{
+        CreateStreamOnHGlobal, IPropertyBag2, PROPBAG2,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_MULTITHREADED, STREAM_SEEK_END, STREAM_SEEK_SET,
+    };
+
+    let unavailable = |_| ConvertError::Unavailable;
+    // SAFETY: COM is initialised on this thread for the conversion and released
+    // when `Guard` drops. Every interface is owned here; buffers passed to WIC
+    // outlive the calls that read them.
+    unsafe {
+        let init = CoInitializeEx(None, COINIT_MULTITHREADED);
+        struct Guard(bool);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                if self.0 {
+                    unsafe { CoUninitialize() };
+                }
+            }
+        }
+        let _guard = Guard(init.is_ok());
+
+        let factory: IWICImagingFactory =
+            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
+                .map_err(unavailable)?;
+        let input = factory.CreateStream().map_err(unavailable)?;
+        input.InitializeFromMemory(bytes).map_err(unavailable)?;
+        let decoder = factory
+            .CreateDecoderFromStream(&input, std::ptr::null(), WICDecodeMetadataCacheOnDemand)
+            .map_err(|_| ConvertError::Undecodable)?;
+        let frame = decoder.GetFrame(0).map_err(|_| ConvertError::Undecodable)?;
+
+        let output = CreateStreamOnHGlobal(None, true).map_err(unavailable)?;
+        let encoder = factory
+            .CreateEncoder(&GUID_ContainerFormatJpeg, std::ptr::null())
+            .map_err(unavailable)?;
+        encoder
+            .Initialize(&output, WICBitmapEncoderNoCache)
+            .map_err(unavailable)?;
+        let mut target: Option<IWICBitmapFrameEncode> = None;
+        let mut options: Option<IPropertyBag2> = None;
+        encoder
+            .CreateNewFrame(&mut target, &mut options)
+            .map_err(unavailable)?;
+        let target = target.ok_or(ConvertError::Unavailable)?;
+        if let Some(bag) = options.as_ref() {
+            let mut prop_name: Vec<u16> = HSTRING::from("ImageQuality")
+                .as_wide()
+                .iter()
+                .copied()
+                .chain(std::iter::once(0))
+                .collect();
+            let prop = PROPBAG2 {
+                pstrName: PWSTR(prop_name.as_mut_ptr()),
+                ..Default::default()
+            };
+            let quality = VARIANT::from(0.92f32);
+            let _ = bag.Write(1, &prop, &quality);
+        }
+        target.Initialize(options.as_ref()).map_err(unavailable)?;
+
+        let (mut width, mut height) = (0u32, 0u32);
+        frame
+            .GetSize(&mut width, &mut height)
+            .map_err(|_| ConvertError::Undecodable)?;
+        target.SetSize(width, height).map_err(unavailable)?;
+        let (mut dpi_x, mut dpi_y) = (96.0f64, 96.0f64);
+        if frame.GetResolution(&mut dpi_x, &mut dpi_y).is_ok() {
+            let _ = target.SetResolution(dpi_x, dpi_y);
+        }
+
+        // Preserve the colour profile when present.
+        let mut count = 0u32;
+        if frame.GetColorContexts(&mut [], &mut count).is_ok() && count > 0 {
+            let mut contexts: Vec<Option<IWICColorContext>> = (0..count)
+                .map(|_| factory.CreateColorContext().ok())
+                .collect();
+            if contexts.iter().all(Option::is_some)
+                && frame.GetColorContexts(&mut contexts, &mut count).is_ok()
+            {
+                let profiles: Vec<Option<IWICColorContext>> = contexts
+                    .into_iter()
+                    .flatten()
+                    .filter(|c| c.GetType().is_ok_and(|t| t == WICColorContextProfile))
+                    .take(1)
+                    .map(Some)
+                    .collect();
+                if !profiles.is_empty() {
+                    let _ = target.SetColorContexts(&profiles);
+                }
+            }
+        }
+
+        let source_format: GUID = frame
+            .GetPixelFormat()
+            .map_err(|_| ConvertError::Undecodable)?;
+        let mut format = if source_format == GUID_WICPixelFormat8bppGray {
+            GUID_WICPixelFormat8bppGray
+        } else {
+            GUID_WICPixelFormat24bppBGR
+        };
+        target.SetPixelFormat(&mut format).map_err(unavailable)?;
+        let source: IWICBitmapSource = if format == source_format {
+            frame.cast().map_err(unavailable)?
+        } else {
+            let converter = factory.CreateFormatConverter().map_err(unavailable)?;
+            converter
+                .Initialize(
+                    &frame,
+                    &format,
+                    WICBitmapDitherTypeNone,
+                    None,
+                    0.0,
+                    WICBitmapPaletteTypeCustom,
+                )
+                .map_err(|_| ConvertError::Undecodable)?;
+            converter.cast().map_err(unavailable)?
+        };
+        target
+            .WriteSource(&source, std::ptr::null())
+            .map_err(|error| {
+                if error.code() == WINCODEC_ERR_COMPONENTNOTFOUND {
+                    ConvertError::Undecodable
+                } else {
+                    ConvertError::Unavailable
+                }
+            })?;
+        target.Commit().map_err(unavailable)?;
+        encoder.Commit().map_err(unavailable)?;
+
+        let mut size = 0u64;
+        output
+            .Seek(0, STREAM_SEEK_END, Some(&mut size))
+            .map_err(unavailable)?;
+        output.Seek(0, STREAM_SEEK_SET, None).map_err(unavailable)?;
+        let size = usize::try_from(size).map_err(|_| ConvertError::Unavailable)?;
+        let mut jpeg = vec![0u8; size];
+        let mut filled = 0usize;
+        while filled < size {
+            let mut read = 0u32;
+            let chunk = u32::try_from(size - filled).unwrap_or(u32::MAX);
+            output
+                .Read(jpeg[filled..].as_mut_ptr().cast(), chunk, Some(&mut read))
+                .ok()
+                .map_err(unavailable)?;
+            if read == 0 {
+                return Err(ConvertError::Unavailable);
+            }
+            filled += read as usize;
+        }
+        // WIC's HEIF decoder applies the container's rotation transform during
+        // GetFrame(0), so strip IFD0 Orientation to avoid double-rotating upright pixels.
+        Ok(screenshots_source::exif::carry_exif_to_jpeg(
+            bytes, jpeg, true,
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn to_jpeg(_bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
+    Err(ConvertError::Unavailable)
+}
