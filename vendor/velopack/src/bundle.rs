@@ -41,7 +41,10 @@ pub fn load_bundle_from_file<'a, P: AsRef<Path>>(file_name: P) -> Result<BundleZ
     debug!("Loading bundle from file '{:?}'...", file_name);
     let file = misc::retry_io(|| File::open(file_name))?;
     let cursor: Box<dyn ReadSeek> = Box::new(file);
-    let zip = ZipArchive::new(cursor)?;
+    let zip = open_package_zip(cursor, || {
+        let file = misc::retry_io(|| File::open(file_name))?;
+        Ok(Box::new(file) as Box<dyn ReadSeek>)
+    })?;
     Ok(BundleZip {
         zip: Rc::new(RefCell::new(zip)),
         zip_from_file: true,
@@ -49,6 +52,24 @@ pub fn load_bundle_from_file<'a, P: AsRef<Path>>(file_name: P) -> Result<BundleZ
         zip_range: None,
         manifest: None,
     })
+}
+
+/// Open a package archive at offset 0 before letting zip detect the offset.
+///
+/// zip 9.0.5 detects an archive's offset by scanning the file from its first
+/// byte to the central directory, so every open reads the whole package, and
+/// the app's own startup opens each local full package. A package written by
+/// Velopack starts at offset 0, which zip reads straight from the central
+/// directory; anything else still opens through detection.
+fn open_package_zip<'a>(
+    reader: Box<dyn ReadSeek + 'a>,
+    reopen: impl FnOnce() -> Result<Box<dyn ReadSeek + 'a>, Error>,
+) -> Result<ZipArchive<Box<dyn ReadSeek + 'a>>, Error> {
+    let at_start = zip::read::Config { archive_offset: zip::read::ArchiveOffset::Known(0) };
+    match ZipArchive::with_config(at_start, reader) {
+        Ok(zip) => Ok(zip),
+        Err(_) => Ok(ZipArchive::new(reopen()?)?),
+    }
 }
 
 pub fn load_bundle_from_memory<'a>(zip_range: &'a [u8]) -> Result<BundleZip<'a>, Error> {
@@ -653,4 +674,91 @@ Notes with special chars: & < > " '
     assert_eq!(manifest.machine_architecture, "x64");
     assert_eq!(manifest.channel, "stable");
     assert!(manifest.release_notes.contains("& < > \" '"));
+}
+
+#[cfg(test)]
+mod package_open_tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::io::SeekFrom;
+    use std::rc::Rc as SharedCount;
+    use zip::write::SimpleFileOptions;
+
+    /// A reader that counts the bytes read through it.
+    struct Counting<R> {
+        inner: R,
+        read: SharedCount<Cell<u64>>,
+    }
+
+    impl<R: Read> Read for Counting<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.inner.read(buf)?;
+            self.read.set(self.read.get() + n as u64);
+            Ok(n)
+        }
+    }
+
+    impl<R: Seek> Seek for Counting<R> {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    /// A package with one large stored member ahead of its nuspec, as a full
+    /// package carries its payload ahead of the central directory. Its offsets
+    /// count from its own first byte, as Velopack writes them.
+    fn package() -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let stored = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("lib/app/payload.bin", stored).unwrap();
+        zip.write_all(&vec![0x5a; 32 << 20]).unwrap();
+        zip.start_file("App.nuspec", stored).unwrap();
+        zip.write_all(b"<package/>").unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    struct Opened {
+        zip: Result<ZipArchive<Box<dyn ReadSeek>>, Error>,
+        read: u64,
+        reopened: bool,
+    }
+
+    fn open(bytes: Vec<u8>) -> Opened {
+        let read = SharedCount::new(Cell::new(0));
+        let reopened = SharedCount::new(Cell::new(false));
+        let first: Box<dyn ReadSeek> = Box::new(Counting { inner: Cursor::new(bytes.clone()), read: read.clone() });
+        let (again, flag) = (read.clone(), reopened.clone());
+        let zip = open_package_zip(first, move || {
+            flag.set(true);
+            Ok(Box::new(Counting { inner: Cursor::new(bytes), read: again }) as Box<dyn ReadSeek>)
+        });
+        Opened { zip, read: read.get(), reopened: reopened.get() }
+    }
+
+    fn nuspec(zip: &mut ZipArchive<Box<dyn ReadSeek>>) -> String {
+        let mut text = String::new();
+        zip.by_name("App.nuspec").unwrap().read_to_string(&mut text).unwrap();
+        text
+    }
+
+    #[test]
+    fn a_package_opens_without_reading_its_payload() {
+        let opened = open(package());
+        assert!(!opened.reopened, "a package at offset 0 fell back to offset detection");
+        assert!(opened.read < 1 << 20, "opening read {} bytes of a 32 MiB package", opened.read);
+        let mut zip = opened.zip.unwrap();
+        assert_eq!(zip.len(), 2);
+        assert_eq!(nuspec(&mut zip), "<package/>");
+    }
+
+    #[test]
+    fn a_package_behind_other_bytes_opens_through_offset_detection() {
+        let mut bytes = b"a stub ahead of the archive".to_vec();
+        bytes.extend(package());
+        let opened = open(bytes);
+        assert!(opened.reopened, "the offset-0 open accepted a package that starts after other bytes");
+        let mut zip = opened.zip.unwrap();
+        assert_eq!(zip.len(), 2);
+        assert_eq!(nuspec(&mut zip), "<package/>");
+    }
 }
