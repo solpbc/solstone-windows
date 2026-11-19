@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.52
+PackageVersion: 2.0.53
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -22,8 +22,12 @@ Tags:
   - self-determination
   - solstone
 ReleaseNotes: |-
-  Changed
-  - nothing you'll notice changes in this release.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.52
+  Fixed
+  - on the last setup step, the heading now says "connected to" your journal only while your journal is answering. otherwise it says "paired with" it.
+  - if you chose a custom folder during setup and the solstone app couldn't find your journal on this PC, it now can.
+  - when you pause, the minutes left now read the same in the tray icon's hover text, the tray menu and the settings window.
+  - section titles on the "your journal", "this PC" and "updates" pages are now lowercase, like the rest of the app.
+  - on the "technical details" page, every row now lines up.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.53
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0

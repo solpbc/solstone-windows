@@ -4,13 +4,13 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.53] - 2026-11-19
 
 ### Fixed
 
 - on the last setup step, the heading now says "connected to" your journal only while your journal is answering. otherwise it says "paired with" it.
-- the solstone app can find your journal on this PC when you chose a custom folder during setup.
-- when you pause, the tray icon's hover text now shows the same minutes left as the tray menu and the settings window.
+- if you chose a custom folder during setup and the solstone app couldn't find your journal on this PC, it now can.
+- when you pause, the minutes left now read the same in the tray icon's hover text, the tray menu and the settings window.
 - section titles on the "your journal", "this PC" and "updates" pages are now lowercase, like the rest of the app.
 - on the "technical details" page, every row now lines up.
 
