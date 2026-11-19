@@ -591,12 +591,13 @@ let foundJournalPresses = 0;
 // than the ordinary paired status, while the journal link presents as connected.
 let foundJournalConnected = false;
 // The press verified the journal over the pinned connection, which is hearing from
-// it. With no source on nothing presents the link, so that answer carries the row
+// it. With no source on nothing presents the link, so that answer carries the status
 // for one mains lease: lease_ms(FOREGROUND_CHECK_SECS) in observer-model's
 // journal_link.rs, 15 s + 5 s + 1 s.
 const FOUND_JOURNAL_PRESS_LEASE_MS = 21_000;
 let foundJournalConnectedAt: number | null = null;
 let pairingStatusEl: HTMLElement | null = null;
+let setupConnectionHeadingEl: HTMLElement | null = null;
 
 const SETUP_LINK_ERRORS: Record<string, string> = {
   "no credential access": t("windows.ui.nocredentialaccess"),
@@ -751,24 +752,45 @@ function foundJournalPressHolds(): boolean {
   return elapsed >= 0 && elapsed < FOUND_JOURNAL_PRESS_LEASE_MS;
 }
 
+function journalConnectionIsCurrent(dump: HealthDump): boolean {
+  const link = dump.sync.journal_link ?? null;
+  return link === "connected" || (link === null && foundJournalPressHolds());
+}
+
 function pairingStatusLabel(dump: HealthDump): string {
   const presented = presentedPairing(dump.sync.pairing);
-  if (foundJournalConnected && presented.phase === "paired") {
-    const link = dump.sync.journal_link ?? null;
-    if (link === "connected" || (link === null && foundJournalPressHolds())) {
-      return t("windows.ui.connectedto", { "value": String(markTextForm(presented.mark)) });
-    }
+  if (foundJournalConnected && presented.phase === "paired" && journalConnectionIsCurrent(dump)) {
+    return t("windows.ui.connectedto", { "value": String(markTextForm(presented.mark)) });
   }
   return pairingPhaseLabel(presented);
 }
 
+function setupConnectionHeadingLabel(dump: HealthDump): string {
+  const pairing = dump.sync.pairing;
+  if (pairing.phase === "paired") {
+    if (journalConnectionIsCurrent(dump)) {
+      return pairing.mark != null
+        ? t("windows.ui.connectedto", { "value": markTextForm(pairing.mark) })
+        : t("windows.desktop.shared.copy.setupconnectedtoyourjournal");
+    }
+    if (pairing.mark != null) {
+      return t("windows.ui.pairedwith", { "value": markTextForm(pairing.mark) });
+    }
+  }
+  return t("windows.ui.connectyourjournal");
+}
+
 // Runs on the window's one-second clock: a lapse changes nothing else, so no health
-// update would repaint the row, and a focused paste field holds back a full render.
+// update would repaint the status, and a focused paste field holds back a full render.
 function lapseFoundJournalPress(): void {
   if (foundJournalConnectedAt === null || foundJournalPressHolds()) return;
   foundJournalConnectedAt = null;
-  if (pairingStatusEl?.isConnected && latestHealth) {
+  if (!latestHealth) return;
+  if (pairingStatusEl?.isConnected) {
     pairingStatusEl.textContent = pairingStatusLabel(latestHealth);
+  }
+  if (setupConnectionHeadingEl?.isConnected) {
+    setupConnectionHeadingEl.textContent = setupConnectionHeadingLabel(latestHealth);
   }
 }
 
@@ -5199,7 +5221,7 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
     mic: t("windows.desktop.shared.copy.setupmicrophoneheadline"),
     system_audio: t("windows.ui.sharesoundfromthiscomputer"),
     screen: t("windows.ui.shareyourscreen"),
-    connection: t("windows.ui.connectyourjournal"),
+    connection: setupConnectionHeadingLabel(dump),
   } as const;
 
   const stepNum = stepNumberMap[step as keyof typeof stepNumberMap] ?? 1;
@@ -5214,22 +5236,10 @@ function renderWizard(dump: HealthDump, preview: PreviewSnapshot): HTMLElement {
   heading.classList.add("wizard-step-title");
   heading.tabIndex = -1;
 
-  if (step === "connection") {
-    const isPaired = dump.sync.pairing.phase === "paired";
-    if (isPaired) {
-      // A pairing alone is not evidence: the heading says connected only while the
-      // journal link has recently heard from the journal, as the journal pane does.
-      const mark = dump.sync.pairing.mark;
-      if (dump.sync.journal_link === "connected") {
-        heading.textContent = mark != null
-          ? t("windows.ui.connectedto", { "value": String(markTextForm(mark)) })
-          : t("windows.desktop.shared.copy.setupconnectedtoyourjournal");
-      } else if (mark != null) {
-        heading.textContent = t("windows.ui.pairedwith", { "value": String(markTextForm(mark)) });
-      }
-      automation(heading, ids["settings.pairing.state"]);
-      heading.classList.add("selectable");
-    }
+  if (step === "connection" && dump.sync.pairing.phase === "paired") {
+    setupConnectionHeadingEl = heading;
+    automation(heading, ids["settings.pairing.state"]);
+    heading.classList.add("selectable");
   }
 
   copy.append(heading);
@@ -8286,6 +8296,7 @@ export const __test__ = {
     foundJournalConnected = false;
     foundJournalConnectedAt = null;
     pairingStatusEl = null;
+    setupConnectionHeadingEl = null;
     setupActionError.finish = "";
     setupActionError.browser = "";
     setupActionError.retry = "";

@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
+import { t } from "../src/i18n";
 import { automationContract } from "../src/lib/contract";
 import * as app from "../src/main";
 import { notPairedDump, pairedWithMarkDump, sampleMarkSpec } from "./fixtures";
@@ -229,6 +230,7 @@ describe("a journal found on this computer", () => {
 
     afterEach(() => {
       vi.useRealTimers();
+      vi.restoreAllMocks();
     });
 
     it("the press carries connected for one lease, then the row lapses with nothing else changing", async () => {
@@ -259,10 +261,61 @@ describe("a journal found on this computer", () => {
       expect(byId(ids["settings.pairing.state"])?.textContent).toContain("connected to");
     });
 
-    it("a paired app that never pressed says paired, inside any lease", async () => {
+    it.each([null, "connected"] as const)("without a press, link %s keeps the ordinary paired label", (journal_link) => {
       setRoute("journal");
-      app.__test__.renderSettings(pairedWithMarkDump(found.mark) as ReturnType<typeof notPairedDump>);
-      expect(byId(ids["settings.pairing.state"])?.textContent).toContain("paired with");
+      const paired = pairedWithMarkDump(found.mark);
+      app.__test__.renderSettings({ ...paired, sync: { ...paired.sync, journal_link } });
+      expect(byId(ids["settings.pairing.state"])?.textContent).toBe(
+        t("windows.ui.pairedwith", { value: found.mark.words.join("·") }),
+      );
+    });
+
+    it("setup shows the verified press until the lease expires, then updates the same heading", async () => {
+      setRoute("home");
+      const setup = setupDump("connection");
+      const unpaired = {
+        ...setup,
+        app_state: "idle",
+        sources: setup.sources.map(({ kind }) => ({ kind, status: "inactive", device: "" })),
+        setup: { ...setup.setup, mic: false, system_audio: false, screen: false },
+      };
+      const paired = {
+        ...unpaired,
+        sync: { ...pairedWithMarkDump(found.mark).sync, journal_link: null },
+      };
+      const now = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+      answering(found, async () => {
+        app.__test__.setHealth(paired as ReturnType<typeof notPairedDump>);
+      });
+      app.__test__.renderSettings(unpaired);
+      await look();
+      const connect = byId(ids["settings.pairing.foundConnect"])!;
+      connect.click();
+      await vi.waitFor(() => expect(byId(ids["settings.pairing.foundConnect"])).toBeNull());
+
+      const heading = () => byId(ids["settings.pairing.state"]);
+      const mark = { value: found.mark.words.join("·") };
+      const connectedLabel = t("windows.ui.connectedto", mark);
+      const pairedLabel = t("windows.ui.pairedwith", mark);
+      expect(heading()?.textContent).toBe(connectedLabel);
+
+      for (const journal_link of ["connecting", "offline"] as const) {
+        app.__test__.renderSettings({ ...paired, sync: { ...paired.sync, journal_link } });
+        expect(heading()?.textContent).toBe(pairedLabel);
+      }
+      app.__test__.renderSettings(paired);
+      const displayedHeading = heading()!;
+      expect(displayedHeading.tagName).toBe("H2");
+
+      clock.mockReturnValue(now + 20_999);
+      app.__test__.lapseFoundJournalPress();
+      expect(displayedHeading.textContent).toBe(connectedLabel);
+
+      clock.mockReturnValue(now + 21_000);
+      app.__test__.lapseFoundJournalPress();
+      expect(heading()).toBe(displayedHeading);
+      expect(displayedHeading.textContent).toBe(pairedLabel);
     });
   });
 

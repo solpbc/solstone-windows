@@ -10,6 +10,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 - importing a HEIC or HEIF photo through the solstone app on windows now converts it to JPEG on your PC while keeping the date it was taken and its orientation, so your journal can accept it. if your PC can't convert a photo, the app says so and doesn't add it to your journal.
 
+### Fixed
+
+- when you connect to your journal on this PC, the last setup step now briefly shows "connected to" even with every source off.
+
 ## [2.0.53] - 2026-11-19
 
 ### Fixed
