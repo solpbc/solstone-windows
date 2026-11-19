@@ -8,7 +8,7 @@ goes into your journal.
 ## Status
 
 Shipped alpha. Screen, system audio and microphone intake, the tray shell,
-pairing with a journal, signed Velopack packaging with delta updates, and
+pairing with a journal, signed Velopack packaging with full-package updates, and
 the FlaUI smoke gate are all in place and releasing (see
 [CHANGELOG.md](CHANGELOG.md)). It pairs with a journal; it does not run one.
 
