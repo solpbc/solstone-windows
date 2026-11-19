@@ -9,6 +9,22 @@ SCP=${SCP:-scp}
 SSH=${SSH:-ssh}
 ssh_output_file=
 
+# A reserved build box admits a release run's commands only when they carry the
+# reservation's exact name. Set SOLPBC_WINBUILD_TRAIN on the driver to pass it
+# into the remote process; unset or empty, nothing is added. It bypasses the
+# reservation only, never another hold.
+winbuild_train=${SOLPBC_WINBUILD_TRAIN:-}
+train_set=
+if [ -n "$winbuild_train" ]; then
+  case "$winbuild_train" in
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*)
+      echo "ERROR: win-host-ci: SOLPBC_WINBUILD_TRAIN must be letters, digits, '.', '_' or '-'" >&2
+      exit 1
+      ;;
+  esac
+  train_set="set SOLPBC_WINBUILD_TRAIN=$winbuild_train&&"
+fi
+
 cleanup() {
   original_status=$1
   trap - EXIT HUP INT TERM
@@ -123,7 +139,7 @@ else
   echo "ERROR: win-host-ci: SSH output file creation failed" >&2
   exit 1
 fi
-remote_command="cmd /d /c \"set EXPECTED_RELEASE_COMMIT=$snapshot_sha&&set EXPECTED_CARGO_LOCK_SHA256=$cargo_lock_sha256&&set EXPECTED_UI_PACKAGE_LOCK_SHA256=$ui_package_lock_sha256&&C:\\sol\\sw-ci.cmd\""
+remote_command="cmd /d /c \"${train_set}set EXPECTED_RELEASE_COMMIT=$snapshot_sha&&set EXPECTED_CARGO_LOCK_SHA256=$cargo_lock_sha256&&set EXPECTED_UI_PACKAGE_LOCK_SHA256=$ui_package_lock_sha256&&C:\\sol\\sw-ci.cmd\""
 if "$SSH" \
   -o ControlMaster=auto \
   -o "ControlPath=/tmp/sw-%r@%h:%p" \

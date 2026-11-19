@@ -139,7 +139,7 @@ the SHA-256 of `Cargo.lock` and `ui/package-lock.json`. Before byte-changing wor
 the box requires a clean checkout and all three values; the caller accepts the
 result only when exactly one matching `WIN_CI_HEAD`,
 `WIN_CI_CARGO_LOCK_SHA256`, and `WIN_CI_UI_LOCK_SHA256` precede `WIN_CI_OK`.
-`WIN_REMOTE_HOST` is supplied by your environment, never committed. The live FlaUI
+`WIN_REMOTE_HOST` is supplied by your environment, never committed. When the build box is reserved for a release run, set `SOLPBC_WINBUILD_TRAIN` to that run's reservation name and the gate carries it into the box's remote process; the name bypasses the reservation only, never another hold; unset, it adds nothing. The live FlaUI
 smoke + lifecycle matrix stay operator-direct on the box (not part of
 `win-host-ci`).
 

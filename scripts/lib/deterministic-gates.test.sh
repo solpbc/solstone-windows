@@ -672,7 +672,7 @@ reset_fake_transfer() {
   unset FAKE_GIT_CLEANUP_STATUS FAKE_GIT_HEAD_MISMATCH FAKE_SCP_FAIL
   unset FAKE_SCP_STATUS FAKE_SCP_COPY_TO FAKE_SCP_SOURCE_FILE
   unset FAKE_SCP_BINDING_FAIL
-  unset FAKE_SSH_MODE FAKE_SSH_STATUS FAKE_GIT_RELEASE_DIRTY
+  unset FAKE_SSH_MODE FAKE_SSH_STATUS FAKE_GIT_RELEASE_DIRTY SOLPBC_WINBUILD_TRAIN
   unset FAKE_EXPECTED_RELEASE_COMMIT FAKE_LOCK_WITNESS FAKE_RUN_ID
 }
 
@@ -1234,6 +1234,37 @@ assert_contains \
   "orchestrator passes UI lock binding" \
   "$(cat "$FAKE_WITNESS")" \
   "EXPECTED_UI_PACKAGE_LOCK_SHA256=$FAKE_UI_LOCK_SHA256"
+assert_not_contains \
+  "orchestrator adds no reservation name unless one is set" \
+  "$(cat "$FAKE_WITNESS")" \
+  "SOLPBC_WINBUILD_TRAIN"
+
+reset_fake_transfer "orchestrator-train-name"
+FAKE_SSH_MODE=success
+SOLPBC_WINBUILD_TRAIN=overnight-release-261119
+export FAKE_SSH_MODE SOLPBC_WINBUILD_TRAIN
+run_fake_orchestrator
+assert_eq "orchestrator with a reservation name exits zero" "0" "$ORCHESTRATOR_STATUS"
+assert_contains \
+  "orchestrator carries the reservation name into the box command" \
+  "$(cat "$FAKE_WITNESS")" \
+  'cmd /d /c "set SOLPBC_WINBUILD_TRAIN=overnight-release-261119&&set EXPECTED_RELEASE_COMMIT='
+
+reset_fake_transfer "orchestrator-train-name-unsafe"
+FAKE_SSH_MODE=success
+SOLPBC_WINBUILD_TRAIN='release&&del C:\sol'
+export FAKE_SSH_MODE SOLPBC_WINBUILD_TRAIN
+run_fake_orchestrator
+assert_eq "an unsafe reservation name refuses" "1" "$ORCHESTRATOR_STATUS"
+assert_contains \
+  "an unsafe reservation name says why" \
+  "$ORCHESTRATOR_OUTPUT" \
+  "SOLPBC_WINBUILD_TRAIN must be"
+assert_not_contains \
+  "an unsafe reservation name never reaches the box" \
+  "$(cat "$FAKE_WITNESS")" \
+  "ssh|"
+unset SOLPBC_WINBUILD_TRAIN
 
 reset_fake_transfer "orchestrator-ssh-nonzero"
 FAKE_SSH_MODE=nonzero-success
