@@ -4,7 +4,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.54] - 2026-11-20
 
 ### Added
 
@@ -12,7 +12,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Fixed
 
-- when you connect to your journal on this PC, the last setup step now briefly shows "connected to" even with every source off.
+- right after you connected to your journal on this PC with every source off, the last setup step said "paired with". it now says "connected to".
 
 ## [2.0.53] - 2026-11-19
 
