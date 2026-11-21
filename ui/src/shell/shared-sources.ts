@@ -66,9 +66,7 @@ export function heading(count: number): string {
   return count === 1 ? t("windows.sharedsources.one") : t("windows.sharedsources.many", {count: number(count)});
 }
 
-export function summary(label: string, vault: Vault, now: number): string {
-  const {state, at} = vault;
-  const relative = at === null ? "" : relativeTaken(at, now);
+function compose(label: string, state: string, relative: string): string {
   const values = {label, state, relative};
   if (label && state && relative) return t("windows.sharedsources.labelstateage", values);
   if (label && relative) return t("windows.sharedsources.labelage", values);
@@ -77,33 +75,35 @@ export function summary(label: string, vault: Vault, now: number): string {
   return label || state || relative;
 }
 
+export function summary(label: string, vault: Vault, now: number): string {
+  return compose(label, vault.state, vault.at === null ? "" : relativeTaken(vault.at, now));
+}
+
+const NAME_CHARS = 20;
+const whole = (part: string) => part.replace(/ /g, "\u00a0");
+
+/**
+ * The separator wrap rule: a line breaks only after a separator, so the state and the
+ * time are never split and no line starts with one. On the tile the name stays whole
+ * too, shortened first when it is long; elsewhere the full name may wrap at its spaces.
+ */
+export function wrappingSummary(label: string, vault: Vault, now: number, compact = false): string {
+  const chars = [...label];
+  const name = !compact ? label : whole(chars.length > NAME_CHARS ? `${chars.slice(0, NAME_CHARS - 1).join("").trimEnd()}\u2026` : label);
+  const relative = vault.at === null ? "" : relativeTaken(vault.at, now);
+  return compose(name, whole(vault.state), whole(relative)).replace(/ \u00b7/g, "\u00a0\u00b7");
+}
+
 const clocks = new WeakMap<HTMLElement, () => void>();
 function line(label: string, vault: Vault, compact = false): HTMLElement {
   const node = document.createElement("span");
   node.className = "desk-remote-line";
   let previous: string | undefined;
   const paint = () => {
-    const now = Math.floor(Date.now()/1000);
-    const value = summary(label, vault, now);
+    const value = wrappingSummary(label, vault, Math.floor(Date.now()/1000), compact);
     if (value === previous) return;
     previous = value;
-    if (compact && label) {
-      // Locate the label slot after translation, including when the time precedes it.
-      const parts = summary("\u0000", vault, now).split("\u0000");
-      const name = document.createElement("span");
-      name.className = "desk-remote-name";
-      name.textContent = label;
-      node.replaceChildren();
-      for (const [index, part] of parts.entries()) {
-        if (index === 1) node.append(name);
-        if (part) {
-          const context = document.createElement("span");
-          context.className = "desk-remote-context";
-          context.textContent = part;
-          node.append(context);
-        }
-      }
-    } else node.textContent = value;
+    node.textContent = value;
   };
   paint();
   clocks.set(node, paint);

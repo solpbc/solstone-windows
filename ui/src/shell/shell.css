@@ -825,22 +825,10 @@ html:has(.desk-shell[data-width="phone"]) #setup-sun .sunarc-twilight {
   background: radial-gradient(circle, currentColor 0 1.5px, transparent 2px);
 }
 .desk-remote-device { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; }
+.desk-remote-device + .desk-remote-device { border-top: 1px solid var(--desk-hairline); padding-top: 10px; }
 .desk-remote-device .desk-glyph { width: 18px; height: 18px; flex: none; }
 .desk-remote-device > div { min-width: 0; overflow-wrap: anywhere; }
+.desk-remote-device strong { color: var(--desk-ink); font-weight: 600; }
 .desk-remote-line { display: block; font-size: 13px; overflow-wrap: anywhere; }
-.desk-tile-open > .desk-remote-line {
-  display: flex;
-  max-width: 100%;
-  white-space: pre-wrap;
-}
-.desk-remote-name {
-  flex: 0 1 auto;
-  min-width: min(4ch, 25%);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.desk-remote-context {
-  flex: none;
-  max-width: calc(100% - min(4ch, 25%));
-}
+/* An also-on value reads like the facts beside it. */
+.desk-fact > .desk-remote-line { margin-left: auto; color: inherit; font-size: inherit; text-align: right; }

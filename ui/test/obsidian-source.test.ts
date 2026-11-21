@@ -258,9 +258,9 @@ describe("Obsidian source rows", () => {
     expect(document.activeElement).toBe(button);
     for (const control of ["button", "input"]) {
       tile().querySelector<HTMLElement>(control)!.focus();
-      device.display_label += " renamed";
+      device.display_label = `Laptop ${control}`;
       await app.__test__.refreshRemotes("cached");
-      expect(tile().textContent).toContain(device.display_label);
+      expect(tile().textContent?.replace(/\u00a0/g, " ")).toContain(device.display_label);
       expect(document.activeElement).toBe(tile().querySelector(control));
     }
     app.__test__.setExclusions(exclusionRules());
@@ -283,15 +283,16 @@ describe("Obsidian source rows", () => {
     await app.__test__.refreshRemotes("cached");
     renderDesk(off, "pair-a");
     const tile = () => document.querySelector('[data-tile="obsidian"]')!;
-    expect(tile().textContent).toContain("Laptop · paused");
+    const spaced = (node: Element | null | undefined) => node?.textContent?.replace(/\u00a0/g, " ") ?? "";
+    expect(spaced(tile())).toContain("Laptop · paused");
     expect(tile().querySelector("input")?.checked).toBe(false);
-    expect(pane().querySelector(".desk-remote-card")?.textContent).toContain("Notes · paused");
+    expect(spaced(pane().querySelector(".desk-remote-card"))).toContain("Notes · paused");
     expect(pane().querySelector(".desk-remote-card")?.nextElementSibling?.className).toBe("desk-verdict");
     renderDesk(status({state:"checking"}), "pair-a");
     expect(tile().textContent).not.toContain("Laptop");
     expect(pane().querySelector(".desk-remote-card")).toBeNull();
     renderDesk(status({state:"on"}), "pair-a");
-    expect(pane().textContent).toContain("also onLaptop · paused");
+    expect(spaced(pane())).toContain("also onLaptop · paused");
     renderDesk(off, "pair-b");
     expect(tile().textContent).not.toContain("Laptop");
   });
