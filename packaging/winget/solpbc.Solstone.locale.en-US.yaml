@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.54
+PackageVersion: 2.0.55
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -23,9 +23,7 @@ Tags:
   - solstone
 ReleaseNotes: |-
   Added
-  - importing a HEIC or HEIF photo through the solstone app on windows now converts it to JPEG on your PC while keeping the date it was taken and its orientation, so your journal can accept it. if your PC can't convert a photo, the app says so and doesn't add it to your journal.
-  Fixed
-  - right after you connected to your journal on this PC with every source off, the last setup step said "paired with". it now says "connected to".
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.54
+  - if you share an Obsidian vault with your journal from another device, the solstone app for windows now shows which device. you can still add a vault on this PC.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.55
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0

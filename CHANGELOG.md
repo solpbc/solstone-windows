@@ -4,11 +4,11 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.55] - 2026-11-21
 
 ### Added
 
-- if another device shares an Obsidian vault with your journal, you can see the device in the solstone app for windows. you can still add a vault on this PC.
+- if you share an Obsidian vault with your journal from another device, the solstone app for windows now shows which device. you can still add a vault on this PC.
 
 ## [2.0.54] - 2026-11-20
 
