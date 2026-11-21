@@ -21,6 +21,7 @@
     "settings.hotkey.enabled": "settings.hotkey.enabled",
     "settings.hotkey.status": "settings.hotkey.status",
     "settings.import.choose": "settings.import.choose",
+    "settings.import.more": "settings.import.more",
     "settings.journal.open": "settings.journal.open",
     "settings.journal.unavailable": "settings.journal.unavailable",
     "settings.logs.preview": "settings.logs.preview",

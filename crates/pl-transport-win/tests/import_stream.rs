@@ -88,6 +88,7 @@ async fn multi_megabyte_save_preserves_bytes_and_sends_the_device_headers() {
             name: "document.txt",
             content_type: "text/plain",
             path: &path,
+            handoff: None,
         }),
     )
     .await
@@ -147,6 +148,7 @@ async fn a_refused_device_stops_future_file_and_start_dials() {
         name: "file.txt",
         content_type: "text/plain",
         path: &path,
+        handoff: None,
     };
     let first = client.save_import_file(file()).await;
     assert!(first.is_err(), "refused-device result: {first:?}");
@@ -207,6 +209,7 @@ async fn cancellation_closes_the_carrier_and_keeps_the_held_file() {
                 name: "file.txt",
                 content_type: "text/plain",
                 path: &upload_path,
+                handoff: None,
             })
             .await
     });
@@ -283,6 +286,7 @@ async fn an_early_http_refusal_stops_a_large_body_and_preserves_the_copy() {
             name: "file.txt",
             content_type: "text/plain",
             path: &path,
+            handoff: None,
         }),
     )
     .await

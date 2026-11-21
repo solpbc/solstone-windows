@@ -73,6 +73,9 @@ pub mod browser_registration;
 #[cfg(windows)]
 #[allow(unsafe_code)]
 pub mod journal_document_filter;
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub mod journal_import_channel;
 
 pub use desktop_activity::DesktopActivityProbe;
 pub use desktop_activity::{is_pump_degraded, is_session_eligible, set_pump_degraded};

@@ -4,6 +4,17 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- once your journal's import page supports it, files you choose there wait on this PC until your journal has them, even if you close the journal window; the same goes for files you drop on the journal window.
+- on the import tile's page, "more imports" opens your journal's import page in the journal window.
+
+### Changed
+
+- the solstone app no longer turns a file away because of its kind. a file you choose or drop waits on this PC for your journal, and your journal says whether it can take it.
+
 ## [2.0.55] - 2026-11-21
 
 ### Added

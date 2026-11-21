@@ -1066,6 +1066,7 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
     ]
   ],
   "windows.ui.moreaboutthis": [],
+  "windows.ui.moreimports": [],
   "windows.ui.movedown": [
     [
       "name",

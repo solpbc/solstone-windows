@@ -996,9 +996,10 @@ windows.ui.removex7e5608ab = remove
 
 windows.ui.couldntremovethistryagain = couldn't remove this. try again.
 
-windows.ui.addspdfsaudioimagesandtextyouchoosehereordropont = adds PDFs, audio, images and text you choose here or drop on this window.
+windows.ui.addspdfsaudioimagesandtextyouchoosehereordropont = choose files to bring into your journal, or drop them on this window.
 
 windows.ui.choosefiles = choose files…
+windows.ui.moreimports = more imports
 
 windows.ui.nothingwassavedonthisdevice = nothing was saved on this device.
 

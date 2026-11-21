@@ -229,6 +229,14 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         name: "journal_document_filter",
         owner: None,
     },
+    // The journal window's import message handler: reads the posting document's
+    // address and JSON text, and posts JSON back. No pointer outlives a call.
+    ApprovedNode {
+        path: "crates/platform-win/src/lib.rs",
+        kind: ApprovedKind::ModDecl,
+        name: "journal_import_channel",
+        owner: None,
+    },
     ApprovedNode {
         path: "crates/platform-win/src/lib.rs",
         kind: ApprovedKind::Fn,

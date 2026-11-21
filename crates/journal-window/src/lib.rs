@@ -6,6 +6,8 @@
 use serde_json::Value;
 use url::Url;
 
+pub mod import_host;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JournalOrigin {
     scheme: String,
@@ -16,6 +18,19 @@ pub struct JournalOrigin {
 impl JournalOrigin {
     pub fn from_url(url: &Url) -> Option<Self> {
         normalize(url)
+    }
+
+    /// The origin as a page reads it from `location.origin`.
+    pub fn ascii(&self) -> String {
+        let default = matches!(
+            (self.scheme.as_str(), self.port),
+            ("http", 80) | ("https", 443)
+        );
+        if default {
+            format!("{}://{}", self.scheme, self.host)
+        } else {
+            format!("{}://{}:{}", self.scheme, self.host, self.port)
+        }
     }
 }
 
@@ -514,6 +529,52 @@ mod tests {
                     "origin {origin_url}, candidate {candidate}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn the_window_shows_journal_pages_only() {
+        let origin = parse_origin("http://127.0.0.1:61234/_bridge/bootstrap");
+        // Every journal page stays in the window, more imports included.
+        for page in [
+            "http://127.0.0.1:61234/app/import/",
+            "http://127.0.0.1:61234/app/import/#guide/apple_health",
+        ] {
+            let url = parse_url(page);
+            assert_eq!(
+                decide(&origin, RequestKind::MainFrame, &url),
+                Decision::AllowMainFrame
+            );
+            assert_eq!(
+                document_disposition(&origin, page),
+                DocumentDisposition::Allow
+            );
+        }
+        // Everything else, the services site and help included, opens in the
+        // system browser, and never loads in the window or any frame of it.
+        for outside in [
+            "https://services.solstone.app/",
+            "https://support.solstone.app/kb/import",
+            "https://solstone.app/help",
+            "http://127.0.0.1:61235/app/import/",
+            "http://localhost:61234/app/import/",
+        ] {
+            let url = parse_url(outside);
+            assert_eq!(
+                decide(&origin, RequestKind::MainFrame, &url),
+                Decision::CancelMainFrameAndOpen,
+                "{outside}"
+            );
+            assert_eq!(
+                decide(&origin, RequestKind::NewWindow, &url),
+                Decision::DenyNewWindowAndOpen,
+                "{outside}"
+            );
+            assert_eq!(
+                document_disposition(&origin, outside),
+                DocumentDisposition::DenyLocal,
+                "{outside}"
+            );
         }
     }
 

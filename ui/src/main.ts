@@ -6364,7 +6364,12 @@ function renderImportPage(): HTMLElement {
   body.append(breath(t("windows.ui.addspdfsaudioimagesandtextyouchoosehereordropont")));
   const choose = deskAction(t("windows.ui.choosefiles"), () => { void importAction("import_choose_files"); }, ids["settings.import.choose"]);
   choose.disabled = latestImport?.available === false;
-  body.append(choose);
+  // The journal's own import page has every source, with its own steps.
+  const more = deskAction(t("windows.ui.moreimports"), () => { void importAction("import_open_journal_page"); }, ids["settings.import.more"]);
+  const actions = document.createElement("div");
+  actions.className = "desk-actions";
+  actions.append(choose, more);
+  body.append(actions);
   const intake = latestImport?.intake;
   if (intake) {
     const line = intake.copying

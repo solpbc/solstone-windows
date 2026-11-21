@@ -425,6 +425,7 @@ pub enum MessageId {
     m77696e646f77732e75692e6d6963726f70686f6e6573,
     m77696e646f77732e75692e6d696e75746561676f,
     m77696e646f77732e75692e6d6f726561626f757474686973,
+    m77696e646f77732e75692e6d6f7265696d706f727473,
     m77696e646f77732e75692e6d6f7665646f776e,
     m77696e646f77732e75692e6d6f76657570,
     m77696e646f77732e75692e6e3170617373776f726462697477617264656e616e647468656f7468657270617373776f72646d616e61676572,
@@ -1095,6 +1096,7 @@ pub fn render_dotted_with_options(locale: &str, dotted_id: &str, args: &[(&str, 
         "windows.ui.microphones" => MessageId::m77696e646f77732e75692e6d6963726f70686f6e6573,
         "windows.ui.minuteago" => MessageId::m77696e646f77732e75692e6d696e75746561676f,
         "windows.ui.moreaboutthis" => MessageId::m77696e646f77732e75692e6d6f726561626f757474686973,
+        "windows.ui.moreimports" => MessageId::m77696e646f77732e75692e6d6f7265696d706f727473,
         "windows.ui.movedown" => MessageId::m77696e646f77732e75692e6d6f7665646f776e,
         "windows.ui.moveup" => MessageId::m77696e646f77732e75692e6d6f76657570,
         "windows.ui.n1passwordbitwardenandtheotherpasswordmanager" => MessageId::m77696e646f77732e75692e6e3170617373776f726462697477617264656e616e647468656f7468657270617373776f72646d616e61676572,
@@ -6667,6 +6669,17 @@ pub fn render_with_options(locale: &str, id: MessageId, args: &[(&str, Value)], 
             #[allow(unused_mut)]
             let mut f_args = FluentArgs::new();
             ("m77696e646f77732e75692e6d6f726561626f757474686973".to_string(), f_args)
+        }
+        MessageId::m77696e646f77732e75692e6d6f7265696d706f727473 => {
+            const DECLARED: &[&str] = &[];
+            for (name, _) in args {
+                if !DECLARED.contains(name) {
+                    return Err(RenderError::UnknownArgument((*name).to_string()));
+                }
+            }
+            #[allow(unused_mut)]
+            let mut f_args = FluentArgs::new();
+            ("m77696e646f77732e75692e6d6f7265696d706f727473".to_string(), f_args)
         }
         MessageId::m77696e646f77732e75692e6d6f7665646f776e => {
             const DECLARED: &[&str] = &["name"];

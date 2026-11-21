@@ -2570,6 +2570,12 @@ const MESSAGES = {
     arguments: [
     ],
   },
+  "windows.ui.moreimports": {
+    resourceKey: "m77696e646f77732e75692e6d6f7265696d706f727473",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
   "windows.ui.movedown": {
     resourceKey: "m77696e646f77732e75692e6d6f7665646f776e",
     formatIntent: "text",

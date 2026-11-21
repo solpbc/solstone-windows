@@ -1,15 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-//! The native multiple-file dialog for import.
+//! The native file dialog for import. A filter only narrows the first view;
+//! the owner can always switch to every file.
 
 #[cfg(windows)]
 use observer_model::i18n::message;
 
 use std::path::PathBuf;
 
+/// A named file-type filter, for example `("*.zip, *.json", "*.zip;*.json")`.
+pub struct Filter {
+    pub name: String,
+    pub pattern: String,
+}
+
+/// Show the dialog over `owner`. `Ok(None)` means the owner dismissed it.
 #[cfg(windows)]
-pub fn choose_files(owner: isize) -> std::io::Result<Vec<PathBuf>> {
+pub fn choose_files(
+    owner: isize,
+    filter: Option<&Filter>,
+    multiple: bool,
+) -> std::io::Result<Option<Vec<PathBuf>>> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use windows::core::{Error, HSTRING};
@@ -41,26 +53,35 @@ pub fn choose_files(owner: isize) -> std::io::Result<Vec<PathBuf>> {
         let _guard = Guard;
         let dialog: IFileOpenDialog =
             CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).map_err(io_error)?;
-        dialog
-            .SetOptions(
-                dialog.GetOptions().map_err(io_error)?
-                    | FOS_ALLOWMULTISELECT
-                    | FOS_FILEMUSTEXIST
-                    | FOS_FORCEFILESYSTEM
-                    | FOS_NOCHANGEDIR,
-            )
-            .map_err(io_error)?;
-        let label = HSTRING::from(message("windows.ui.files", &[]));
-        let pattern = HSTRING::from("*.pdf;*.txt;*.md;*.markdown;*.log;*.png;*.jpg;*.jpeg;*.gif;*.webp;*.heic;*.heif;*.mp3;*.m4a;*.aac;*.ogg;*.oga;*.opus;*.flac;*.wav;*.amr;*.aif;*.aiff");
-        dialog
-            .SetFileTypes(&[COMDLG_FILTERSPEC {
-                pszName: windows::core::PCWSTR(label.as_ptr()),
+        let mut options = dialog.GetOptions().map_err(io_error)?
+            | FOS_FILEMUSTEXIST
+            | FOS_FORCEFILESYSTEM
+            | FOS_NOCHANGEDIR;
+        if multiple {
+            options |= FOS_ALLOWMULTISELECT;
+        }
+        dialog.SetOptions(options).map_err(io_error)?;
+        // The strings outlive SetFileTypes, which copies them.
+        let mut names = Vec::new();
+        let mut patterns = Vec::new();
+        if let Some(filter) = filter {
+            names.push(HSTRING::from(filter.name.as_str()));
+            patterns.push(HSTRING::from(filter.pattern.as_str()));
+        }
+        names.push(HSTRING::from(message("windows.ui.files", &[])));
+        patterns.push(HSTRING::from("*"));
+        let specs: Vec<_> = names
+            .iter()
+            .zip(&patterns)
+            .map(|(name, pattern)| COMDLG_FILTERSPEC {
+                pszName: windows::core::PCWSTR(name.as_ptr()),
                 pszSpec: windows::core::PCWSTR(pattern.as_ptr()),
-            }])
-            .map_err(io_error)?;
+            })
+            .collect();
+        dialog.SetFileTypes(&specs).map_err(io_error)?;
         if let Err(error) = dialog.Show(HWND(owner as *mut std::ffi::c_void)) {
             if error.code() == ERROR_CANCELLED.to_hresult() {
-                return Ok(Vec::new());
+                return Ok(None);
             }
             return Err(io_error(error));
         }
@@ -73,11 +94,15 @@ pub fn choose_files(owner: isize) -> std::io::Result<Vec<PathBuf>> {
             CoTaskMemFree(Some(name.0 as *const std::ffi::c_void));
             paths.push(path);
         }
-        Ok(paths)
+        Ok(Some(paths))
     }
 }
 
 #[cfg(not(windows))]
-pub fn choose_files(_owner: isize) -> std::io::Result<Vec<PathBuf>> {
+pub fn choose_files(
+    _owner: isize,
+    _filter: Option<&Filter>,
+    _multiple: bool,
+) -> std::io::Result<Option<Vec<PathBuf>>> {
     Err(std::io::ErrorKind::Unsupported.into())
 }

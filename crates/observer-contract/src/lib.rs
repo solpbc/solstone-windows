@@ -110,6 +110,7 @@ pub mod settings {
     pub const SOURCES_OBSIDIAN_STATE: &str = "settings.sources.obsidian.state";
     pub const SOURCES_OBSIDIAN_FOUND: &str = "settings.sources.obsidian.found";
     pub const IMPORT_CHOOSE: &str = "settings.import.choose";
+    pub const IMPORT_MORE: &str = "settings.import.more";
     pub const SOURCES_OBSIDIAN_CHOOSE: &str = "settings.sources.obsidian.choose";
     pub const SOURCES_OBSIDIAN_REFUSAL: &str = "settings.sources.obsidian.refusal";
     pub const SOURCES_OBSIDIAN_WARNING: &str = "settings.sources.obsidian.warning";
@@ -358,6 +359,7 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
             settings::SOURCES_OBSIDIAN_FOUND,
         ),
         ("settings.import.choose", settings::IMPORT_CHOOSE),
+        ("settings.import.more", settings::IMPORT_MORE),
         (
             "settings.sources.obsidian.choose",
             settings::SOURCES_OBSIDIAN_CHOOSE,

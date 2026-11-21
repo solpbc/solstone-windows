@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::import_client::{ImportFile, SavedImport, MAX_IMPORT_FILE_BYTES, REQUEST_BODY_LIMIT};
+use crate::import_client::{
+    Handoff, ImportFile, SavedImport, MAX_IMPORT_FILE_BYTES, REQUEST_BODY_LIMIT,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SavedProgress {
@@ -41,6 +43,9 @@ pub struct Item {
     pub may_have_reached: bool,
     #[serde(default)]
     pub missing_copy: bool,
+    /// Present when the journal page handed this file to the app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<Handoff>,
 }
 
 impl Item {
@@ -255,7 +260,7 @@ impl Store {
 /// Copy once at the owner's gesture. A staging directory is never deliverable;
 /// only the final rename publishes both the complete bytes and their identity.
 pub fn stage(root: &Path, source: &Path, id: String, now: u64) -> Result<Item, IntakeRefusal> {
-    stage_with_converter(root, source, id, now, |_| Err(()))
+    stage_with_converter(root, source, id, now, None, |_| Err(()))
 }
 
 /// Copy once at the owner's gesture, converting HEIC/HEIF photos into JPEG with
@@ -265,6 +270,7 @@ pub fn stage_with_converter<F>(
     source: &Path,
     id: String,
     now: u64,
+    handoff: Option<Handoff>,
     convert_photo: F,
 ) -> Result<Item, IntakeRefusal>
 where
@@ -285,11 +291,11 @@ where
         )));
     }
     let convertible = is_convertible_photo(source);
+    // The journal decides what a file is, so every kind is held and sent.
     let mime = if convertible {
         "image/jpeg"
     } else {
-        mime_for(source)
-            .ok_or_else(|| refuse(message("windows.ui.yourjournalcanttakethiskindoffile", &[])))?
+        mime_for(source).unwrap_or("application/octet-stream")
     };
     let mut input = File::open(source)
         .map_err(|_| refuse(message("windows.ui.thiscouldntbereadadditagain", &[])))?;
@@ -339,12 +345,14 @@ where
         refusal: None,
         may_have_reached: false,
         missing_copy: false,
+        handoff,
     };
     let framing = ImportFile {
         id: &item.id,
         name: &item.name,
         content_type: &item.mime,
         path: source,
+        handoff: item.handoff.as_ref(),
     };
     if size > MAX_IMPORT_FILE_BYTES || framing.request_length(size) > REQUEST_BODY_LIMIT {
         return Err(refuse(message(
@@ -399,7 +407,8 @@ pub fn converted_jpeg_name(path: &Path) -> String {
     format!("{stem}.jpg")
 }
 
-/// The phones' four kinds. Video containers are not inferred as audio.
+/// Content types for the kinds the phones name. Any other file is sent as bytes
+/// and the journal decides what it is. Video containers are not inferred as audio.
 pub fn mime_for(path: &Path) -> Option<&'static str> {
     Some(
         match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
@@ -484,6 +493,7 @@ mod tests {
             }),
             may_have_reached: true,
             missing_copy: false,
+            handoff: None,
         };
         assert!(item.progress_for("new").is_none());
         assert!(!item.refused_here("new", "2.0.52"));
@@ -575,6 +585,40 @@ mod tests {
 
     #[cfg(feature = "transport-tests")]
     #[test]
+    fn any_file_is_held_and_a_handoff_survives_reopening() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(root.path().join("import")).unwrap();
+        let export = root.path().join("chatgpt-export.zip");
+        fs::write(&export, b"PK zip bytes").unwrap();
+        let handoff = Handoff {
+            area: "chatgpt".into(),
+            context: serde_json::from_str(r#"{"setting":"s","future":{"nested":[1,2]}}"#).unwrap(),
+        };
+        let item = stage_with_converter(
+            store.root(),
+            &export,
+            new_id().unwrap(),
+            1,
+            Some(handoff.clone()),
+            |_| Err(()),
+        )
+        .unwrap();
+        assert_eq!(item.mime, "application/octet-stream");
+        let unnamed = root.path().join("no-extension");
+        fs::write(&unnamed, b"bytes").unwrap();
+        let plain = stage(store.root(), &unnamed, new_id().unwrap(), 2).unwrap();
+        assert!(plain.handoff.is_none());
+        let reopened = Store::open(store.root().into()).unwrap();
+        assert_eq!(reopened.items[&item.id].handoff.as_ref(), Some(&handoff));
+        assert_eq!(
+            fs::read(reopened.payload(&item.id)).unwrap(),
+            b"PK zip bytes"
+        );
+        assert_eq!(reopened.items[&plain.id].name, "no-extension");
+    }
+
+    #[cfg(feature = "transport-tests")]
+    #[test]
     fn failed_open_never_cleans_up_material() {
         let root = tempfile::tempdir().unwrap();
         let ready = root.path().join("a".repeat(64));
@@ -595,7 +639,7 @@ mod tests {
         let heic = root.path().join("IMG_0412.HEIC");
         fs::write(&heic, b"fake-heic-bytes").unwrap();
 
-        let item = stage_with_converter(store.root(), &heic, new_id().unwrap(), 10, |raw| {
+        let item = stage_with_converter(store.root(), &heic, new_id().unwrap(), 10, None, |raw| {
             assert_eq!(raw, b"fake-heic-bytes");
             Ok(b"\xff\xd8converted-jpeg\xff\xd9".to_vec())
         })
@@ -609,7 +653,15 @@ mod tests {
 
         let heif = root.path().join("IMG_0413.heif");
         fs::write(&heif, b"bad-heif").unwrap();
-        let err = stage_with_converter(store.root(), &heif, new_id().unwrap(), 11, |_| Err(()))
+        let err =
+            stage_with_converter(
+                store.root(),
+                &heif,
+                new_id().unwrap(),
+                11,
+                None,
+                |_| Err(()),
+            )
             .unwrap_err();
         assert_eq!(err.name, "IMG_0413.heif");
         assert!(!err.reason.is_empty());

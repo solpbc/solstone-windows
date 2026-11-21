@@ -21,6 +21,7 @@ mod hotkey;
 mod import;
 mod integration;
 mod ipc;
+mod journal_import;
 mod journal_links;
 mod lifecycle;
 mod logs;

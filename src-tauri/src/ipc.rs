@@ -1843,15 +1843,29 @@ pub async fn import_choose_files(
     crate::logs::require_settings(&window)?;
     let owner = window.hwnd().map_err(|_| "import_window_unavailable")?.0 as isize;
     let paths = tauri::async_runtime::spawn_blocking(move || {
-        platform_win::file_picker::choose_files(owner)
+        platform_win::file_picker::choose_files(owner, None, true)
     })
     .await
     .map_err(|_| "import_dialog_failed")?
     .map_err(|_| "import_dialog_failed")?;
-    if !paths.is_empty() {
+    if let Some(paths) = paths.filter(|paths| !paths.is_empty()) {
         crate::import::add_paths(app, paths);
     }
     Ok(())
+}
+
+/// The import tile's more imports: the journal's own import page, opened in the
+/// journal window.
+#[tauri::command]
+pub async fn import_open_journal_page(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::app::AppState>,
+) -> Result<(), String> {
+    crate::logs::require_settings(&window)?;
+    crate::windows::open_journal_at(&state, &app, Some(&app), Some("/app/import/"))
+        .await
+        .map_err(|e| e.token().to_string())
 }
 
 #[tauri::command]

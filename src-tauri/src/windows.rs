@@ -398,7 +398,18 @@ pub async fn open_journal<S: JournalSurface>(
     surface: &S,
     app: Option<&tauri::AppHandle>,
 ) -> Result<(), OpenJournalError> {
-    let result = open_journal_inner(state, surface, app).await;
+    open_journal_at(state, surface, app, None).await
+}
+
+/// Open (or focus) the paired journal window on one of its pages. A pending
+/// journal link still wins: it is the owner's most recent ask.
+pub async fn open_journal_at<S: JournalSurface>(
+    state: &crate::app::AppState,
+    surface: &S,
+    app: Option<&tauri::AppHandle>,
+    page: Option<&str>,
+) -> Result<(), OpenJournalError> {
+    let result = open_journal_inner(state, surface, app, page).await;
     if result.is_err() && app.is_some() {
         std::thread::spawn(crate::journal_links::show_failure);
     }
@@ -418,6 +429,7 @@ async fn open_journal_inner<S: JournalSurface>(
     state: &crate::app::AppState,
     surface: &S,
     app: Option<&tauri::AppHandle>,
+    page: Option<&str>,
 ) -> Result<(), OpenJournalError> {
     let _open_guard = state.journal_open_lock.lock().await;
     let phase = state
@@ -440,7 +452,11 @@ async fn open_journal_inner<S: JournalSurface>(
                 surface.open_settings().map_err(|_| OpenJournalError::OpenFailed)?;
                 return Ok(());
             }
-            let target_path = pending.target.as_deref().map(observer_model::journal_target::path);
+            let target_path = pending
+                .target
+                .as_deref()
+                .map(observer_model::journal_target::path)
+                .or_else(|| page.map(str::to_owned));
 
             if surface.focus_journal_if_present(target_path.as_deref()).map_err(|_| OpenJournalError::OpenFailed)? {
                 if let Some(target) = pending.target.as_deref() {
@@ -762,6 +778,12 @@ fn build_journal_window(
             builder
         }
     };
+    // Import handoff: one message channel, from the journal's top page only.
+    let import_host = crate::journal_import::Host::new(&origin);
+    let builder = match &import_host {
+        Some((_, script)) => builder.initialization_script(script.clone()),
+        None => builder,
+    };
     let navigation_origin = origin.clone();
     let navigation_app = app.clone();
     let new_window_origin = origin.clone();
@@ -896,7 +918,33 @@ fn build_journal_window(
         let installed = Arc::new(std::sync::Mutex::new(None));
         let installed_for_callback = Arc::clone(&installed);
         let window_for_callback = window.clone();
+        let import_origin = origin.clone();
+        let import_app = app.clone();
+        let import_label = label.to_string();
+        let import_for_view = import_host.as_ref().map(|(host, _)| host.clone());
         let with_webview_result = window.with_webview(move |webview| {
+            if let Some(host) = import_for_view {
+                let installed = platform_win::journal_import_channel::install(
+                    &webview.controller(),
+                    webview.environment(),
+                    &import_origin,
+                    move |id, header| {
+                        crate::journal_import::receive(
+                            &import_app,
+                            &import_label,
+                            &host,
+                            id,
+                            header,
+                        )
+                    },
+                );
+                tracing::info!(
+                    target: "window",
+                    label = "journal",
+                    installed,
+                    "journal import channel"
+                );
+            }
             let terminate_window = window_for_callback.clone();
             let install = platform_win::journal_document_filter::install_document_filter(
                 webview.controller(),
@@ -951,6 +999,19 @@ fn build_journal_window(
                 journal_window::BuildFault::FilterRefused,
                 Some(install),
             ));
+        }
+        if let Some((host, _)) = import_host {
+            let drop_app = app.clone();
+            let drop_label = label.to_string();
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) =
+                    event
+                {
+                    if let Some(window) = drop_app.get_webview_window(&drop_label) {
+                        crate::journal_import::dropped(&window, &host, paths.clone());
+                    }
+                }
+            });
         }
         if window.navigate(bootstrap_url).is_err() {
             return Err(journal_build_stopped(

@@ -635,6 +635,7 @@ pub fn run(
             crate::ipc::get_source_counters,
             crate::ipc::import_status,
             crate::ipc::import_choose_files,
+            crate::ipc::import_open_journal_page,
             crate::ipc::import_remove,
             crate::ipc::import_prepare_remove,
             crate::ipc::import_cancel_remove,

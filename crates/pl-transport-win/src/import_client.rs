@@ -37,6 +37,14 @@ pub enum ImportReply {
     },
 }
 
+/// What the journal page asked for when it handed a file to the app: the import
+/// area it was chosen for and the page's context, both passed through on save.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Handoff {
+    pub area: String,
+    pub context: serde_json::Map<String, serde_json::Value>,
+}
+
 /// Held file and its original display metadata. Only bounded framing is held
 /// in memory; the payload stays on disk throughout delivery.
 pub struct ImportFile<'a> {
@@ -44,6 +52,7 @@ pub struct ImportFile<'a> {
     pub name: &'a str,
     pub content_type: &'a str,
     pub path: &'a Path,
+    pub handoff: Option<&'a Handoff>,
 }
 
 pub(crate) struct MultipartFile {
@@ -57,8 +66,26 @@ impl MultipartFile {
     pub(crate) fn new(file: &ImportFile<'_>, size: u64) -> Self {
         let boundary = format!("----solstoneimport{}", file.id);
         let name = filename(file.name);
-        let prefix = format!("--{boundary}\r\nContent-Disposition: form-data; name=\"client_item_id\"\r\n\r\n{}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"imported_via\"\r\n\r\ndesktop\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: {}\r\n\r\n", file.id, file.content_type).into_bytes();
-        let suffix = format!("\r\n--{boundary}--\r\n").into_bytes();
+        let prefix = format!("--{boundary}\r\nContent-Disposition: form-data; name=\"client_item_id\"\r\n\r\n{}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"imported_via\"\r\n\r\nwindows\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: {}\r\n\r\n", file.id, file.content_type).into_bytes();
+        // The page's choices follow the file, as the Linux app sends them. The area
+        // is a checked token and serialized JSON has no raw line breaks, so neither
+        // can end a part early.
+        let mut suffix = String::from("\r\n");
+        if let Some(handoff) = file.handoff {
+            let mut field = |name: &str, value: &str| {
+                suffix.push_str(&format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"));
+            };
+            field("area", &handoff.area);
+            if !matches!(handoff.area.as_str(), "quick" | "recording") {
+                field("source_hint", &handoff.area);
+            }
+            field(
+                "context",
+                &serde_json::to_string(&handoff.context).unwrap_or_else(|_| "{}".into()),
+            );
+        }
+        suffix.push_str(&format!("--{boundary}--\r\n"));
+        let suffix = suffix.into_bytes();
         Self {
             length: size
                 .saturating_add(prefix.len() as u64)
@@ -331,6 +358,7 @@ mod tests {
             name: "a\r\n\".pdf",
             content_type: "application/pdf",
             path: Path::new("held"),
+            handoff: None,
         };
         let multipart = MultipartFile::new(&file, 1_000_000_000);
         assert_eq!(
@@ -339,8 +367,63 @@ mod tests {
         );
         assert!(multipart.prefix.len() < 1024);
         let prefix = String::from_utf8(multipart.prefix).unwrap();
-        assert!(prefix.contains("name=\"imported_via\"\r\n\r\ndesktop\r\n"));
+        assert!(prefix.contains("name=\"imported_via\"\r\n\r\nwindows\r\n"));
         assert!(prefix.contains("name=\"client_item_id\"\r\n\r\nstable-id\r\n"));
         assert!(prefix.contains("filename=\"a.pdf\""));
+        assert_eq!(
+            String::from_utf8(multipart.suffix).unwrap(),
+            "\r\n------solstoneimportstable-id--\r\n"
+        );
+    }
+
+    #[test]
+    fn a_handoff_sends_its_area_and_whole_context_after_the_file() {
+        let handoff = Handoff {
+            area: "apple_health".into(),
+            context: serde_json::from_str(
+                r#"{"setting":"line\r\nbreak","future":{"preserve":true}}"#,
+            )
+            .unwrap(),
+        };
+        let file = ImportFile {
+            id: "stable-id",
+            name: "export.zip",
+            content_type: "application/zip",
+            path: Path::new("held"),
+            handoff: Some(&handoff),
+        };
+        let multipart = MultipartFile::new(&file, 10);
+        assert_eq!(
+            multipart.length,
+            10 + multipart.prefix.len() as u64 + multipart.suffix.len() as u64
+        );
+        let suffix = String::from_utf8(multipart.suffix).unwrap();
+        let boundary = "------solstoneimportstable-id";
+        let parts: Vec<_> = suffix.split(boundary).collect();
+        assert_eq!(parts[0], "\r\n");
+        assert!(parts[1].ends_with("name=\"area\"\r\n\r\napple_health\r\n"));
+        assert!(parts[2].ends_with("name=\"source_hint\"\r\n\r\napple_health\r\n"));
+        let context = parts[3]
+            .strip_prefix("\r\nContent-Disposition: form-data; name=\"context\"\r\n\r\n")
+            .and_then(|v| v.strip_suffix("\r\n"))
+            .unwrap();
+        assert!(!context.contains('\r') && !context.contains('\n'));
+        let sent: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(context).unwrap();
+        assert_eq!(sent, handoff.context);
+        assert_eq!(parts[4], "--\r\n");
+
+        let quick = Handoff {
+            area: "quick".into(),
+            context: Default::default(),
+        };
+        let file = ImportFile {
+            handoff: Some(&quick),
+            ..file
+        };
+        let suffix = String::from_utf8(MultipartFile::new(&file, 10).suffix).unwrap();
+        assert!(suffix.contains("name=\"area\"\r\n\r\nquick\r\n"));
+        assert!(!suffix.contains("source_hint"));
+        assert!(suffix.contains("name=\"context\"\r\n\r\n{}\r\n"));
     }
 }

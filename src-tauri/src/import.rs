@@ -3,14 +3,17 @@
 
 //! File import is a sibling custody loop; closing its page never stops it.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use observer_model::i18n::message;
 use observer_model::{PairingPhase, SyncSnapshot};
-use pl_transport_win::import_client::{ImportFile, ImportReply};
-use pl_transport_win::import_store::{self, Intake, Refusal, SavedProgress, Store, VersionGate};
+use pl_transport_win::import_client::{Handoff, ImportFile, ImportReply};
+use pl_transport_win::import_store::{
+    self, Intake, IntakeRefusal, Refusal, SavedProgress, Store, VersionGate,
+};
 use pl_transport_win::ObserverClient;
 use serde::Serialize;
 use tauri::{Emitter, Manager};
@@ -25,7 +28,12 @@ struct Service {
     changes: watch::Sender<()>,
     identity: Mutex<Option<(String, String)>>,
     auth_blocked: Mutex<Option<String>>,
+    /// Items delivered this run and the journal row each became, so a journal
+    /// page that handed one over can link to it.
+    receipts: Mutex<VecDeque<(String, Option<String>)>>,
 }
+
+const RECEIPTS_KEPT: usize = 256;
 
 #[derive(Serialize)]
 pub struct Row {
@@ -268,6 +276,7 @@ pub fn start(app: tauri::AppHandle) {
         changes,
         identity: Mutex::new(None),
         auth_blocked: Mutex::new(None),
+        receipts: Mutex::new(VecDeque::new()),
     });
     let _ = SERVICE.set(service.clone());
     tauri::async_runtime::spawn(async move {
@@ -365,6 +374,7 @@ async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Res
                             name: &item.name,
                             content_type: &item.mime,
                             path: &payload,
+                            handoff: item.handoff.as_ref(),
                         })
                         .await;
                     match reply {
@@ -406,7 +416,17 @@ async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Res
             };
             store.active = None;
             match result? {
-                Some(Ok(ImportReply::Delivered)) => store.delivered(&id, &journal)?,
+                Some(Ok(ImportReply::Delivered)) => {
+                    let row = item
+                        .progress_for(&journal)
+                        .map(|saved| saved.timestamp.clone());
+                    store.delivered(&id, &journal)?;
+                    let mut receipts = service.receipts.lock().unwrap_or_else(|p| p.into_inner());
+                    if receipts.len() == RECEIPTS_KEPT {
+                        receipts.pop_front();
+                    }
+                    receipts.push_back((id.clone(), row));
+                }
                 Some(Ok(ImportReply::Refused {
                     sentence,
                     retryable,
@@ -468,69 +488,142 @@ pub fn add_paths(app: tauri::AppHandle, paths: Vec<PathBuf>) {
         return;
     };
     tauri::async_runtime::spawn(async move {
-        let _intake = service.intake_lock.lock().await;
-        let root = {
-            let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
-            let Some(store) = guard.as_mut() else {
-                return;
-            };
-            store.intake = Some(Intake {
-                copying: true,
-                total: paths.len(),
-                ..Default::default()
-            });
-            store.root().to_path_buf()
-        };
-        publish(&app, &service);
-        for path in paths {
-            let root = root.clone();
-            let result = tauri::async_runtime::spawn_blocking(move || {
-                import_store::new_id()
-                    .map_err(|_| import_store::IntakeRefusal {
-                        name: message("windows.ui.file", &[]),
-                        reason: message("windows.ui.thiscouldntbereadadditagain", &[]),
-                    })
-                    .and_then(|id| {
-                        import_store::stage_with_converter(&root, &path, id, now(), |bytes| {
-                            platform_win::screenshots::to_jpeg(bytes).map_err(|_| ())
-                        })
-                    })
-            })
-            .await;
-            let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
-            let Some(store) = guard.as_mut() else {
-                return;
-            };
-            let mut intake = store.intake.take().unwrap_or_default();
-            match result {
-                Ok(Ok(item)) => {
-                    store.items.insert(item.id.clone(), item);
-                    intake.accepted += 1;
-                }
-                Ok(Err(refusal)) => intake.refused.push(refusal),
-                Err(error) => {
-                    tracing::warn!(target: "import", %error, "import intake interrupted");
-                    store.interrupted = true;
-                }
-            }
-            intake.done += 1;
-            store.intake = Some(intake);
-            drop(guard);
-            publish(&app, &service);
-        }
-        if let Some(store) = service
-            .store
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_mut()
-        {
-            if let Some(intake) = &mut store.intake {
-                intake.copying = false;
-            }
-        }
-        publish(&app, &service);
-        service.wake.notify_one();
+        let _ = intake(&app, &service, paths, None).await;
     });
+}
+
+/// Files the journal page handed over: held with the page's choices, and only
+/// answered once each copy is complete. `None` means custody is unavailable.
+pub async fn add_handoff(
+    app: &tauri::AppHandle,
+    paths: Vec<PathBuf>,
+    handoff: Handoff,
+) -> Option<(Vec<(String, String)>, Vec<IntakeRefusal>)> {
+    let service = SERVICE.get().cloned()?;
+    intake(app, &service, paths, Some(handoff)).await
+}
+
+/// Copy each file into custody at the owner's gesture, one intake at a time.
+async fn intake(
+    app: &tauri::AppHandle,
+    service: &Arc<Service>,
+    paths: Vec<PathBuf>,
+    handoff: Option<Handoff>,
+) -> Option<(Vec<(String, String)>, Vec<IntakeRefusal>)> {
+    let _intake = service.intake_lock.lock().await;
+    let root = {
+        let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+        let store = guard.as_mut()?;
+        store.intake = Some(Intake {
+            copying: true,
+            total: paths.len(),
+            ..Default::default()
+        });
+        store.root().to_path_buf()
+    };
+    publish(app, service);
+    let mut accepted = Vec::new();
+    let mut declined = Vec::new();
+    for path in paths {
+        let root = root.clone();
+        let handoff = handoff.clone();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| message("windows.ui.file", &[]));
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            import_store::new_id()
+                .map_err(|_| IntakeRefusal {
+                    name: message("windows.ui.file", &[]),
+                    reason: message("windows.ui.thiscouldntbereadadditagain", &[]),
+                })
+                .and_then(|id| {
+                    import_store::stage_with_converter(&root, &path, id, now(), handoff, |bytes| {
+                        platform_win::screenshots::to_jpeg(bytes).map_err(|_| ())
+                    })
+                })
+        })
+        .await;
+        let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+        let store = guard.as_mut()?;
+        let mut intake = store.intake.take().unwrap_or_default();
+        match result {
+            Ok(Ok(item)) => {
+                accepted.push((item.id.clone(), item.name.clone()));
+                store.items.insert(item.id.clone(), item);
+                intake.accepted += 1;
+            }
+            Ok(Err(refusal)) => {
+                declined.push(refusal.clone());
+                intake.refused.push(refusal);
+            }
+            Err(error) => {
+                tracing::warn!(target: "import", %error, "import intake interrupted");
+                store.interrupted = true;
+                declined.push(IntakeRefusal {
+                    name,
+                    reason: message("windows.ui.thiscouldntbereadadditagain", &[]),
+                });
+            }
+        }
+        intake.done += 1;
+        store.intake = Some(intake);
+        drop(guard);
+        publish(app, service);
+    }
+    if let Some(store) = service
+        .store
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_mut()
+    {
+        if let Some(intake) = &mut store.intake {
+            intake.copying = false;
+        }
+    }
+    publish(app, service);
+    service.wake.notify_one();
+    Some((accepted, declined))
+}
+
+/// Where one handed-over item stands, in the page's words: waiting, uploading,
+/// attention (with the journal's reason), delivered (with its row) or gone.
+pub fn handoff_status(app: &tauri::AppHandle, id: &str) -> serde_json::Value {
+    use serde_json::json;
+    let Some(service) = SERVICE.get() else {
+        return json!({"state": "gone"});
+    };
+    if let Some((_, row)) = service
+        .receipts
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .find(|(item, _)| item == id)
+    {
+        return json!({"state": "delivered", "import_id": row});
+    }
+    let sync = current_sync(app);
+    let (journal, _) = current_identity(service, &sync);
+    let version = sync.journal_version.as_deref().unwrap_or("");
+    let guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(store) = guard.as_ref() else {
+        return json!({"state": "gone"});
+    };
+    let Some(item) = store.items.get(id) else {
+        return json!({"state": "gone"});
+    };
+    if let Some(refusal) = item
+        .refusal
+        .as_ref()
+        .filter(|_| item.refused_here(&journal, version))
+    {
+        return json!({"state": "attention", "reason": refusal.sentence,
+            "import_id": item.progress_for(&journal).map(|saved| &saved.timestamp)});
+    }
+    if store.active.as_deref() == Some(id) {
+        return json!({"state": "uploading", "size": item.size});
+    }
+    json!({"state": "waiting"})
 }
 
 pub fn remove(app: &tauri::AppHandle, id: &str) -> std::io::Result<()> {
