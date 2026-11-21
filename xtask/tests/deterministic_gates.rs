@@ -118,22 +118,11 @@ fn every_gated_cargo_resolution_is_locked() {
 fn cargo_deny_and_transfer_preflights_are_mandatory() {
     let root = repo_root();
     let makefile = read(&root, "Makefile");
-    let deny_toml = read(&root, "deny.toml");
     let deny_preflight = read(&root, "scripts/preflight-cargo-deny.sh");
 
     assert!(deny_preflight.contains("required=0.20.2"));
     assert!(deny_preflight.contains("Run 'make provision-cargo-deny'."));
     assert!(deny_preflight.contains("exit 1"));
-    for advisory in ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"] {
-        let line = deny_toml
-            .lines()
-            .find(|line| line.contains(advisory))
-            .unwrap_or_else(|| panic!("deny.toml missing {advisory}"));
-        assert!(
-            line.contains("Owner: VPE."),
-            "deny.toml {advisory} ignore must name Owner: VPE"
-        );
-    }
     assert!(makefile
         .lines()
         .any(|line| line == "ci: preflight-toolchain preflight-cargo-deny"));

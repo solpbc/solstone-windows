@@ -373,8 +373,8 @@ fn deterministic_advisory_config_is_byte_exact() {
         "yanked = \"deny\"\n",
         "unmaintained = \"workspace\"\n",
         "ignore = [\n",
-        "  { id = \"RUSTSEC-2026-0194\", reason = \"quick-xml 0.39.4 O(N^2) attribute dup-check DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: VPE.\" },\n",
-        "  { id = \"RUSTSEC-2026-0195\", reason = \"quick-xml 0.39.4 unbounded namespace-decl growth DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: VPE.\" },\n",
+        "  { id = \"RUSTSEC-2026-0194\", reason = \"quick-xml 0.39.4 O(N^2) attribute dup-check DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: sol pbc engineering.\" },\n",
+        "  { id = \"RUSTSEC-2026-0195\", reason = \"quick-xml 0.39.4 unbounded namespace-decl growth DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: sol pbc engineering.\" },\n",
         "]\n"
     )
     .replace(

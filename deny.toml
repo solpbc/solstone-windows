@@ -131,8 +131,8 @@ unmaintained = "workspace"
 # ships a release accepting quick-xml >=0.41. Not silenced globally — the whole graph
 # is still gated; only these two known-transitive quick-xml ids are waived.
 ignore = [
-    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39.4 O(N^2) attribute dup-check DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: VPE." },
-    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.39.4 unbounded namespace-decl growth DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: VPE." },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml 0.39.4 O(N^2) attribute dup-check DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: sol pbc engineering." },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml 0.39.4 unbounded namespace-decl growth DoS; transitive via plist<-Tauri; no upstream release with the >=0.41 fix yet (plist 1.9.0 pins ^0.39.2). Remove once plist bumps quick-xml. Owner: sol pbc engineering." },
 ]
 
 [sources]
