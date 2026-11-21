@@ -30,6 +30,22 @@ templates. `realfft` 3.5.0 is the one exception: upstream publishes no LICENSE
 file at the crate or repository tag, so the override is the MIT text with the
 crate's Cargo.toml authors.
 
+## License elections
+
+Each `index.json` row carries `license_election`. When the crate's SPDX
+expression offers a choice (`OR`, or the legacy `/`), it names the wholly
+permissive terms the crate is used under: the generator takes the first wholly
+permissive option at each choice, so `Apache-2.0 OR GPL-2.0-only` records
+`Apache-2.0`. It is null when the expression offers no choice, or no wholly
+permissive way through.
+
+A crate with no wholly permissive option (MPL, LGPL, any GPL, source-available
+or unknown) fails `cargo deny check licenses` in `make ci` until legal review
+clears it by name under `exceptions` in `deny.toml`. Crates used under MPL-2.0
+are named, with their crates.io source location, at the top of the notices
+file; the generator derives that list from the lock, so it follows a version
+change on regeneration.
+
 ## Prebuilt binaries
 
 `cargo deny`, `cargo metadata`, and this notices file cannot stand in for

@@ -15,6 +15,13 @@ This script does not determine the license of vendored prebuilt binaries
 (.lib, .a, .dll, .so, .dylib, .o, .obj, or weight files). It fails if the
 shipped closure gains an unlisted prebuilt; packaging/rust-notices/prebuilt-artifacts.json
 is detection only.
+
+Each index row records `license_election`: when the declared SPDX expression
+offers a choice (`OR`, or the legacy `/`), the wholly permissive terms the crate
+is used under, taking the first permissive option at each choice. It is null
+when the expression offers no choice, or no wholly permissive way through; a
+crate of the latter kind is admitted by name in deny.toml after legal review.
+Crates used under MPL-2.0 get a source pointer in the notices file.
 """
 from __future__ import annotations
 
@@ -55,6 +62,29 @@ LICENSE_NAME = re.compile(
     r"^(licen[cs]e|copying|copyright|notice)([._-].*)?$",
     re.I,
 )
+CRATES_IO_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
+SOURCE_URL = "https://github.com/solpbc/solstone-windows"
+# Licenses that impose only attribution, notice or license-text duties.
+WHOLLY_PERMISSIVE = frozenset(
+    {
+        "0BSD",
+        "Apache-2.0",
+        "Apache-2.0 WITH LLVM-exception",
+        "BSD-2-Clause",
+        "BSD-3-Clause",
+        "BSL-1.0",
+        "CC0-1.0",
+        "CDLA-Permissive-2.0",
+        "ISC",
+        "MIT",
+        "MIT-0",
+        "Unicode-3.0",
+        "Unicode-DFS-2016",
+        "Unlicense",
+        "Zlib",
+    }
+)
+SPDX_TOKEN = re.compile(r"\s*(\(|\)|/|[A-Za-z0-9.+-]+)")
 HEADER = (
     "Rust dependency notices\n"
     "\n"
@@ -63,6 +93,160 @@ HEADER = (
     "Microsoft runtime and WebView2 loader terms are in THIRD_PARTY_NOTICES.md.\n"
     "\n"
 )
+
+
+def parse_spdx(expression: str):
+    """Parse an SPDX expression into nested ("or"|"and", [children]) tuples and
+    license-term strings. The legacy `/` reads as OR. Returns None when the
+    expression is empty or malformed."""
+    tokens = []
+    position = 0
+    text = expression.strip()
+    while position < len(text):
+        match = SPDX_TOKEN.match(text, position)
+        if match is None:
+            return None
+        tokens.append(match.group(1))
+        position = match.end()
+        while position < len(text) and text[position].isspace():
+            position += 1
+    if not tokens:
+        return None
+    cursor = 0
+
+    def peek():
+        return tokens[cursor] if cursor < len(tokens) else None
+
+    def take():
+        nonlocal cursor
+        cursor += 1
+        return tokens[cursor - 1]
+
+    def parse_or():
+        children = [parse_and()]
+        while peek() in ("OR", "/"):
+            take()
+            children.append(parse_and())
+        return children[0] if len(children) == 1 else ("or", children)
+
+    def parse_and():
+        children = [parse_term()]
+        while peek() == "AND":
+            take()
+            children.append(parse_term())
+        return children[0] if len(children) == 1 else ("and", children)
+
+    def parse_term():
+        token = peek()
+        if token == "(":
+            take()
+            inner = parse_or()
+            if take() != ")":
+                raise ValueError(expression)
+            return inner
+        if token is None or token in ("AND", "OR", "WITH", ")", "/"):
+            raise ValueError(expression)
+        term = take()
+        if peek() == "WITH":
+            take()
+            exception = peek()
+            if exception is None or exception in ("AND", "OR", "WITH", "(", ")", "/"):
+                raise ValueError(expression)
+            term = f"{term} WITH {take()}"
+        return term
+
+    try:
+        tree = parse_or()
+    except (ValueError, IndexError):
+        return None
+    return tree if cursor == len(tokens) else None
+
+
+def spdx_terms(tree) -> list[str]:
+    if isinstance(tree, str):
+        return [tree]
+    return [term for child in tree[1] for term in spdx_terms(child)]
+
+
+def has_choice(tree) -> bool:
+    if isinstance(tree, str):
+        return False
+    return tree[0] == "or" or any(has_choice(child) for child in tree[1])
+
+
+def permissive_path(tree) -> list[str] | None:
+    """The terms required after taking the first wholly permissive option at
+    every OR, or None when no wholly permissive way through exists."""
+    if isinstance(tree, str):
+        return [tree] if tree in WHOLLY_PERMISSIVE else None
+    kind, children = tree
+    if kind == "or":
+        for child in children:
+            path = permissive_path(child)
+            if path is not None:
+                return path
+        return None
+    terms: list[str] = []
+    for child in children:
+        path = permissive_path(child)
+        if path is None:
+            return None
+        terms.extend(term for term in path if term not in terms)
+    return terms
+
+
+def license_election(expression: str) -> str | None:
+    tree = parse_spdx(expression)
+    if tree is None or not has_choice(tree):
+        return None
+    path = permissive_path(tree)
+    return None if path is None else " AND ".join(path)
+
+
+def mpl_crates(rows: list[dict]) -> list[dict]:
+    """Rows with no wholly permissive way through whose terms include MPL-2.0."""
+    found = []
+    for row in rows:
+        tree = parse_spdx(row["license_expression"])
+        if tree is None or permissive_path(tree) is not None:
+            continue
+        if "MPL-2.0" in spdx_terms(tree):
+            found.append(row)
+    return sorted(found, key=lambda row: (row["name"], row["version"]))
+
+
+def mpl_source_pointer(rows: list[dict]) -> bytes:
+    crates = mpl_crates(rows)
+    if not crates:
+        return b""
+    for row in crates:
+        if row["source"] != CRATES_IO_SOURCE:
+            raise SystemExit(
+                f"{row['identity']} is used under MPL-2.0 but is not from crates.io; "
+                "its source pointer needs a reviewed location"
+            )
+    lines = [
+        "MPL-2.0 source code",
+        "",
+        "the solstone app for windows is built with these crates, unmodified, under the",
+        "Mozilla Public License 2.0. their source code remains under MPL-2.0:",
+        "",
+    ]
+    for row in crates:
+        lines.append(
+            f"- {row['name']} {row['version']}: "
+            f"https://crates.io/crates/{row['name']}/{row['version']}"
+        )
+    lines += [
+        "",
+        "you can get the source code of each crate from its crates.io archive at the",
+        "address above, or through the app's own source code:",
+        SOURCE_URL,
+        "the MPL-2.0 text is reproduced in this file.",
+        "",
+        "",
+    ]
+    return "\n".join(lines).encode()
 
 
 def sha256(data: bytes) -> str:
@@ -236,6 +420,7 @@ def main() -> int:
             "version": pkg["version"],
             "source": source,
             "license_expression": pkg.get("license") or "",
+            "license_election": license_election(pkg.get("license") or ""),
             "notice_references": refs,
         }
         rows.append(row)
@@ -272,6 +457,7 @@ def main() -> int:
             sys.stderr.write(f"  {line}\n")
         return 1
     notice = bytearray(HEADER.encode())
+    notice.extend(mpl_source_pointer(rows))
     text_records = []
     for digest, data in sorted(texts.items()):
         notice.extend(f"SHA-256: {digest}\n\n".encode())

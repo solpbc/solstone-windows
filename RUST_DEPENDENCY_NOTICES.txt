@@ -4,6 +4,22 @@ this file reproduces the license texts of the crates statically linked into
 the solstone app for windows. solstone's own crates are agpl-3.0-only; see LICENSE.
 Microsoft runtime and WebView2 loader terms are in THIRD_PARTY_NOTICES.md.
 
+MPL-2.0 source code
+
+the solstone app for windows is built with these crates, unmodified, under the
+Mozilla Public License 2.0. their source code remains under MPL-2.0:
+
+- cssparser 0.36.0: https://crates.io/crates/cssparser/0.36.0
+- cssparser-macros 0.6.1: https://crates.io/crates/cssparser-macros/0.6.1
+- dtoa-short 0.3.5: https://crates.io/crates/dtoa-short/0.3.5
+- option-ext 0.2.0: https://crates.io/crates/option-ext/0.2.0
+- selectors 0.36.1: https://crates.io/crates/selectors/0.36.1
+
+you can get the source code of each crate from its crates.io archive at the
+address above, or through the app's own source code:
+https://github.com/solpbc/solstone-windows
+the MPL-2.0 text is reproduced in this file.
+
 SHA-256: 003736bc98408b53511b9cc8ff5d1af3bf0a8f17d53841cc39d8ab1b96a195b0
 
 Copyright (c) 2023-2026 The RustCrypto Project Developers
