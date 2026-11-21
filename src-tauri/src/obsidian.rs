@@ -283,6 +283,10 @@ fn found_vaults() -> Vec<FoundVault> {
     app_data().map_or_else(Vec::new, |path| obsidian_source::found_vaults(&path))
 }
 
+pub(crate) fn source_status() -> Option<obsidian_source::Status> {
+    handle()?.status()
+}
+
 pub fn status() -> Option<serde_json::Value> {
     handle().and_then(|h| serde_json::to_value(h.document()).ok())
 }
@@ -672,6 +676,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_sources_use_the_confirmed_pairing_and_replace_the_whole_list() {
+        let (client, requests) = start_journal(vec![
+            (200, r#"{"version":{"current":"2"},"capabilities":["shared_sources"],"sources_rev":"abc"}"#.into()),
+            (204, String::new()), (204, String::new()),
+            (200, r#"{"sources_rev":"abc","self_cid":"self","devices":[]}"#.into()),
+            (403, String::new()),
+        ]).await;
+        let (version, capabilities) =
+            tokio::join!(client.system_status(), client.system_capabilities());
+        assert_eq!(version.unwrap(), "2");
+        assert_eq!(capabilities.unwrap(), ["shared_sources"]);
+        assert_eq!(
+            client.source_advert(),
+            Some(pl_transport_win::client::SourceAdvert::Available(Some(
+                "abc".into()
+            )))
+        );
+        let declaration = br#"[{"source":"obsidian","state":"on","detail":"Notes"}]"#;
+        for body in [declaration.as_slice(), b"[]"] {
+            assert_eq!(client.shared_sources(Some(body)).await.unwrap().status, 204);
+        }
+        let reply = client.shared_sources(None).await.unwrap();
+        assert!(
+            pl_transport_win::shared_sources::Snapshot::from_reply(&reply.body, 0)
+                .unwrap()
+                .devices
+                .is_empty()
+        );
+        assert_eq!(client.shared_sources(None).await.unwrap().status, 403);
+        assert!(client.shared_sources(Some(b"[]")).await.is_err());
+        let seen = requests.lock().unwrap();
+        assert_eq!(seen.len(), 5);
+        assert!(seen[1].starts_with(b"PUT /app/network/api/clients/self/sources "));
+        assert!(seen[1].ends_with(declaration));
+        assert!(seen[2].ends_with(b"[]"));
+        assert!(seen[3].starts_with(b"GET /app/network/api/sources "));
+    }
+
+    #[tokio::test]
     async fn an_unconfirmed_pairing_gets_no_answer_and_no_request() {
         let dir = tempfile::tempdir().unwrap();
         let delivery = delivery_file(dir.path());
@@ -684,6 +727,8 @@ mod tests {
             )
             .unwrap(),
         );
+        assert!(client.shared_sources(Some(b"[]")).await.is_err());
+        assert!(client.shared_sources(None).await.is_err());
         let journal = journal_for(client);
         assert_eq!(journal.capability().await, Capability::Unknown);
         assert_eq!(journal.deliver(&delivery).await, DeliveryResult::NoAnswer);

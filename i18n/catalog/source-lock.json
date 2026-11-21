@@ -1969,6 +1969,55 @@
       "locales": []
     },
     {
+      "id": "windows.sharedsources.also",
+      "source": "18f8a9aa0c250af9f697d1fe8f537e37e9f6fef7bf876f448e95b4f8766225e8",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.sharedsources.labelage",
+      "source": "775b5a54280262c0e8ce8e891b8105d0ad21b6680c176b1579265b240249c52c",
+      "contract": "0e284c7fc24b76e672bf772b873ee5bd8d68db3b275efdf1e2695f0cd98bb746",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.sharedsources.labelstate",
+      "source": "4a38a884067405c55e6636f5fef8d05b014ec9072eab381be57cc49998c22cbd",
+      "contract": "6c18bc34d27cb382ce2a5e38f96aec3bc94252127a7d69c2c64c1b695d3a1d62",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.sharedsources.labelstateage",
+      "source": "35a666da50492ddd420632c4429d7b6d96eac2e0d21ab03267229b29cfcc37b8",
+      "contract": "d35f3468347d006561c9dada56dc7cd91e6f5644dcdd3e6b4516631c37e27b38",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.sharedsources.many",
+      "source": "d21b9000eb56e0ca439057bf6292b94ae7f40c31fe70be3d898c1d740b8dcc1c",
+      "contract": "19e7d110b0675a598f9a9e24dfeb3bbb9e32c316ba52b9871ff2708989a5ef3e",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.sharedsources.one",
+      "source": "b777be79e4118ed6948dd1bb1b27baadef51b4b7a5f728fda4ea763eb566547a",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.sharedsources.stateage",
+      "source": "2bed4162912dcf5b1460d8b76ab4591c0a8535446cdeac608bc8f526631c241a",
+      "contract": "5f2a727f6b75adf0a756fc034efeb3d596e37fd8eec53291a9450e6aba30f2d4",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
       "id": "windows.time.checkedday",
       "source": "c0bf908781e4a0e3497ce4ed1b37456546a1201ba6fff6d6da816f78c8e6dc73",
       "contract": "d47ec32665785fdbc476c9b03fc91c4ac16d1a4edfcc8730fd1fc407ad13c575",

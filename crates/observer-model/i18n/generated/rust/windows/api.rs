@@ -188,6 +188,13 @@ pub enum MessageId {
     m77696e646f77732e73637265656e73686f74732e6272696e67636f756e74,
     m77696e646f77732e73637265656e73686f74732e63616e74636f756e74,
     m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74,
+    m77696e646f77732e736861726564736f75726365732e616c736f,
+    m77696e646f77732e736861726564736f75726365732e6c6162656c616765,
+    m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465,
+    m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765,
+    m77696e646f77732e736861726564736f75726365732e6d616e79,
+    m77696e646f77732e736861726564736f75726365732e6f6e65,
+    m77696e646f77732e736861726564736f75726365732e7374617465616765,
     m77696e646f77732e74696d652e636865636b6564646179,
     m77696e646f77732e74696d652e636865636b6564686f7572,
     m77696e646f77732e74696d652e636865636b65646d696e757465,
@@ -851,6 +858,13 @@ pub fn render_dotted_with_options(locale: &str, dotted_id: &str, args: &[(&str, 
         "windows.screenshots.bringcount" => MessageId::m77696e646f77732e73637265656e73686f74732e6272696e67636f756e74,
         "windows.screenshots.cantcount" => MessageId::m77696e646f77732e73637265656e73686f74732e63616e74636f756e74,
         "windows.screenshots.unreadablecount" => MessageId::m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74,
+        "windows.sharedsources.also" => MessageId::m77696e646f77732e736861726564736f75726365732e616c736f,
+        "windows.sharedsources.labelage" => MessageId::m77696e646f77732e736861726564736f75726365732e6c6162656c616765,
+        "windows.sharedsources.labelstate" => MessageId::m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465,
+        "windows.sharedsources.labelstateage" => MessageId::m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765,
+        "windows.sharedsources.many" => MessageId::m77696e646f77732e736861726564736f75726365732e6d616e79,
+        "windows.sharedsources.one" => MessageId::m77696e646f77732e736861726564736f75726365732e6f6e65,
+        "windows.sharedsources.stateage" => MessageId::m77696e646f77732e736861726564736f75726365732e7374617465616765,
         "windows.time.checkedday" => MessageId::m77696e646f77732e74696d652e636865636b6564646179,
         "windows.time.checkedhour" => MessageId::m77696e646f77732e74696d652e636865636b6564686f7572,
         "windows.time.checkedminute" => MessageId::m77696e646f77732e74696d652e636865636b65646d696e757465,
@@ -3602,6 +3616,143 @@ pub fn render_with_options(locale: &str, id: MessageId, args: &[(&str, Value)], 
             f_args.set("display", FluentValue::from(v1.clone()));
             f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
             ("m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74".to_string(), f_args)
+        }
+        MessageId::m77696e646f77732e736861726564736f75726365732e616c736f => {
+            const DECLARED: &[&str] = &[];
+            for (name, _) in args {
+                if !DECLARED.contains(name) {
+                    return Err(RenderError::UnknownArgument((*name).to_string()));
+                }
+            }
+            #[allow(unused_mut)]
+            let mut f_args = FluentArgs::new();
+            ("m77696e646f77732e736861726564736f75726365732e616c736f".to_string(), f_args)
+        }
+        MessageId::m77696e646f77732e736861726564736f75726365732e6c6162656c616765 => {
+            const DECLARED: &[&str] = &["label", "relative"];
+            for (name, _) in args {
+                if !DECLARED.contains(name) {
+                    return Err(RenderError::UnknownArgument((*name).to_string()));
+                }
+            }
+            #[allow(unused_mut)]
+            let mut f_args = FluentArgs::new();
+            let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
+            let v0 = match val_v0 {
+                Value::String(s) => s.to_string(),
+                _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
+            };
+            f_args.set("label", FluentValue::from(v0.clone()));
+            let val_v1 = args.iter().find(|(n, _)| *n == "relative").ok_or_else(|| RenderError::MissingArgument("relative".to_string()))?.1.clone();
+            let v1 = match val_v1 {
+                Value::String(s) => s.to_string(),
+                _ => return Err(RenderError::InvalidArgumentType("relative".to_string())),
+            };
+            f_args.set("relative", FluentValue::from(v1.clone()));
+            ("m77696e646f77732e736861726564736f75726365732e6c6162656c616765".to_string(), f_args)
+        }
+        MessageId::m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465 => {
+            const DECLARED: &[&str] = &["label", "state"];
+            for (name, _) in args {
+                if !DECLARED.contains(name) {
+                    return Err(RenderError::UnknownArgument((*name).to_string()));
+                }
+            }
+            #[allow(unused_mut)]
+            let mut f_args = FluentArgs::new();
+            let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
+            let v0 = match val_v0 {
+                Value::String(s) => s.to_string(),
+                _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
+            };
+            f_args.set("label", FluentValue::from(v0.clone()));
+            let val_v1 = args.iter().find(|(n, _)| *n == "state").ok_or_else(|| RenderError::MissingArgument("state".to_string()))?.1.clone();
+            let v1 = match val_v1 {
+                Value::String(s) => s.to_string(),
+                _ => return Err(RenderError::InvalidArgumentType("state".to_string())),
+            };
+            f_args.set("state", FluentValue::from(v1.clone()));
+            ("m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465".to_string(), f_args)
+        }
+        MessageId::m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765 => {
+            const DECLARED: &[&str] = &["label", "state", "relative"];
+            for (name, _) in args {
+                if !DECLARED.contains(name) {
+                    return Err(RenderError::UnknownArgument((*name).to_string()));
+                }
+            }
+            #[allow(unused_mut)]
+            let mut f_args = FluentArgs::new();
+            let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
+            let v0 = match val_v0 {
+                Value::String(s) => s.to_string(),
+                _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
+            };
+            f_args.set("label", FluentValue::from(v0.clone()));
+            let val_v1 = args.iter().find(|(n, _)| *n == "state").ok_or_else(|| RenderError::MissingArgument("state".to_string()))?.1.clone();
+            let v1 = match val_v1 {
+                Value::String(s) => s.to_string(),
+                _ => return Err(RenderError::InvalidArgumentType("state".to_string())),
+            };
+            f_args.set("state", FluentValue::from(v1.clone()));
+            let val_v2 = args.iter().find(|(n, _)| *n == "relative").ok_or_else(|| RenderError::MissingArgument("relative".to_string()))?.1.clone();
+            let v2 = match val_v2 {
+                Value::String(s) => s.to_string(),
+                _ => return Err(RenderError::InvalidArgumentType("relative".to_string())),
+            };
+            f_args.set("relative", FluentValue::from(v2.clone()));
+            ("m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765".to_string(), f_args)
+        }
+        MessageId::m77696e646f77732e736861726564736f75726365732e6d616e79 => {
+            const DECLARED: &[&str] = &["count"];
+            for (name, _) in args {
+                if !DECLARED.contains(name) {
+                    return Err(RenderError::UnknownArgument((*name).to_string()));
+                }
+            }
+            #[allow(unused_mut)]
+            let mut f_args = FluentArgs::new();
+            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+            let v0 = match val_v0 {
+                Value::String(s) => s.to_string(),
+                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+            };
+            f_args.set("count", FluentValue::from(v0.clone()));
+            ("m77696e646f77732e736861726564736f75726365732e6d616e79".to_string(), f_args)
+        }
+        MessageId::m77696e646f77732e736861726564736f75726365732e6f6e65 => {
+            const DECLARED: &[&str] = &[];
+            for (name, _) in args {
+                if !DECLARED.contains(name) {
+                    return Err(RenderError::UnknownArgument((*name).to_string()));
+                }
+            }
+            #[allow(unused_mut)]
+            let mut f_args = FluentArgs::new();
+            ("m77696e646f77732e736861726564736f75726365732e6f6e65".to_string(), f_args)
+        }
+        MessageId::m77696e646f77732e736861726564736f75726365732e7374617465616765 => {
+            const DECLARED: &[&str] = &["state", "relative"];
+            for (name, _) in args {
+                if !DECLARED.contains(name) {
+                    return Err(RenderError::UnknownArgument((*name).to_string()));
+                }
+            }
+            #[allow(unused_mut)]
+            let mut f_args = FluentArgs::new();
+            let val_v0 = args.iter().find(|(n, _)| *n == "state").ok_or_else(|| RenderError::MissingArgument("state".to_string()))?.1.clone();
+            let v0 = match val_v0 {
+                Value::String(s) => s.to_string(),
+                _ => return Err(RenderError::InvalidArgumentType("state".to_string())),
+            };
+            f_args.set("state", FluentValue::from(v0.clone()));
+            let val_v1 = args.iter().find(|(n, _)| *n == "relative").ok_or_else(|| RenderError::MissingArgument("relative".to_string()))?.1.clone();
+            let v1 = match val_v1 {
+                Value::String(s) => s.to_string(),
+                _ => return Err(RenderError::InvalidArgumentType("relative".to_string())),
+            };
+            f_args.set("relative", FluentValue::from(v1.clone()));
+            ("m77696e646f77732e736861726564736f75726365732e7374617465616765".to_string(), f_args)
         }
         MessageId::m77696e646f77732e74696d652e636865636b6564646179 => {
             const DECLARED: &[&str] = &["count", "display"];

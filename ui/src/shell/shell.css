@@ -813,3 +813,34 @@ html:has(.desk-shell[data-width="phone"]) #setup-sun .sunarc-twilight {
 .desk-import-confirm h2 { font-size: 1.1rem; overflow-wrap: anywhere; }
 .desk-import-confirm p { line-height: 1.5; }
 .desk-import-confirm::backdrop { background: #0006; }
+
+.desk-remote-card {
+  border: 1px solid var(--desk-line);
+  border-radius: 12px;
+  padding: 14px;
+  margin-block: 8px 16px;
+}
+.desk-remote-word, .desk-remote-line { color: var(--desk-subtle); }
+.desk-remote-word::before {
+  background: radial-gradient(circle, currentColor 0 1.5px, transparent 2px);
+}
+.desk-remote-device { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; }
+.desk-remote-device .desk-glyph { width: 18px; height: 18px; flex: none; }
+.desk-remote-device > div { min-width: 0; overflow-wrap: anywhere; }
+.desk-remote-line { display: block; font-size: 13px; overflow-wrap: anywhere; }
+.desk-tile-open > .desk-remote-line {
+  display: flex;
+  max-width: 100%;
+  white-space: pre-wrap;
+}
+.desk-remote-name {
+  flex: 0 1 auto;
+  min-width: min(4ch, 25%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.desk-remote-context {
+  flex: none;
+  max-width: calc(100% - min(4ch, 25%));
+}

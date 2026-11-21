@@ -224,6 +224,10 @@ fn to_value(document: Option<ScreenshotsDocument>) -> Option<serde_json::Value> 
     document.and_then(|document| serde_json::to_value(document).ok())
 }
 
+pub(crate) fn source_status() -> Option<screenshots_source::Status> {
+    handle()?.status()
+}
+
 pub fn status() -> Option<serde_json::Value> {
     to_value(handle().and_then(ScreenshotsHandle::document))
 }

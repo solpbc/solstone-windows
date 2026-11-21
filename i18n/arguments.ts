@@ -493,6 +493,58 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
       "string"
     ]
   ],
+  "windows.sharedsources.also": [],
+  "windows.sharedsources.labelage": [
+    [
+      "label",
+      "string"
+    ],
+    [
+      "relative",
+      "string"
+    ]
+  ],
+  "windows.sharedsources.labelstate": [
+    [
+      "label",
+      "string"
+    ],
+    [
+      "state",
+      "string"
+    ]
+  ],
+  "windows.sharedsources.labelstateage": [
+    [
+      "label",
+      "string"
+    ],
+    [
+      "state",
+      "string"
+    ],
+    [
+      "relative",
+      "string"
+    ]
+  ],
+  "windows.sharedsources.many": [
+    [
+      "count",
+      "string"
+    ]
+  ],
+  "windows.sharedsources.one": [],
+  "windows.sharedsources.stateage": [
+    [
+      "state",
+      "string"
+    ],
+    [
+      "relative",
+      "string"
+    ]
+  ],
   "windows.time.checkedday": [
     [
       "count",

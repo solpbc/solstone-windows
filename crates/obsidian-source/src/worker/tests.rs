@@ -145,6 +145,23 @@ fn fixture() -> Fixture {
     }
 }
 
+#[tokio::test]
+async fn declaration_waits_for_the_saved_vault_to_load() {
+    let mut f = fixture();
+    turn_on(&mut f).await;
+    drop(f.worker);
+    let (handle, mut worker) = Worker::new(None, f.journal, Arc::new(|| false));
+    assert!(handle.status().is_none());
+    assert_eq!(handle.document().status.state, State::Off);
+
+    let engine = Engine::open(f.temp.path().join("state"), Arc::new(TestClock(f.clock))).unwrap();
+    worker.set_engine(engine);
+    worker.publish();
+    let loaded = handle.status().unwrap();
+    assert_eq!(loaded.state, State::On);
+    assert_eq!(loaded.vault.as_deref(), Some("Notes"));
+}
+
 fn write_note(vault: &Path, name: &str, text: &str, mtime_ms: i64) {
     let path = vault.join(name);
     fs::create_dir_all(path.parent().unwrap()).unwrap();

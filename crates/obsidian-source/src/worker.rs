@@ -97,7 +97,7 @@ pub struct ObsidianHandle {
 
 struct HandleInner {
     commands: mpsc::Sender<Command>,
-    status: Arc<Mutex<Status>>,
+    status: Arc<Mutex<Option<Status>>>,
     cancel: Arc<AtomicBool>,
     cancel_notify: Arc<Notify>,
     on: watch::Receiver<bool>,
@@ -105,8 +105,9 @@ struct HandleInner {
 }
 
 impl ObsidianHandle {
-    fn call_status(&self) -> Status {
-        self.inner.as_ref().map_or_else(off_status, |inner| {
+    /// The state from the opened vault ledger, once the worker has read it.
+    pub fn status(&self) -> Option<Status> {
+        self.inner.as_ref().and_then(|inner| {
             inner
                 .status
                 .lock()
@@ -126,7 +127,7 @@ impl ObsidianHandle {
     pub fn document(&self) -> ObsidianDocument {
         ObsidianDocument {
             v: 1,
-            status: self.call_status(),
+            status: self.status().unwrap_or_else(off_status),
             refusal: None,
         }
     }
@@ -180,7 +181,7 @@ impl ObsidianHandle {
 pub(crate) struct Worker<J: Journal> {
     engine: Option<Engine>,
     journal: J,
-    status: Arc<Mutex<Status>>,
+    status: Arc<Mutex<Option<Status>>>,
     paused: Paused,
     commands: mpsc::Receiver<Command>,
     cancel: Arc<AtomicBool>,
@@ -199,9 +200,7 @@ impl<J: Journal> Worker<J> {
         paused: Paused,
     ) -> (ObsidianHandle, Self) {
         let (commands, receiver) = mpsc::channel(8);
-        let initial = engine
-            .as_ref()
-            .map_or_else(off_status, |engine| engine.status(false, None));
+        let initial = engine.as_ref().map(|engine| engine.status(false, None));
         let status = Arc::new(Mutex::new(initial));
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_notify = Arc::new(Notify::new());
@@ -291,12 +290,12 @@ impl<J: Journal> Worker<J> {
             status.state = State::WaitingForJournalUpdate;
         }
         let on = status.state != State::Off;
+        *self.status.lock().unwrap_or_else(|p| p.into_inner()) = Some(status);
         self.on.send_if_modified(|current| {
             let changed = *current != on;
             *current = on;
             changed
         });
-        *self.status.lock().unwrap_or_else(|p| p.into_inner()) = status;
     }
 
     fn document(&self, refusal: Option<Refusal>) -> ObsidianDocument {
@@ -307,7 +306,8 @@ impl<J: Journal> Worker<J> {
                 .status
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .clone(),
+                .clone()
+                .unwrap_or_else(off_status),
             refusal,
         }
     }

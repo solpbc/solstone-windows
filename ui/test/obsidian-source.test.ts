@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { automationContract } from "../src/lib/contract";
 import * as app from "../src/main";
-import { observingDump } from "./fixtures";
+import { exclusionRules, observingDump } from "./fixtures";
 
 const ids = automationContract.automation_ids;
 const invokeMock = vi.mocked(invoke);
@@ -209,7 +209,7 @@ describe("Obsidian source rows", () => {
     expect(renderHome(null, "idle")?.disabled).toBe(true);
   });
 
-  function renderDesk(value: Status): void {
+  function renderDesk(value: Status, binding = ""): void {
     const base = observingDump();
     const dump = {
       ...base,
@@ -228,6 +228,7 @@ describe("Obsidian source rows", () => {
         desktop_activity_page_addresses: true,
       },
     } as typeof base;
+    Object.assign(dump.sync.pairing, {binding});
     app.__test__.setRoute("home");
     app.__test__.setHealth(dump);
     app.__test__.setObsidian(value);
@@ -238,6 +239,62 @@ describe("Obsidian source rows", () => {
   const pane = (): HTMLElement => document.querySelector(".desk-pane") as HTMLElement;
   const reasons = (): number => pane().querySelectorAll(".desk-reason").length;
   const facts = (): number => pane().querySelectorAll(".desk-fact").length;
+
+  it("preserves focus across refreshes and clears a revoked device while another pane has focus", async () => {
+    const device = {
+      cid: "other", display_label: "Laptop", device_type: "desktop", sources: [
+        {source: "obsidian", origin: "declared", detail: "Notes", state: "on"},
+      ],
+    };
+    let revoked = false;
+    invokeMock.mockImplementation(async command => command === "known_sources" && !revoked
+      ? {binding: "pair-a", devices: [device]} : null);
+    renderDesk(status({state: "off", vault: null}), "pair-a");
+    await app.__test__.refreshRemotes("cached");
+    const tile = () => document.querySelector<HTMLElement>('[data-tile="obsidian"]')!;
+    const button = tile().querySelector("button")!;
+    button.focus();
+    await app.__test__.refreshRemotes("focus");
+    expect(document.activeElement).toBe(button);
+    for (const control of ["button", "input"]) {
+      tile().querySelector<HTMLElement>(control)!.focus();
+      device.display_label += " renamed";
+      await app.__test__.refreshRemotes("cached");
+      expect(tile().textContent).toContain(device.display_label);
+      expect(document.activeElement).toBe(tile().querySelector(control));
+    }
+    app.__test__.setExclusions(exclusionRules());
+    app.__test__.openDeskSource("screenLeftOut");
+    const picker = () => byId(ids["settings.exclusions.appInput"])!;
+    picker().focus();
+    revoked = true;
+    await app.__test__.refreshRemotes("cached");
+    expect(tile().textContent).not.toContain("Laptop");
+    expect(document.activeElement).toBe(picker());
+  });
+
+  it("shows a remote vault above local setup, keeps the switch, and respects the pairing", async () => {
+    const device = {cid:"other", display_label:"Laptop", device_type:"desktop",
+      device_last_seen_at:null, sources:[{source:"obsidian", origin:"declared", detail:"Notes",
+        state:"paused", declared_at:null, last_synced_at:null}]};
+    invokeMock.mockImplementation(async command => command === "known_sources" ? {binding:"pair-a", devices:[device]} : null);
+    const off = status({state:"off", vault:null});
+    renderDesk(off, "pair-a");
+    await app.__test__.refreshRemotes("cached");
+    renderDesk(off, "pair-a");
+    const tile = () => document.querySelector('[data-tile="obsidian"]')!;
+    expect(tile().textContent).toContain("Laptop · paused");
+    expect(tile().querySelector("input")?.checked).toBe(false);
+    expect(pane().querySelector(".desk-remote-card")?.textContent).toContain("Notes · paused");
+    expect(pane().querySelector(".desk-remote-card")?.nextElementSibling?.className).toBe("desk-verdict");
+    renderDesk(status({state:"checking"}), "pair-a");
+    expect(tile().textContent).not.toContain("Laptop");
+    expect(pane().querySelector(".desk-remote-card")).toBeNull();
+    renderDesk(status({state:"on"}), "pair-a");
+    expect(pane().textContent).toContain("also onLaptop · paused");
+    renderDesk(off, "pair-b");
+    expect(tile().textContent).not.toContain("Laptop");
+  });
 
   it("asks on the desk before the first send, and continue and cancel answer it", () => {
     invokeMock.mockResolvedValue(null);

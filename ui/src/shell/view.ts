@@ -1,9 +1,11 @@
 import { t, stateWord } from "../i18n";
 // The desktop shell's document. Decisions live in derive.ts. This only paints.
 
+import { remoteHeading, deviceLine, type OtherDevice } from "./shared-sources";
 import { glyph, glyphForTile, type GlyphName } from "./glyphs";
 
 export interface DeskTile {
+  remote?: OtherDevice[];
   id: string;
   name: string;
   word: string;
@@ -70,6 +72,7 @@ export interface DeskView {
 }
 
 export interface DeskParts {
+  remoteCard?: HTMLElement | null;
   notice: HTMLElement | null;
   unread: HTMLElement | null;
   saveRetry: HTMLElement | null;
@@ -244,12 +247,14 @@ function renderTile(tile: DeskTile, actions: DeskActions): HTMLElement {
   open.type = "button";
   open.append(glyph(glyphForTile(tile.id)));
   open.append(el("span", "desk-tile-name", tile.name));
-  if (tile.word) {
+  if (tile.remote?.length) {
+    open.append(remoteHeading(tile.remote.length), deviceLine(tile.remote[0], true));
+  } else if (tile.word) {
     const word = el("span", "desk-tile-word", stateWord(tile.word));
     word.dataset.word = tile.word;
     open.append(word);
   }
-  if (tile.sub) open.append(el("span", "desk-tile-sub", tile.sub));
+  if (!tile.remote?.length && tile.sub) open.append(el("span", "desk-tile-sub", tile.sub));
   open.onclick = () => actions.onTile(tile.id);
   card.append(open);
   if (tile.switchOn !== null) {
@@ -296,6 +301,7 @@ function renderPane(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
   head.append(titleRow);
   pane.append(head);
 
+  if (parts.remoteCard) pane.append(parts.remoteCard);
   if (view.pageVerdict) {
     const verdict = el("div", "desk-verdict");
     const word = el("span", "desk-tile-word", stateWord(view.pageVerdict.word));

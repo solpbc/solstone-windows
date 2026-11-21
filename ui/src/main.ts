@@ -53,6 +53,7 @@ import {
   type SourceFacts,
   type SourceId, screenshotsTile, screenshotsPage, screenshotsConfirm, type ScreenshotsStateName,
 } from "./shell/derive";
+import { otherDevices, deviceLine, remoteCard, remoteHeading, updateSharedClocks, type KnownSources, type OtherDevice } from "./shell/shared-sources";
 import { renderDesk, type DeskStatusRow, type DeskTile } from "./shell/view";
 
 type FrontendOrigin = "settings" | "about" | "none";
@@ -1056,6 +1057,37 @@ let importActionError: string | null = null;
 let obsidianFound: ObsidianVault[] = [];
 let obsidianRefusal: ObsidianRefusal | null = null;
 let obsidianBusy = false;
+let remoteBinding = "";
+let remoteDevices: OtherDevice[] = [];
+let remoteRequest = 0;
+let sourceViewBinding = "";
+let lastOpenDetail = false;
+
+function visibleRemotes(dump: HealthDump): OtherDevice[] {
+  const pairing = dump.sync.pairing;
+  return pairing.phase === "paired" && pairing.binding === remoteBinding ? remoteDevices : [];
+}
+
+function remoteAtRest(): boolean {
+  return latestObsidian?.state === "off" && !latestObsidian.vault && !obsidianWantsFolder;
+}
+
+async function refreshRemotes(refresh: "focus" | "detail" | "cached"): Promise<void> {
+  const request = ++remoteRequest;
+  let view: KnownSources | null;
+  try { view = await invoke<KnownSources | null>("known_sources", {refresh}); } catch { view = null; }
+  if (request !== remoteRequest) return;
+  const binding = view?.binding ?? "";
+  const devices = view ? otherDevices(view) : [];
+  if (binding === remoteBinding && JSON.stringify(devices) === JSON.stringify(remoteDevices)) return;
+  const hadDevices = remoteDevices.length > 0;
+  const lostBinding = remoteBinding !== binding;
+  remoteBinding = binding;
+  remoteDevices = devices;
+  if (hadDevices && (lostBinding || !devices.length)) rerender();
+  else if (hadDevices || remoteDevices.length) requestRerender();
+}
+
 let obsidianWantsFolder = false;
 let obsidianFailed = false;
 let micDevices: MicDeviceRef[] = [];
@@ -6009,6 +6041,7 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
     return {
       id,
       name: deskSourceName(id),
+      remote: id === "obsidian" && remoteAtRest() ? visibleRemotes(dump) : undefined,
       word: view.word,
       sub,
       switchOn: view.switchOn,
@@ -6552,6 +6585,22 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
     if (facts) body.append(facts);
     const vaultFacts = status ? obsidianDeskStatus(status) : null;
     if (vaultFacts) body.append(vaultFacts);
+    if (status && ["on", "paused", "needs_attention"].includes(status.state)) {
+      const devices = visibleRemotes(dump);
+      if (devices.length) {
+        const block = document.createElement("div");
+        block.className = "desk-facts";
+        devices.forEach((device, index) => {
+          const row = document.createElement("div");
+          row.className = "desk-fact";
+          const label = text("span", index === 0 ? t("windows.sharedsources.also") : "");
+          label.className = "desk-fact-label";
+          row.append(label, deviceLine(device));
+          block.append(row);
+        });
+        body.append(block);
+      }
+    }
     if (ready && obsidianFound.length > 0) {
       body.append(deskSection(t("windows.ui.vaults")));
       for (const vault of obsidianFound) {
@@ -6576,7 +6625,12 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
   }
   if (deskPane === "addMore") {
     body.append(text("h3", t("windows.ui.alreadyonhome")));
-    for (const source of addMoreSources()) body.append(text("div", deskSourceName(source)));
+    for (const source of addMoreSources()) {
+      const row = text("div", deskSourceName(source));
+      const others = source === "obsidian" && remoteAtRest() ? visibleRemotes(dump) : [];
+      if (others.length) row.append(remoteHeading(others.length));
+      body.append(row);
+    }
     return body;
   }
   if (deskPane === "screenLeftOut") {
@@ -6702,6 +6756,8 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
       notice: dump.setup?.notice_dismissed ? null : renderSourcesNotice(dump),
       unread,
       saveRetry: retry,
+      remoteCard: deskRow === "home" && deskPane === "obsidian" && remoteAtRest() && visibleRemotes(dump).length
+        ? remoteCard(visibleRemotes(dump)) : null,
       paneExtra: deskPaneExtra(dump),
       shelfBody: deskShelfBody(dump),
     },
@@ -6832,6 +6888,19 @@ function renderSettings(dump: HealthDump): void {
   root.append(showFrame ? renderSetupFrame(dump) : showDesk ? renderDesktopShell(dump) : renderSettingsShell(dump));
   syncSetupSun(showFrame || showDesk);
   if (showDesk) {
+    const binding = dump.sync.pairing.phase === "paired" ? dump.sync.pairing.binding ?? "" : "";
+    const detail = deskRow === "home" && deskPane === "obsidian" && remoteAtRest();
+    const bindingChanged = binding !== sourceViewBinding;
+    if (bindingChanged) {
+      remoteRequest++;
+      remoteDevices = [];
+      remoteBinding = "";
+      sourceViewBinding = binding;
+    }
+    if (binding && (bindingChanged || (detail && !lastOpenDetail))) {
+      void refreshRemotes(detail ? "detail" : "focus");
+    }
+    lastOpenDetail = detail;
     bindDeskKeys();
     maybeRefreshCounters(dump);
   }
@@ -7521,6 +7590,12 @@ function rerender(): void {
       activeSelector = `[data-automation-id="${autoId}"]`;
     } else if (active.id) {
       activeSelector = `#${active.id}`;
+    } else {
+      const tile = active.closest<HTMLElement>(".desk-tile")?.dataset.tile;
+      if (tile && active.matches(".desk-tile-open, .desk-tile-switch input")) {
+        const control = active instanceof HTMLInputElement ? ".desk-tile-switch input" : ".desk-tile-open";
+        activeSelector = `[data-tile="${tile}"] ${control}`;
+      }
     }
   }
 
@@ -8073,7 +8148,15 @@ export function start(): void {
     if (!latestHealth) startupDestination = event.payload;
   });
   void listen<HealthDump>("health://changed", (event) => {
+    const lostPair = remoteDevices.length > 0 && (event.payload.sync.pairing.phase !== "paired" ||
+      event.payload.sync.pairing.binding !== remoteBinding);
     setLatestHealth(event.payload);
+    if (lostPair) {
+      remoteRequest++;
+      remoteBinding = "";
+      remoteDevices = [];
+      rerender();
+    }
     void refreshBrowserStatus();
     void refreshObsidianStatus();
     void refreshScreenshotsStatus();
@@ -8089,8 +8172,10 @@ export function start(): void {
     latestUpdate = event.payload;
     requestRerender();
   });
+  void listen("shared-sources://changed", () => { void refreshRemotes("cached"); });
   window.addEventListener("blur", () => setProofWindowActive(false));
   window.addEventListener("focus", () => {
+    if (label === "settings") void refreshRemotes("focus");
     setProofWindowActive(true);
     refreshPairingPrefillOnFocus();
   });
@@ -8113,6 +8198,7 @@ export function start(): void {
     }
     updatePauseLabels();
     updateStatusClocks();
+    updateSharedClocks();
     lookForFoundJournal();
     lapseFoundJournalPress();
   }, 1000);
@@ -8123,6 +8209,7 @@ export function start(): void {
 }
 
 export const __test__ = {
+  refreshRemotes,
   refreshPairingPrefillOnFocus,
   lookForFoundJournal,
   lapseFoundJournalPress,
@@ -8260,6 +8347,12 @@ export const __test__ = {
     runningApps = [];
     latestBrowser = null;
     latestObsidian = null;
+    remoteRequest++;
+    remoteDevices = [];
+    remoteBinding = "";
+    sourceViewBinding = "";
+    lastOpenDetail = false;
+    obsidianWantsFolder = false;
     latestScreenshots = null;
     screenshotsBusy = false;
     screenshotsSpan = "thirty_days";

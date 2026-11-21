@@ -60,6 +60,8 @@ pub const PROTOCOL_VERSION_HEADER: &str = "X-Solstone-Protocol-Version";
 
 /// Observer endpoint paths (relative to the journal origin).
 pub mod paths {
+    pub const SELF_SOURCES: &str = "/app/network/api/clients/self/sources";
+    pub const KNOWN_SOURCES: &str = "/app/network/api/sources";
     /// Segment upload (multipart).
     pub const INGEST: &str = "/app/devices/ingest";
     /// Root ingest manifest used for protocol-v3 custody proof.

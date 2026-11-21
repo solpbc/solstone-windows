@@ -28,6 +28,7 @@ mod mic;
 mod notify;
 mod obsidian;
 mod screenshots;
+mod shared_sources;
 mod support;
 mod tray;
 mod update;

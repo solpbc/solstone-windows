@@ -49,6 +49,7 @@ pub mod retirement;
 pub mod sealed;
 pub mod service;
 pub mod session;
+pub mod shared_sources;
 pub mod slot;
 pub mod source_upload;
 mod streamed_request;

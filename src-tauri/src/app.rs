@@ -678,6 +678,7 @@ pub fn run(
             crate::ipc::open_browser_store,
             crate::ipc::browser_discard_waiting,
             crate::ipc::obsidian_status,
+            crate::shared_sources::known_sources,
             crate::ipc::obsidian_found_vaults,
             crate::ipc::obsidian_use_found_vault,
             crate::ipc::obsidian_choose_folder,
@@ -964,6 +965,7 @@ pub fn run(
             // The screenshots source: the folder, the count, then each one as it's taken.
             crate::screenshots::start(app.handle().clone(), source_counters);
             crate::import::start(app.handle().clone());
+            crate::shared_sources::start(app.handle().clone());
 
             // In-app updater: construct the Velopack-backed controller (honest
             // state earned from the feed, persisted next to pairing.json),
@@ -1127,6 +1129,7 @@ pub fn run(
                         if let Ok(mut sync) = shared_sync.lock() {
                             sync.journal_link = link;
                         }
+                        crate::shared_sources::observe(&app, &dump, link_watch.had_network);
                         // After the transport copy, so a frame never becomes a real pair.
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)

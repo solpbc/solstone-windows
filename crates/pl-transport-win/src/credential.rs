@@ -579,7 +579,7 @@ pub struct PairedState {
 const MAX_SETUP_HANDOFF_IDS: usize = 256;
 
 impl PairedState {
-    fn read_setup_metadata(path: &Path) -> Result<Option<Self>, TransportError> {
+    pub(crate) fn read_setup_metadata(path: &Path) -> Result<Option<Self>, TransportError> {
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -722,6 +722,7 @@ impl PairedState {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(TransportError::Io(error)),
         }
+        crate::shared_sources::forget(path)?;
         publish_staged_file(path, &destination)?;
         #[cfg(not(windows))]
         sync_published_path(&destination).map_err(TransportError::Io)?;
@@ -862,6 +863,9 @@ impl PairedState {
                     .credential
                     .as_ref()
                     .map(|credential| &credential.client_cert_pem);
+            if !same_credential || state.retirement_intent.is_some() {
+                crate::shared_sources::forget(path).map_err(StorageError::WriteFailed)?;
+            }
             if same_activation && same_credential && previous.setup_browser_opened {
                 state.setup_browser_opened = true;
             }
@@ -870,6 +874,9 @@ impl PairedState {
                     state.retired_setup_handoffs.insert(activation.handoff_id);
                 }
             }
+        } else {
+            // A new installation may still have an orphaned registry file.
+            crate::shared_sources::forget(path).map_err(StorageError::WriteFailed)?;
         }
         if state.setup_browser_opened
             || state.credential.is_none()
@@ -1368,6 +1375,51 @@ mod tests {
             }),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn source_cache_follows_pairing_replacement_unpair_and_terminal_refusal() {
+        use crate::shared_sources::{self, Cached, Snapshot};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pairing.json");
+        let mut state = paired_state_with("KEY", None);
+        state.save(&path).unwrap();
+        let binding = |s: &PairedState| {
+            crate::ack::JournalIdentity::from_credential(s.credential.as_ref().unwrap())
+                .client_cert_sha256
+        };
+        let old = binding(&state);
+        let bytes = br#"{"sources_rev":"abc","self_cid":"me","devices":[{"cid":"me","display_label":"Desk","sources":[]},{"cid":"other","display_label":"Desk","sources":[{"source":"obsidian","detail":"Other vault","origin":"observed","state":null,"last_synced_at":"2026-11-18T12:00:00-07:00"}]}]}"#;
+        let snapshot = Snapshot::from_reply(bytes, 100).unwrap();
+        assert_eq!(snapshot.devices.len(), 1);
+        assert_eq!(snapshot.devices[0].cid, "other");
+        assert_eq!(
+            snapshot.devices[0].sources[0].last_synced_at.as_deref(),
+            Some("2026-11-18T12:00:00-07:00")
+        );
+        let cache = || Some(Cached::Known(snapshot.clone()));
+        assert!(shared_sources::store(&path, &old, cache()).unwrap());
+        assert!(matches!(
+            shared_sources::read(&path, &old),
+            Some(Cached::Known(_))
+        ));
+        assert!(shared_sources::store(&path, &old, Some(Cached::Revoked)).unwrap());
+        assert!(!shared_sources::store(&path, &old, cache()).unwrap());
+        assert!(
+            !std::fs::read_to_string(path.with_extension("sources.json"))
+                .unwrap()
+                .contains("Other vault")
+        );
+        state.credential.as_mut().unwrap().client_cert_pem =
+            "new certificate at the same journal".into();
+        state.save(&path).unwrap();
+        let new = binding(&state);
+        assert!(!path.with_extension("sources.json").exists());
+        assert!(!shared_sources::store(&path, &old, cache()).unwrap());
+        assert!(shared_sources::store(&path, &new, cache()).unwrap());
+        PairedState::default().save(&path).unwrap();
+        assert!(!path.with_extension("sources.json").exists());
+        assert!(!shared_sources::store(&path, &new, cache()).unwrap());
     }
 
     fn temp_pairing_path(name: &str) -> PathBuf {

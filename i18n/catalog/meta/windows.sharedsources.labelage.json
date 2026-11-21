@@ -1,0 +1,25 @@
+{
+  "description": "Obsidian source shared by another paired device.",
+  "context": "Device or vault label, optional state, and time last seen. Used on the source tile and detail page.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "label",
+      "type": "string"
+    },
+    {
+      "name": "relative",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "775b5a54280262c0e8ce8e891b8105d0ad21b6680c176b1579265b240249c52c",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::sync::watch;
+
 use crate::ack::JournalIdentity;
 use crate::credential::{pairing_generation, CasKey, Credential, WindowsTokenTransaction};
 use crate::ordinary_request::OrdinaryRequest;
@@ -129,6 +131,49 @@ mod tests {
             client.refusal_stop(),
             Some(HandshakeStop::RefusalsExhausted)
         );
+    }
+
+    #[tokio::test]
+    async fn a_late_revocation_reaches_the_replacement_and_survives_stale_status() {
+        let credential = relay_credential();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pairing.json");
+        save_credential(&path, &credential);
+        let old = Arc::new(
+            ObserverClient::new(credential.clone(), Arc::new(AtomicBool::new(true)))
+                .unwrap()
+                .with_state_path(path.clone()),
+        );
+        let slot = ClientSlot::new(old.clone());
+        let mut changes = old.subscribe_source_advert();
+        let active = slot
+            .replace_from_incumbent(
+                credential,
+                old.current_cas_key().unwrap(),
+                RelayEligibility::Preserve,
+            )
+            .unwrap();
+
+        active.note_source_advert(SourceAdvert::Available(Some("r1".into())));
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        active.note_source_advert(SourceAdvert::Available(Some("r1".into())));
+        assert!(!changes.has_changed().unwrap());
+
+        old.note_source_advert(SourceAdvert::Revoked);
+        assert!(changes.has_changed().unwrap());
+        assert_eq!(*changes.borrow_and_update(), Some(SourceAdvert::Revoked));
+        active.note_source_advert(SourceAdvert::Available(Some("r2".into())));
+        assert!(!changes.has_changed().unwrap());
+        assert_eq!(active.source_advert(), Some(SourceAdvert::Revoked));
+        assert!(matches!(
+            active.shared_sources(Some(b"[]")).await,
+            Err(TransportError::NotPaired)
+        ));
+        assert!(matches!(
+            crate::shared_sources::read(&path, &active.journal_identity().client_cert_sha256),
+            Some(crate::shared_sources::Cached::Revoked)
+        ));
     }
 
     #[test]
@@ -773,8 +818,17 @@ pub fn accept_link_identity(
     Ok(mark)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SourceAdvert {
+    Available(Option<String>),
+    Unsupported,
+    Revoked,
+}
+
 /// An observer talking to its paired journal over framed-mTLS.
 pub struct ObserverClient {
+    source_advert: watch::Sender<Option<SourceAdvert>>,
+    status_flight: std::sync::Mutex<std::sync::Weak<tokio::sync::OnceCell<HttpResponse>>>,
     credential: Credential,
     boundary_counter: AtomicU64,
     /// Optional persisted pairing state path for best-effort refreshed-token write-back.
@@ -823,6 +877,7 @@ impl ObserverClient {
             Arc::new(RelayFence::new(relay_enabled)),
             1,
             Arc::new(std::sync::Mutex::new(RefusalTracker::new())),
+            watch::channel(None).0,
             gate,
         )
     }
@@ -844,6 +899,7 @@ impl ObserverClient {
         relay_fence: Arc<RelayFence>,
         incarnation: u64,
         refusals: Arc<std::sync::Mutex<RefusalTracker>>,
+        source_advert: watch::Sender<Option<SourceAdvert>>,
         gate: Arc<AtomicBool>,
     ) -> Result<Self, TransportError> {
         let transaction = Arc::new(WindowsTokenTransaction::new(
@@ -915,6 +971,8 @@ impl ObserverClient {
         .map_err(map_shared_error)?;
 
         Ok(Self {
+            source_advert,
+            status_flight: Default::default(),
             credential,
             boundary_counter: AtomicU64::new(1),
             state_path,
@@ -951,6 +1009,7 @@ impl ObserverClient {
             incumbent.relay_fence.clone(),
             incarnation,
             incumbent.refusals.clone(),
+            incumbent.source_advert.clone(),
             incumbent.gate.clone(),
         )
     }
@@ -968,7 +1027,10 @@ impl ObserverClient {
         match result {
             Ok(_) => refusals.accepted(),
             Err(RequestError::Transport(error) | RequestError::ReplayUnsafe(error)) => {
-                refusals.failed(HandshakeFailure::classify(error));
+                if refusals.failed(HandshakeFailure::classify(error)).is_some() {
+                    drop(refusals);
+                    self.note_source_advert(SourceAdvert::Revoked);
+                }
             }
             Err(_) => {}
         }
@@ -985,7 +1047,12 @@ impl ObserverClient {
         } else if answered {
             refusals.accepted();
         }
-        refusals.stop()
+        let stop = refusals.stop();
+        drop(refusals);
+        if stop.is_some() {
+            self.note_source_advert(SourceAdvert::Revoked);
+        }
+        stop
     }
 
     /// Access the underlying credential.
@@ -1326,87 +1393,140 @@ impl ObserverClient {
         Ok((self.parse_v3_read(response)?, metadata))
     }
 
-    /// Read the system status and extract the sanitized current journal version string.
-    pub async fn system_status(&self) -> Result<String, TransportError> {
-        let fetch = async {
-            let mut headers = self.v3_headers();
-            headers.push(("Cache-Control".into(), "no-cache".into()));
-            let (response, _) = match self
-                .ordinary_request(OrdinaryRequest::SystemStatusGet, None, &headers, b"")
-                .await
-            {
-                Ok(res) => res,
-                Err(RouteError::Transport(e)) => return Err(e),
-                Err(RouteError::AwaitingConfirmation) => {
-                    return Err(TransportError::Io(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "awaiting mark confirmation",
-                    )))
-                }
-            };
-            if response.status != 200 {
-                return Err(TransportError::Rejected {
-                    status: response.status,
-                    body: response.body_text(),
-                });
-            }
-            let parsed: SystemStatusResponse = serde_json::from_slice(&response.body)?;
-            let version = parsed.version.current;
-            if version.trim().is_empty()
-                || version.len() > 128
-                || version
-                    .chars()
-                    .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
-            {
-                return Err(TransportError::Rejected {
-                    status: response.status,
-                    body: "malformed version string".to_string(),
-                });
-            }
-            Ok(version)
-        };
+    pub fn source_advert(&self) -> Option<SourceAdvert> {
+        self.source_advert.borrow().clone()
+    }
 
-        match tokio::time::timeout(Duration::from_secs(5), fetch).await {
-            Ok(res) => res,
-            Err(_) => Err(TransportError::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "system_status request timed out",
-            ))),
+    pub fn subscribe_source_advert(&self) -> watch::Receiver<Option<SourceAdvert>> {
+        self.source_advert.subscribe()
+    }
+
+    fn note_source_advert(&self, advert: SourceAdvert) {
+        if !self.gate_open() {
+            return;
+        }
+        let revoked = advert == SourceAdvert::Revoked;
+        let changed = self.source_advert.send_if_modified(|current| {
+            if *current == Some(SourceAdvert::Revoked) || current.as_ref() == Some(&advert) {
+                return false;
+            }
+            *current = Some(advert);
+            true
+        });
+        if revoked && changed {
+            let path = self.state_path.lock().unwrap().clone();
+            if let Some(path) = path {
+                if let Err(error) = crate::shared_sources::store(
+                    &path,
+                    &self.journal_identity().client_cert_sha256,
+                    Some(crate::shared_sources::Cached::Revoked),
+                ) {
+                    tracing::warn!(%error, "could not clear revoked sources");
+                }
+            }
         }
     }
 
-    /// The capabilities the journal lists in `/api/system/status`. A journal that
-    /// answers without the list has none.
-    pub async fn system_capabilities(&self) -> Result<Vec<String>, TransportError> {
-        let fetch = async {
+    /// Concurrent status readers share the in-flight read. After it finishes
+    /// the next caller reads the journal again.
+    async fn status_response(&self) -> Result<HttpResponse, TransportError> {
+        let flight = {
+            let mut slot = self.status_flight.lock().unwrap();
+            slot.upgrade().unwrap_or_else(|| {
+                let flight = Arc::new(tokio::sync::OnceCell::new());
+                *slot = Arc::downgrade(&flight);
+                flight
+            })
+        };
+        let response = flight.get_or_try_init(|| async {
             let mut headers = self.v3_headers();
             headers.push(("Cache-Control".into(), "no-cache".into()));
-            let (response, _) = self
-                .ordinary_request(OrdinaryRequest::SystemStatusGet, None, &headers, b"")
-                .await
-                .map_err(|error| match error {
-                    RouteError::Transport(error) => error,
-                    RouteError::AwaitingConfirmation => TransportError::Io(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "awaiting mark confirmation",
-                    )),
-                })?;
-            if response.status != 200 {
-                return Err(TransportError::Rejected {
-                    status: response.status,
-                    body: response.body_text(),
-                });
+            let response = self
+                .post_connect_response(OrdinaryRequest::SystemStatusGet, headers, b"")
+                .await?;
+            let advert = match response.status {
+                200 => serde_json::from_slice::<serde_json::Value>(&response.body)
+                    .ok()
+                    .filter(|v| v.is_object())
+                    .map(|v| {
+                        if capabilities_from_status(&v)
+                            .iter()
+                            .any(|c| c == "shared_sources")
+                        {
+                            SourceAdvert::Available(v["sources_rev"].as_str().map(str::to_owned))
+                        } else {
+                            SourceAdvert::Unsupported
+                        }
+                    }),
+                404 => Some(SourceAdvert::Unsupported),
+                _ => None,
+            };
+            if let Some(advert) = advert {
+                self.note_source_advert(advert);
             }
-            let value: serde_json::Value = serde_json::from_slice(&response.body)?;
-            Ok(capabilities_from_status(&value))
-        };
-        match tokio::time::timeout(Duration::from_secs(5), fetch).await {
-            Ok(result) => result,
-            Err(_) => Err(TransportError::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "system_status request timed out",
-            ))),
+            Ok::<_, TransportError>(response)
+        });
+        tokio::time::timeout(Duration::from_secs(5), response)
+            .await
+            .map_err(|_| {
+                TransportError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "system_status request timed out",
+                ))
+            })?
+            .cloned()
+    }
+
+    pub async fn status_document(&self) -> Result<serde_json::Value, TransportError> {
+        let response = self.status_response().await?;
+        if response.status != 200 {
+            return Err(TransportError::Rejected {
+                status: response.status,
+                body: response.body_text(),
+            });
         }
+        Ok(serde_json::from_slice(&response.body)?)
+    }
+
+    pub async fn system_status(&self) -> Result<String, TransportError> {
+        let parsed: SystemStatusResponse = serde_json::from_value(self.status_document().await?)?;
+        let version = parsed.version.current;
+        if version.trim().is_empty()
+            || version.len() > 128
+            || version
+                .chars()
+                .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}')
+        {
+            return Err(TransportError::Rejected {
+                status: 200,
+                body: "malformed version string".into(),
+            });
+        }
+        Ok(version)
+    }
+
+    pub async fn system_capabilities(&self) -> Result<Vec<String>, TransportError> {
+        Ok(capabilities_from_status(&self.status_document().await?))
+    }
+
+    pub async fn shared_sources(
+        &self,
+        declaration: Option<&[u8]>,
+    ) -> Result<HttpResponse, TransportError> {
+        if self.relay_fence.retired.load(Ordering::Acquire)
+            || self.source_advert() == Some(SourceAdvert::Revoked)
+        {
+            return Err(TransportError::NotPaired);
+        }
+        let mut headers = self.v3_headers();
+        let route = if declaration.is_some() {
+            headers.push(("Content-Type".into(), "application/json".into()));
+            OrdinaryRequest::SelfSourcesPut
+        } else {
+            OrdinaryRequest::KnownSourcesGet
+        };
+        self.post_connect_response(route, headers, declaration.unwrap_or_default())
+            .await
     }
 
     /// The vaults this journal has from other devices. A journal without the
@@ -1423,28 +1543,7 @@ impl ObserverClient {
     /// check timeout. Any answer proves the journal is reachable over this
     /// pairing; what it says does not matter here. Each check is one fresh dial.
     pub async fn check_journal(&self) -> Result<(), TransportError> {
-        let mut headers = self.v3_headers();
-        headers.push(("Cache-Control".into(), "no-cache".into()));
-        let request = self.ordinary_request(OrdinaryRequest::SystemStatusGet, None, &headers, b"");
-        match tokio::time::timeout(
-            Duration::from_secs(observer_model::journal_link::CHECK_TIMEOUT_SECS),
-            request,
-        )
-        .await
-        {
-            Ok(Ok(_)) => Ok(()),
-            Ok(Err(RouteError::Transport(error))) => Err(error),
-            Ok(Err(RouteError::AwaitingConfirmation)) => {
-                Err(TransportError::Io(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "awaiting mark confirmation",
-                )))
-            }
-            Err(_) => Err(TransportError::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "status check timed out",
-            ))),
-        }
+        self.status_response().await.map(|_| ())
     }
 
     fn v3_headers(&self) -> Vec<(String, String)> {
@@ -1470,10 +1569,11 @@ impl ObserverClient {
                 )))
             }
         };
-        if response.body.len() > MAX_POST_CONNECT_RESPONSE_BYTES {
+        let limit = route.spec().response_cap;
+        if response.body.len() > limit {
             return Err(TransportError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "response body exceeds 64 KiB limit",
+                format!("response body exceeds {limit} byte limit"),
             )));
         }
         Ok((response, meta))
@@ -1584,7 +1684,7 @@ impl ObserverClient {
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<(HttpResponse, SendMetadata), RouteError> {
-        debug_assert_eq!(OrdinaryRequest::ALL.len(), 18);
+        debug_assert_eq!(OrdinaryRequest::ALL.len(), 20);
         let spec = route.spec();
         if spec.gated && !self.gate_open() {
             return Err(RouteError::AwaitingConfirmation);
@@ -1629,6 +1729,19 @@ impl ObserverClient {
             path: selected_path,
             attempts,
         } = result.map_err(|e| RouteError::Transport(map_request_error(e)))?;
+        // A refusal from a pairing-scoped registry or status read retires
+        // this pairing's registry immediately, even if another read is in flight.
+        if response.status == 403
+            && matches!(
+                route,
+                OrdinaryRequest::SelfSourcesPut
+                    | OrdinaryRequest::KnownSourcesGet
+                    | OrdinaryRequest::SystemStatusGet
+                    | OrdinaryRequest::ClientsSelfGet
+            )
+        {
+            self.note_source_advert(SourceAdvert::Revoked);
+        }
         let path = map_selected_path(selected_path);
         Ok((
             HttpResponse {

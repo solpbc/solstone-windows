@@ -1441,3 +1441,17 @@ windows.time.takenhours = { $count ->
         [one] { $display } hour ago
        *[other] { $display } hours ago
     }
+
+windows.sharedsources.one = from another device
+
+windows.sharedsources.many = from { $count } other devices
+
+windows.sharedsources.also = also on
+
+windows.sharedsources.labelstateage = { $label } · { $state } · { $relative }
+
+windows.sharedsources.labelage = { $label } · { $relative }
+
+windows.sharedsources.labelstate = { $label } · { $state }
+
+windows.sharedsources.stateage = { $state } · { $relative }

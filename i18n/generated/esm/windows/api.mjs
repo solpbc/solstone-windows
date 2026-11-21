@@ -1070,6 +1070,58 @@ const MESSAGES = {
       { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
     ],
   },
+  "windows.sharedsources.also": {
+    resourceKey: "m77696e646f77732e736861726564736f75726365732e616c736f",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.sharedsources.labelage": {
+    resourceKey: "m77696e646f77732e736861726564736f75726365732e6c6162656c616765",
+    formatIntent: "text",
+    arguments: [
+      { name: "label", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "relative", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.sharedsources.labelstate": {
+    resourceKey: "m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465",
+    formatIntent: "text",
+    arguments: [
+      { name: "label", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "state", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.sharedsources.labelstateage": {
+    resourceKey: "m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765",
+    formatIntent: "text",
+    arguments: [
+      { name: "label", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "state", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "relative", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.sharedsources.many": {
+    resourceKey: "m77696e646f77732e736861726564736f75726365732e6d616e79",
+    formatIntent: "text",
+    arguments: [
+      { name: "count", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.sharedsources.one": {
+    resourceKey: "m77696e646f77732e736861726564736f75726365732e6f6e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.sharedsources.stateage": {
+    resourceKey: "m77696e646f77732e736861726564736f75726365732e7374617465616765",
+    formatIntent: "text",
+    arguments: [
+      { name: "state", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "relative", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
   "windows.time.checkedday": {
     resourceKey: "m77696e646f77732e74696d652e636865636b6564646179",
     formatIntent: "cardinal",

@@ -29,6 +29,8 @@ pub(crate) enum OrdinaryRequest {
     MigrationDecisionPut,
     LocalEndpointsGet,
     LinkIdentityGet,
+    SelfSourcesPut,
+    KnownSourcesGet,
     ObsidianVaultsGet,
     ImportSavePost,
     ImportStartPost,
@@ -46,7 +48,7 @@ pub(crate) struct OrdinaryRequestSpec {
 }
 
 impl OrdinaryRequest {
-    pub(crate) const ALL: [Self; 18] = [
+    pub(crate) const ALL: [Self; 20] = [
         Self::ClientsListGet,
         Self::ClientsSelfGet,
         Self::ClientsSelfPut,
@@ -62,6 +64,8 @@ impl OrdinaryRequest {
         Self::MigrationDecisionPut,
         Self::LocalEndpointsGet,
         Self::LinkIdentityGet,
+        Self::SelfSourcesPut,
+        Self::KnownSourcesGet,
         Self::ObsidianVaultsGet,
         Self::ImportSavePost,
         Self::ImportStartPost,
@@ -183,6 +187,20 @@ impl OrdinaryRequest {
                 },
                 replay: ReplayPolicy::ReplaySafe,
                 response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: true,
+            },
+            Self::SelfSourcesPut => OrdinaryRequestSpec {
+                method: "PUT",
+                path_pattern: paths::SELF_SOURCES,
+                replay: ReplayPolicy::ReplaySafe,
+                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: true,
+            },
+            Self::KnownSourcesGet => OrdinaryRequestSpec {
+                method: "GET",
+                path_pattern: paths::KNOWN_SOURCES,
+                replay: ReplayPolicy::ReplaySafe,
+                response_cap: spl_core::mux::MAX_ASSEMBLED_BYTES,
                 gated: true,
             },
             Self::ObsidianVaultsGet => OrdinaryRequestSpec {
@@ -370,6 +388,22 @@ mod tests {
                 ReplayPolicy::ReplaySafe,
                 MAX_POST_CONNECT_RESPONSE_BYTES,
                 false,
+            ),
+            (
+                OrdinaryRequest::SelfSourcesPut,
+                "PUT",
+                "/app/network/api/clients/self/sources",
+                ReplayPolicy::ReplaySafe,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                true,
+            ),
+            (
+                OrdinaryRequest::KnownSourcesGet,
+                "GET",
+                "/app/network/api/sources",
+                ReplayPolicy::ReplaySafe,
+                spl_core::mux::MAX_ASSEMBLED_BYTES,
+                true,
             ),
             (
                 OrdinaryRequest::ObsidianVaultsGet,

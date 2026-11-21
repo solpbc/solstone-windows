@@ -222,12 +222,12 @@ impl<J: Journal<Upload = Upload, Reply = Delivery>> Worker<J> {
             self.capability.listed() == Some(false),
         );
         let state = status.state;
+        *self.status.lock().unwrap_or_else(|p| p.into_inner()) = Some(status);
         self.state.send_if_modified(|current| {
             let changed = *current != Some(state);
             *current = Some(state);
             changed
         });
-        *self.status.lock().unwrap_or_else(|p| p.into_inner()) = Some(status);
     }
 
     fn reply(&self, reply: oneshot::Sender<ScreenshotsDocument>) {

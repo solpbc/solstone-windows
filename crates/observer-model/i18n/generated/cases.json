@@ -5349,6 +5349,286 @@
     {
       "bundle": "windows",
       "call_contract": {
+        "arguments": [],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.sharedsources.also\u0004m77696e646f77732e736861726564736f75726365732e616c736f",
+        "gettext_plural_key": "m77696e646f77732e736861726564736f75726365732e616c736f_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.sharedsources.also",
+        "resource_key": "m77696e646f77732e736861726564736f75726365732e616c736f",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "also on",
+      "folder": null,
+      "inputs": {},
+      "locale": "en-US",
+      "logical_expected": "also on",
+      "message_id": "windows.sharedsources.also",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.sharedsources.also\", &[])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e736861726564736f75726365732e616c736f",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [
+          {
+            "name": "label",
+            "type": "string",
+            "value": "sample"
+          },
+          {
+            "name": "relative",
+            "type": "string",
+            "value": "sample"
+          }
+        ],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.sharedsources.labelage\u0004m77696e646f77732e736861726564736f75726365732e6c6162656c616765",
+        "gettext_plural_key": "m77696e646f77732e736861726564736f75726365732e6c6162656c616765_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.sharedsources.labelage",
+        "resource_key": "m77696e646f77732e736861726564736f75726365732e6c6162656c616765",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "⁨sample⁩ · ⁨sample⁩",
+      "folder": null,
+      "inputs": {
+        "label": "sample",
+        "relative": "sample"
+      },
+      "locale": "en-US",
+      "logical_expected": "⁨sample⁩ · ⁨sample⁩",
+      "message_id": "windows.sharedsources.labelage",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.sharedsources.labelage\", &[(\"label\", Value::String(\"sample\")), (\"relative\", Value::String(\"sample\"))])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e736861726564736f75726365732e6c6162656c616765",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [
+          {
+            "name": "label",
+            "type": "string",
+            "value": "sample"
+          },
+          {
+            "name": "state",
+            "type": "string",
+            "value": "sample"
+          }
+        ],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.sharedsources.labelstate\u0004m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465",
+        "gettext_plural_key": "m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.sharedsources.labelstate",
+        "resource_key": "m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "⁨sample⁩ · ⁨sample⁩",
+      "folder": null,
+      "inputs": {
+        "label": "sample",
+        "state": "sample"
+      },
+      "locale": "en-US",
+      "logical_expected": "⁨sample⁩ · ⁨sample⁩",
+      "message_id": "windows.sharedsources.labelstate",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.sharedsources.labelstate\", &[(\"label\", Value::String(\"sample\")), (\"state\", Value::String(\"sample\"))])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [
+          {
+            "name": "label",
+            "type": "string",
+            "value": "sample"
+          },
+          {
+            "name": "state",
+            "type": "string",
+            "value": "sample"
+          },
+          {
+            "name": "relative",
+            "type": "string",
+            "value": "sample"
+          }
+        ],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.sharedsources.labelstateage\u0004m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765",
+        "gettext_plural_key": "m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.sharedsources.labelstateage",
+        "resource_key": "m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "⁨sample⁩ · ⁨sample⁩ · ⁨sample⁩",
+      "folder": null,
+      "inputs": {
+        "label": "sample",
+        "relative": "sample",
+        "state": "sample"
+      },
+      "locale": "en-US",
+      "logical_expected": "⁨sample⁩ · ⁨sample⁩ · ⁨sample⁩",
+      "message_id": "windows.sharedsources.labelstateage",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.sharedsources.labelstateage\", &[(\"label\", Value::String(\"sample\")), (\"relative\", Value::String(\"sample\")), (\"state\", Value::String(\"sample\"))])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [
+          {
+            "name": "count",
+            "type": "string",
+            "value": "sample"
+          }
+        ],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.sharedsources.many\u0004m77696e646f77732e736861726564736f75726365732e6d616e79",
+        "gettext_plural_key": "m77696e646f77732e736861726564736f75726365732e6d616e79_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.sharedsources.many",
+        "resource_key": "m77696e646f77732e736861726564736f75726365732e6d616e79",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "from ⁨sample⁩ other devices",
+      "folder": null,
+      "inputs": {
+        "count": "sample"
+      },
+      "locale": "en-US",
+      "logical_expected": "from ⁨sample⁩ other devices",
+      "message_id": "windows.sharedsources.many",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.sharedsources.many\", &[(\"count\", Value::String(\"sample\"))])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e736861726564736f75726365732e6d616e79",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.sharedsources.one\u0004m77696e646f77732e736861726564736f75726365732e6f6e65",
+        "gettext_plural_key": "m77696e646f77732e736861726564736f75726365732e6f6e65_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.sharedsources.one",
+        "resource_key": "m77696e646f77732e736861726564736f75726365732e6f6e65",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "from another device",
+      "folder": null,
+      "inputs": {},
+      "locale": "en-US",
+      "logical_expected": "from another device",
+      "message_id": "windows.sharedsources.one",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.sharedsources.one\", &[])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e736861726564736f75726365732e6f6e65",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [
+          {
+            "name": "state",
+            "type": "string",
+            "value": "sample"
+          },
+          {
+            "name": "relative",
+            "type": "string",
+            "value": "sample"
+          }
+        ],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.sharedsources.stateage\u0004m77696e646f77732e736861726564736f75726365732e7374617465616765",
+        "gettext_plural_key": "m77696e646f77732e736861726564736f75726365732e7374617465616765_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.sharedsources.stateage",
+        "resource_key": "m77696e646f77732e736861726564736f75726365732e7374617465616765",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "⁨sample⁩ · ⁨sample⁩",
+      "folder": null,
+      "inputs": {
+        "relative": "sample",
+        "state": "sample"
+      },
+      "locale": "en-US",
+      "logical_expected": "⁨sample⁩ · ⁨sample⁩",
+      "message_id": "windows.sharedsources.stateage",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.sharedsources.stateage\", &[(\"relative\", Value::String(\"sample\")), (\"state\", Value::String(\"sample\"))])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e736861726564736f75726365732e7374617465616765",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
         "arguments": [
           {
             "name": "count",

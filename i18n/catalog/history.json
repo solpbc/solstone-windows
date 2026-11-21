@@ -2642,6 +2642,165 @@
       }
     },
     {
+      "id": "windows.sharedsources.also",
+      "resource": "m77696e646f77732e736861726564736f75726365732e616c736f",
+      "namespace": "windows.sharedsources",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.sharedsources.labelage",
+      "resource": "m77696e646f77732e736861726564736f75726365732e6c6162656c616765",
+      "namespace": "windows.sharedsources",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "label",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "relative",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.sharedsources.labelstate",
+      "resource": "m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465",
+      "namespace": "windows.sharedsources",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "label",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "state",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.sharedsources.labelstateage",
+      "resource": "m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765",
+      "namespace": "windows.sharedsources",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "label",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "state",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "relative",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.sharedsources.many",
+      "resource": "m77696e646f77732e736861726564736f75726365732e6d616e79",
+      "namespace": "windows.sharedsources",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.sharedsources.one",
+      "resource": "m77696e646f77732e736861726564736f75726365732e6f6e65",
+      "namespace": "windows.sharedsources",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.sharedsources.stateage",
+      "resource": "m77696e646f77732e736861726564736f75726365732e7374617465616765",
+      "namespace": "windows.sharedsources",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "state",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "relative",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
       "id": "windows.time.checkedday",
       "resource": "m77696e646f77732e74696d652e636865636b6564646179",
       "namespace": "windows.time",
