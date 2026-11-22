@@ -4,30 +4,76 @@
 //! Durable local custody for files chosen for import.
 
 use observer_model::i18n::message;
+use observer_model::{is_valid_import_id, JournalLink, PairingPhase, SyncSnapshot};
 
-use std::collections::BTreeMap;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::import_client::{
-    Handoff, ImportFile, SavedImport, MAX_IMPORT_FILE_BYTES, REQUEST_BODY_LIMIT,
+    Handoff, ImportFile, ReconcileReply, SavedImport, MAX_IMPORT_FILE_BYTES, REQUEST_BODY_LIMIT,
 };
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+pub const RECENT_WINDOW_MS: u64 = 24 * 60 * 60 * 1000;
+pub const RECENT_MAX_ITEMS: usize = 5;
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SavedProgress {
     pub journal: String,
     pub saved: SavedImport,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Refusal {
     pub journal: String,
     pub version: String,
     pub sentence: String,
     pub retryable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+/// Durable confirmation-required review state for an import saved in a specific journal.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReviewState {
+    pub journal: String,
+    pub import_id: String,
+    pub reason_code: String,
+    pub kind: String,
+    #[serde(default)]
+    pub expired: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentReceipt {
+    pub filename: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_id: Option<String>,
+    pub instance_id: String,
+    pub delivered_at_epoch_ms: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct RecentFileV2 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    delivered_to: Option<String>,
+    #[serde(default)]
+    receipts: Vec<RecentReceipt>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RecentFileDisk {
+    LegacyJournal(String),
+    V2(RecentFileV2),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -39,6 +85,8 @@ pub struct Item {
     pub added: u64,
     pub saved: Option<SavedProgress>,
     pub refusal: Option<Refusal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<ReviewState>,
     #[serde(default)]
     pub may_have_reached: bool,
     #[serde(default)]
@@ -50,9 +98,11 @@ pub struct Item {
 
 impl Item {
     pub fn refused_here(&self, journal: &str, version: &str) -> bool {
-        self.refusal
-            .as_ref()
-            .is_some_and(|r| r.journal == journal && r.version == version)
+        self.refusal.as_ref().is_some_and(|r| {
+            r.journal == journal
+                && (r.version == version
+                    || r.reason_code.as_deref() == Some("import_preview_required"))
+        })
     }
 
     pub fn progress_for(&self, journal: &str) -> Option<&SavedImport> {
@@ -61,21 +111,35 @@ impl Item {
             .filter(|p| p.journal == journal)
             .map(|p| &p.saved)
     }
+
+    pub fn review_for(&self, journal: &str) -> Option<&ReviewState> {
+        self.review
+            .as_ref()
+            .filter(|r| !journal.is_empty() && r.journal == journal)
+    }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct IntakeRefusal {
     pub name: String,
     pub reason: String,
 }
 
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
 pub struct Intake {
     pub copying: bool,
     pub done: usize,
     pub total: usize,
     pub accepted: usize,
     pub refused: Vec<IntakeRefusal>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReconcileOutcome {
+    Confirmed,
+    Expired,
+    Unchanged,
+    Stale,
 }
 
 pub struct Store {
@@ -86,6 +150,7 @@ pub struct Store {
     pub intake: Option<Intake>,
     pub interrupted: bool,
     pub delivered_to: Option<String>,
+    pub recent: Vec<RecentReceipt>,
 }
 
 fn valid_id(id: &str) -> bool {
@@ -108,6 +173,49 @@ fn atomic_json(path: &Path, value: &impl Serialize) -> io::Result<()> {
     file.sync_all()?;
     drop(file);
     fs::rename(temporary, path)
+}
+
+fn now_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn prune_recent_receipts(receipts: &mut Vec<RecentReceipt>, now_ms: u64) {
+    receipts.retain(|r| {
+        !r.instance_id.is_empty()
+            && now_ms.saturating_sub(r.delivered_at_epoch_ms) <= RECENT_WINDOW_MS
+    });
+    for receipt in receipts.iter_mut() {
+        if receipt
+            .import_id
+            .as_deref()
+            .is_some_and(|id| !is_valid_import_id(id))
+        {
+            receipt.import_id = None;
+        }
+    }
+    receipts.sort_by(|a, b| {
+        b.delivered_at_epoch_ms
+            .cmp(&a.delivered_at_epoch_ms)
+            .then_with(|| a.filename.cmp(&b.filename))
+    });
+    let mut seen_ids = BTreeSet::new();
+    let mut per_instance: BTreeMap<String, usize> = BTreeMap::new();
+    receipts.retain(|r| {
+        if let Some(id) = &r.import_id {
+            if !seen_ids.insert((r.instance_id.clone(), id.clone())) {
+                return false;
+            }
+        }
+        let count = per_instance.entry(r.instance_id.clone()).or_insert(0);
+        if *count >= RECENT_MAX_ITEMS {
+            return false;
+        }
+        *count += 1;
+        true
+    });
 }
 
 impl Store {
@@ -138,11 +246,17 @@ impl Store {
             }
             items.insert(name, item);
         }
-        let delivered_to = match fs::read(root.join("recent.json")) {
-            Ok(bytes) => Some(serde_json::from_slice(&bytes).map_err(io::Error::other)?),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        let (delivered_to, mut recent) = match fs::read(root.join("recent.json")) {
+            Ok(bytes) => {
+                match serde_json::from_slice::<RecentFileDisk>(&bytes).map_err(io::Error::other)? {
+                    RecentFileDisk::LegacyJournal(journal) => (Some(journal), Vec::new()),
+                    RecentFileDisk::V2(file) => (file.delivered_to, file.receipts),
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (None, Vec::new()),
             Err(error) => return Err(error),
         };
+        prune_recent_receipts(&mut recent, now_epoch_ms());
         // Validate every published record before removing an unpublished copy.
         // An open failure leaves all material in place. Cleanup trouble is an
         // interrupted intake, with its durable notice, rather than an open failure.
@@ -162,6 +276,7 @@ impl Store {
             intake: None,
             interrupted,
             delivered_to,
+            recent,
         })
     }
 
@@ -219,18 +334,186 @@ impl Store {
     /// Called only after the journal proved terminal custody. A failed cleanup
     /// keeps the same id and progress so replay can finish it on a later pass.
     pub fn delivered(&mut self, id: &str, journal: &str) -> io::Result<()> {
-        if !self.items.contains_key(id) {
+        let import_id = self
+            .items
+            .get(id)
+            .and_then(|item| item.progress_for(journal))
+            .map(|saved| saved.timestamp.clone());
+        self.delivered_at(id, journal, import_id.as_deref(), now_epoch_ms())
+    }
+
+    /// Persist a 24-hour UI recent receipt durably FIRST, then delete local bytes.
+    pub fn delivered_at(
+        &mut self,
+        id: &str,
+        journal: &str,
+        import_id: Option<&str>,
+        now_ms: u64,
+    ) -> io::Result<()> {
+        let Some(item) = self.items.get(id) else {
             return Ok(());
-        }
-        atomic_json(&self.root.join("recent.json"), &journal)?;
-        self.delivered_to = Some(journal.to_string());
+        };
+        let mut next_recent = self.recent.clone();
+        next_recent.push(RecentReceipt {
+            filename: item.name.clone(),
+            import_id: import_id
+                .filter(|candidate| is_valid_import_id(candidate))
+                .map(str::to_owned),
+            instance_id: journal.to_owned(),
+            delivered_at_epoch_ms: now_ms,
+        });
+        prune_recent_receipts(&mut next_recent, now_ms);
+        let disk = RecentFileV2 {
+            delivered_to: Some(journal.to_owned()),
+            receipts: next_recent.clone(),
+        };
+        atomic_json(&self.root.join("recent.json"), &disk)?;
+        self.delivered_to = Some(journal.to_owned());
+        self.recent = next_recent;
         match fs::remove_dir_all(self.root.join(id)) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
         self.items.remove(id);
+        if self.confirming_remove.as_deref() == Some(id) {
+            self.confirming_remove = None;
+        }
         Ok(())
+    }
+
+    /// Pruned 24h recent receipts scoped strictly to `journal` (max 5, newest first).
+    pub fn recent_for(&self, journal: &str, now_ms: u64) -> Vec<RecentReceipt> {
+        if journal.is_empty() {
+            return Vec::new();
+        }
+        let mut filtered: Vec<RecentReceipt> = self
+            .recent
+            .iter()
+            .filter(|r| r.instance_id == journal)
+            .cloned()
+            .collect();
+        prune_recent_receipts(&mut filtered, now_ms);
+        filtered.truncate(RECENT_MAX_ITEMS);
+        filtered
+    }
+
+    /// On re-pair to a different journal instance, reset `ready to review` and
+    /// `review expired` items back to pending/waiting (clearing saved fields).
+    pub fn reset_foreign_reviews(&mut self, current_journal: &str) -> io::Result<bool> {
+        if current_journal.is_empty() {
+            return Ok(false);
+        }
+        let foreign_ids: Vec<String> = self
+            .items
+            .values()
+            .filter(|item| {
+                self.active.as_deref() != Some(&item.id)
+                    && item
+                        .review
+                        .as_ref()
+                        .is_some_and(|r| r.journal != current_journal)
+            })
+            .map(|item| item.id.clone())
+            .collect();
+        let mut changed = false;
+        for id in foreign_ids {
+            if let Some(mut item) = self.items.get(&id).cloned() {
+                item.review = None;
+                item.saved = None;
+                item.refusal = None;
+                item.may_have_reached = false;
+                self.put(item)?;
+                changed = true;
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Non-expired `ready to review` items scoped strictly to `current_journal`.
+    pub fn review_candidates(&self, current_journal: &str) -> Vec<(String, String)> {
+        if current_journal.is_empty() {
+            return Vec::new();
+        }
+        let mut rows: Vec<(&Item, &str)> = self
+            .items
+            .values()
+            .filter(|item| {
+                self.active.as_deref() != Some(&item.id)
+                    && self.confirming_remove.as_deref() != Some(&item.id)
+            })
+            .filter_map(|item| {
+                let review = item.review_for(current_journal)?;
+                if review.expired || !is_valid_import_id(&review.import_id) {
+                    return None;
+                }
+                Some((item, review.import_id.as_str()))
+            })
+            .collect();
+        rows.sort_by_key(|(item, _)| item.added);
+        rows.into_iter()
+            .map(|(item, import_id)| (item.id.clone(), import_id.to_owned()))
+            .collect()
+    }
+
+    /// Apply one reconciliation response after re-verifying `(item_id, saved_import_id, saved_instance_id)`.
+    pub fn apply_reconcile(
+        &mut self,
+        id: &str,
+        expected_import_id: &str,
+        expected_journal: &str,
+        reply: ReconcileReply,
+        now_ms: u64,
+    ) -> io::Result<ReconcileOutcome> {
+        if self.active.as_deref() == Some(id) {
+            return Ok(ReconcileOutcome::Stale);
+        }
+        let Some(item) = self.items.get(id).cloned() else {
+            return Ok(ReconcileOutcome::Stale);
+        };
+        let Some(review) = &item.review else {
+            return Ok(ReconcileOutcome::Stale);
+        };
+        if review.journal != expected_journal
+            || review.import_id != expected_import_id
+            || review.expired
+        {
+            return Ok(ReconcileOutcome::Stale);
+        }
+        match reply {
+            ReconcileReply::Confirmed => {
+                self.delivered_at(id, expected_journal, Some(expected_import_id), now_ms)?;
+                Ok(ReconcileOutcome::Confirmed)
+            }
+            ReconcileReply::Expired => {
+                let mut updated = item;
+                if let Some(review) = &mut updated.review {
+                    review.expired = true;
+                }
+                self.put(updated)?;
+                Ok(ReconcileOutcome::Expired)
+            }
+            ReconcileReply::Unchanged | ReconcileReply::AuthStop => Ok(ReconcileOutcome::Unchanged),
+        }
+    }
+
+    /// Re-queue a `ready to review` / `review expired` item by clearing saved and review markers.
+    pub fn send_again(&mut self, id: &str) -> io::Result<bool> {
+        if self.active.as_deref() == Some(id) {
+            return Ok(false);
+        }
+        let Some(mut item) = self.items.get(id).cloned() else {
+            return Ok(false);
+        };
+        if item.review.is_none() {
+            return Ok(false);
+        }
+        item.review = None;
+        item.saved = None;
+        item.refusal = None;
+        item.may_have_reached = false;
+        self.put(item)?;
+        Ok(true)
     }
 
     pub fn dismiss_interrupted(&mut self) -> io::Result<()> {
@@ -255,6 +538,384 @@ impl Store {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct Row {
+    pub id: String,
+    pub name: String,
+    pub state: &'static str,
+    pub reason: Option<String>,
+    pub retryable: bool,
+    pub may_have_reached: bool,
+    pub missing_copy: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_kind: Option<String>,
+    pub review_expired: bool,
+    pub added: u64,
+    pub size: u64,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct Document {
+    pub recent: String,
+    pub recent_receipts: Vec<RecentReceipt>,
+    pub hold_reason: Option<String>,
+    pub rows: Vec<Row>,
+    pub intake: Option<Intake>,
+    pub interrupted: bool,
+    pub waiting: u64,
+    pub ready_to_review: u64,
+    pub needs_owner: bool,
+    pub available: bool,
+}
+
+fn row_sort_rank(state: &str) -> u8 {
+    match state {
+        "ready_to_review" => 0,
+        "review_expired" => 1,
+        "refused" => 2,
+        "sending" => 3,
+        _ => 4,
+    }
+}
+
+/// Pure, host-testable projection of the import custody store for Settings and SyncSnapshot.
+pub fn build_document(
+    store: Option<&Store>,
+    sync: &SyncSnapshot,
+    journal: &str,
+    auth_blocked: bool,
+    now_ms: u64,
+) -> Document {
+    let Some(store) = store else {
+        return Document {
+            recent: message(
+                "windows.ui.couldntreadimportsonthisdevicenothinghasbeenremo",
+                &[],
+            ),
+            recent_receipts: Vec::new(),
+            hold_reason: None,
+            rows: Vec::new(),
+            intake: None,
+            interrupted: false,
+            waiting: 0,
+            ready_to_review: 0,
+            needs_owner: true,
+            available: false,
+        };
+    };
+    let gate = version_gate(sync.journal_version.as_deref(), sync.journal_version_fresh);
+    let version = sync.journal_version.as_deref().unwrap_or("");
+    let mut rows = Vec::new();
+    let mut pending = store
+        .intake
+        .as_ref()
+        .filter(|intake| intake.copying)
+        .map_or(0, |intake| intake.total.saturating_sub(intake.done) as u64);
+    let mut attention = 0u64;
+    let mut ready_to_review = 0u64;
+    let mut review_expired_count = 0u64;
+
+    for item in store.items.values() {
+        let active = store.active.as_deref() == Some(&item.id);
+        let review = if active {
+            None
+        } else {
+            item.review_for(journal)
+        };
+        let refusal = if active || review.is_some() {
+            None
+        } else {
+            item.refusal
+                .as_ref()
+                .filter(|_| item.refused_here(journal, version))
+        };
+
+        let row = if active {
+            pending += 1;
+            Row {
+                id: item.id.clone(),
+                name: item.name.clone(),
+                state: "sending",
+                reason: None,
+                retryable: false,
+                may_have_reached: item.may_have_reached,
+                missing_copy: item.missing_copy,
+                import_id: item
+                    .progress_for(journal)
+                    .map(|s| s.timestamp.clone())
+                    .filter(|id| is_valid_import_id(id)),
+                reason_code: None,
+                review_kind: None,
+                review_expired: false,
+                added: item.added,
+                size: item.size,
+            }
+        } else if let Some(review) = review {
+            if review.expired {
+                review_expired_count += 1;
+            } else {
+                ready_to_review += 1;
+            }
+            Row {
+                id: item.id.clone(),
+                name: item.name.clone(),
+                state: if review.expired {
+                    "review_expired"
+                } else {
+                    "ready_to_review"
+                },
+                reason: Some(if review.expired {
+                    message("windows.import.reviewexpired", &[])
+                } else if review.kind == "body_confirmation_required" {
+                    message("windows.import.reviewdetailbody", &[])
+                } else {
+                    message("windows.import.reviewdetail", &[])
+                }),
+                retryable: review.expired,
+                may_have_reached: true,
+                missing_copy: item.missing_copy,
+                import_id: Some(review.import_id.clone()),
+                reason_code: Some(review.reason_code.clone()),
+                review_kind: Some(review.kind.clone()),
+                review_expired: review.expired,
+                added: item.added,
+                size: item.size,
+            }
+        } else if let Some(refusal) = refusal {
+            attention += 1;
+            Row {
+                id: item.id.clone(),
+                name: item.name.clone(),
+                state: "refused",
+                reason: Some(refusal.sentence.clone()),
+                retryable: refusal.retryable,
+                may_have_reached: item.may_have_reached,
+                missing_copy: item.missing_copy,
+                import_id: item
+                    .progress_for(journal)
+                    .map(|s| s.timestamp.clone())
+                    .filter(|id| is_valid_import_id(id)),
+                reason_code: refusal.reason_code.clone(),
+                review_kind: refusal.kind.clone(),
+                review_expired: false,
+                added: item.added,
+                size: item.size,
+            }
+        } else {
+            pending += 1;
+            Row {
+                id: item.id.clone(),
+                name: item.name.clone(),
+                state: "waiting",
+                reason: None,
+                retryable: false,
+                may_have_reached: item.may_have_reached,
+                missing_copy: item.missing_copy,
+                import_id: item
+                    .progress_for(journal)
+                    .map(|s| s.timestamp.clone())
+                    .filter(|id| is_valid_import_id(id)),
+                reason_code: None,
+                review_kind: None,
+                review_expired: false,
+                added: item.added,
+                size: item.size,
+            }
+        };
+        rows.push(row);
+    }
+
+    rows.sort_by(|a, b| {
+        row_sort_rank(a.state)
+            .cmp(&row_sort_rank(b.state))
+            .then_with(|| Reverse(a.added).cmp(&Reverse(b.added)))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    let hold_reason = if pending > 0 {
+        if auth_blocked || sync.pairing.phase == PairingPhase::Failed {
+            Some(message(
+                "windows.ui.yourjournalstoppedacceptingthisdeviceimportswait",
+                &[],
+            ))
+        } else {
+            match sync.pairing.phase {
+                PairingPhase::NotPaired | PairingPhase::Pairing => Some(message(
+                    "windows.ui.importswaitonthisdeviceuntilyouconnectajournal",
+                    &[],
+                )),
+                PairingPhase::AwaitingConfirmation => Some(message(
+                    "windows.ui.importswaituntilyouconfirmyourjournalsmark",
+                    &[],
+                )),
+                PairingPhase::Failed => Some(message(
+                    "windows.ui.yourjournalstoppedacceptingthisdeviceimportswait",
+                    &[],
+                )),
+                PairingPhase::Paired => {
+                    if gate == VersionGate::Old {
+                        Some(message(
+                            "windows.ui.importswaituntilyourjournalisupdated",
+                            &[],
+                        ))
+                    } else if sync.journal_link == Some(JournalLink::Offline) {
+                        Some(message("windows.import.holdoffline", &[]))
+                    } else {
+                        None
+                    }
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    let recent_receipts = if sync.pairing.phase == PairingPhase::Paired && !journal.is_empty() {
+        store.recent_for(journal, now_ms)
+    } else {
+        Vec::new()
+    };
+
+    let recent = if let Some(hold) = &hold_reason {
+        hold.clone()
+    } else if pending > 0 {
+        match gate {
+            VersionGate::Unknown => message("windows.ui.checkingyourjournal", &[]),
+            VersionGate::Old => message("windows.ui.importswaituntilyourjournalisupdated", &[]),
+            VersionGate::Supported if store.active.is_some() => {
+                message("windows.import.rowsending", &[])
+            }
+            VersionGate::Supported => message("windows.ui.waitingtogotoyourjournal", &[]),
+        }
+    } else if attention > 0 || review_expired_count > 0 {
+        message(
+            "windows.ui.notgoingtoyourjournalrightnoweachonesayswhy",
+            &[],
+        )
+    } else if ready_to_review > 0 {
+        message("windows.import.reviewdetail", &[])
+    } else if !recent_receipts.is_empty()
+        || (sync.pairing.phase == PairingPhase::Paired
+            && !journal.is_empty()
+            && store.delivered_to.as_deref() == Some(journal))
+    {
+        message("windows.ui.inyourjournal", &[])
+    } else {
+        message("windows.ui.nothingyetxec5a8da6", &[])
+    };
+
+    Document {
+        available: true,
+        recent,
+        recent_receipts,
+        hold_reason,
+        rows,
+        intake: store.intake.clone(),
+        interrupted: store.interrupted,
+        waiting: if gate == VersionGate::Old || auth_blocked {
+            0
+        } else {
+            pending
+        },
+        ready_to_review,
+        needs_owner: attention > 0
+            || review_expired_count > 0
+            || (pending > 0 && gate == VersionGate::Old)
+            || store.interrupted
+            || (pending > 0 && auth_blocked),
+    }
+}
+
+/// Pure, host-testable `window.solstoneJournalHost` v2 `import.status` payload builder.
+/// Preserves the closed `state` set (`waiting | uploading | attention | delivered | gone`)
+/// and emits additive v2 fields for review, expiry, retryability, device noun, and byte size.
+pub fn handoff_status_json(
+    delivered_row: Option<Option<&str>>,
+    store: Option<&Store>,
+    journal: &str,
+    version: &str,
+    id: &str,
+) -> serde_json::Value {
+    if let Some(row) = delivered_row {
+        return json!({
+            "state": "delivered",
+            "import_id": row.filter(|candidate| is_valid_import_id(candidate)),
+        });
+    }
+    let Some(store) = store else {
+        return json!({"state": "gone"});
+    };
+    let Some(item) = store.items.get(id) else {
+        return json!({"state": "gone"});
+    };
+    if store.active.as_deref() == Some(id) {
+        return json!({
+            "state": "uploading",
+            "size": item.size,
+            "size_bytes": item.size,
+            "device_noun": "PC",
+        });
+    }
+    if let Some(review) = item.review_for(journal) {
+        if review.expired {
+            return json!({
+                "state": "attention",
+                "review_required": false,
+                "review_expired": true,
+                "reason_code": review.reason_code,
+                "kind": review.kind,
+                "import_id": review.import_id,
+                "retryable": true,
+                "reason": message("windows.import.reviewexpired", &[]),
+                "device_noun": "PC",
+                "size_bytes": item.size,
+            });
+        }
+        return json!({
+            "state": "attention",
+            "review_required": true,
+            "review_expired": false,
+            "reason_code": review.reason_code,
+            "kind": review.kind,
+            "import_id": review.import_id,
+            "retryable": false,
+            "reason": message("windows.import.reviewdetail", &[]),
+            "device_noun": "PC",
+            "size_bytes": item.size,
+        });
+    }
+    if let Some(refusal) = item
+        .refusal
+        .as_ref()
+        .filter(|_| item.refused_here(journal, version))
+    {
+        return json!({
+            "state": "attention",
+            "review_required": false,
+            "review_expired": false,
+            "retryable": refusal.retryable,
+            "reason": refusal.sentence,
+            "reason_code": refusal.reason_code,
+            "kind": refusal.kind,
+            "import_id": item
+                .progress_for(journal)
+                .map(|saved| saved.timestamp.as_str())
+                .filter(|candidate| is_valid_import_id(candidate)),
+            "device_noun": "PC",
+            "size_bytes": item.size,
+        });
+    }
+    json!({
+        "state": "waiting",
+        "size_bytes": item.size,
+        "device_noun": "PC",
+    })
 }
 
 /// Copy once at the owner's gesture. A staging directory is never deliverable;
@@ -343,6 +1004,7 @@ where
         added: now,
         saved: None,
         refusal: None,
+        review: None,
         may_have_reached: false,
         missing_copy: false,
         handoff,
@@ -490,7 +1152,10 @@ mod tests {
                 version: "2.0.52".into(),
                 sentence: "refusal".into(),
                 retryable: false,
+                reason_code: None,
+                kind: None,
             }),
+            review: None,
             may_have_reached: true,
             missing_copy: false,
             handoff: None,
@@ -499,6 +1164,422 @@ mod tests {
         assert!(!item.refused_here("new", "2.0.52"));
         assert!(!item.refused_here("old", "2.0.53"));
         assert!(item.refused_here("old", "2.0.52"));
+
+        // A `409 import_preview_required` refusal never auto-retries on version bump.
+        let mut preview_failed = item;
+        preview_failed.refusal.as_mut().unwrap().reason_code =
+            Some("import_preview_required".into());
+        preview_failed.refusal.as_mut().unwrap().kind = Some("plan_failed".into());
+        assert!(preview_failed.refused_here("old", "2.0.53"));
+        assert!(!preview_failed.refused_here("new", "2.0.53"));
+    }
+
+    fn make_item(id_char: char, name: &str, added: u64) -> Item {
+        Item {
+            id: id_char.to_string().repeat(64),
+            name: name.into(),
+            mime: "application/zip".into(),
+            size: 1234,
+            added,
+            saved: None,
+            refusal: None,
+            review: None,
+            may_have_reached: false,
+            missing_copy: false,
+            handoff: None,
+        }
+    }
+
+    #[test]
+    fn deterministic_row_sort_ranks_attention_then_sending_then_waiting_newest_first() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open(root.path().join("import")).unwrap();
+
+        // Give SHA-256 hex ids deliberately inverted relative to expected sort order.
+        let mut w_old = make_item('a', "waiting-old.txt", 10);
+        let mut w_new = make_item('f', "waiting-new.txt", 30);
+        let sending = make_item('e', "sending.txt", 20);
+        let mut r_old = make_item('d', "refused-old.txt", 15);
+        r_old.refusal = Some(Refusal {
+            journal: "j1".into(),
+            version: "2.0.56".into(),
+            sentence: "bad".into(),
+            retryable: false,
+            reason_code: Some("import_preview_required".into()),
+            kind: Some("plan_failed".into()),
+        });
+        let mut r_new = make_item('b', "refused-new.txt", 40);
+        r_new.refusal = Some(Refusal {
+            journal: "j1".into(),
+            version: "2.0.56".into(),
+            sentence: "retryable".into(),
+            retryable: true,
+            reason_code: Some("import_queue_unreachable".into()),
+            kind: None,
+        });
+        let mut rev = make_item('c', "export.zip", 25);
+        rev.review = Some(ReviewState {
+            journal: "j1".into(),
+            import_id: "20261122_143000".into(),
+            reason_code: "import_preview_required".into(),
+            kind: "body_confirmation_required".into(),
+            expired: false,
+        });
+        // Ensure waiting items have no review/refusal.
+        w_old.refusal = None;
+        w_new.refusal = None;
+
+        for item in [w_old, w_new, sending.clone(), r_old, r_new, rev] {
+            fs::create_dir_all(store.root().join(&item.id)).unwrap();
+            store.put(item).unwrap();
+        }
+        store.active = Some(sending.id);
+
+        let mut sync = SyncSnapshot::default();
+        sync.pairing.phase = PairingPhase::Paired;
+        sync.journal_version = Some("2.0.56".into());
+        sync.journal_version_fresh = true;
+        sync.journal_link = Some(JournalLink::Connected);
+
+        let doc = build_document(Some(&store), &sync, "j1", false, 100_000);
+        let names: Vec<&str> = doc.rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "export.zip",      // ready_to_review
+                "refused-new.txt", // refused (newest)
+                "refused-old.txt", // refused (older)
+                "sending.txt",     // sending
+                "waiting-new.txt", // waiting (newest)
+                "waiting-old.txt", // waiting (older)
+            ]
+        );
+        assert_eq!(doc.ready_to_review, 1);
+        assert_eq!(doc.waiting, 3); // sending + 2 waiting; NOT ready_to_review or refused
+        assert!(doc.needs_owner); // refused items
+    }
+
+    #[test]
+    fn recent_json_decodes_legacy_bare_string_and_prunes_v2_receipts_to_24h_and_max_5() {
+        let root = tempfile::tempdir().unwrap();
+        let import_dir = root.path().join("import");
+        fs::create_dir_all(&import_dir).unwrap();
+
+        // Legacy bare JSON string upgrades cleanly.
+        fs::write(import_dir.join("recent.json"), br#""journal-legacy""#).unwrap();
+        let mut store = Store::open(import_dir.clone()).unwrap();
+        assert_eq!(store.delivered_to.as_deref(), Some("journal-legacy"));
+        assert!(store.recent.is_empty());
+
+        let base_ms: u64 = 1_795_000_000_000;
+        let source = root.path().join("f.txt");
+        fs::write(&source, b"payload").unwrap();
+
+        // Deliver 6 files within 24h plus 1 older than 24h on journal-a, and 1 on journal-b.
+        for (idx, offset_ms, journal, import_id) in [
+            (0u64, 0u64, "journal-a", Some("20261121_000001")), // >24h old at query time
+            (
+                1,
+                RECENT_WINDOW_MS - 60_000,
+                "journal-a",
+                Some("20261122_000001"),
+            ),
+            (
+                2,
+                RECENT_WINDOW_MS - 50_000,
+                "journal-a",
+                Some("20261122_000002"),
+            ),
+            (
+                3,
+                RECENT_WINDOW_MS - 40_000,
+                "journal-a",
+                Some("20261122_000003"),
+            ),
+            (
+                4,
+                RECENT_WINDOW_MS - 30_000,
+                "journal-a",
+                Some("20261122_000004"),
+            ),
+            (5, RECENT_WINDOW_MS - 20_000, "journal-a", None), // e.g. content_already_imported
+            (
+                6,
+                RECENT_WINDOW_MS - 10_000,
+                "journal-a",
+                Some("20261122_000006"),
+            ),
+            (
+                7,
+                RECENT_WINDOW_MS - 5_000,
+                "journal-b",
+                Some("20261122_000007"),
+            ),
+        ] {
+            let id = format!("{:064x}", idx + 1);
+            let mut item = stage(store.root(), &source, id.clone(), idx + 1).unwrap();
+            item.name = format!("file-{idx}.txt");
+            store.put(item).unwrap();
+            assert!(store.payload(&id).exists());
+            store
+                .delivered_at(&id, journal, import_id, base_ms + offset_ms)
+                .unwrap();
+            assert!(
+                !store.payload(&id).exists(),
+                "local bytes deleted on delivery"
+            );
+        }
+
+        let query_ms = base_ms + RECENT_WINDOW_MS + 1;
+        let a_recent = store.recent_for("journal-a", query_ms);
+        assert_eq!(a_recent.len(), 5);
+        assert_eq!(
+            a_recent
+                .iter()
+                .map(|r| r.filename.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "file-6.txt",
+                "file-5.txt",
+                "file-4.txt",
+                "file-3.txt",
+                "file-2.txt",
+            ]
+        );
+        assert_eq!(a_recent[1].import_id, None);
+        assert_eq!(a_recent[0].import_id.as_deref(), Some("20261122_000006"));
+
+        let b_recent = store.recent_for("journal-b", query_ms);
+        assert_eq!(b_recent.len(), 1);
+        assert_eq!(b_recent[0].filename, "file-7.txt");
+
+        // Unpaired / unconfirmed hides recent receipts.
+        let mut sync = SyncSnapshot::default();
+        sync.pairing.phase = PairingPhase::AwaitingConfirmation;
+        assert!(
+            build_document(Some(&store), &sync, "journal-a", false, query_ms)
+                .recent_receipts
+                .is_empty()
+        );
+        sync.pairing.phase = PairingPhase::Paired;
+        assert_eq!(
+            build_document(Some(&store), &sync, "journal-a", false, query_ms)
+                .recent_receipts
+                .len(),
+            5
+        );
+    }
+
+    #[test]
+    fn reconcile_and_repair_reset_preserve_bytes_until_confirmed_and_reject_stale() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open(root.path().join("import")).unwrap();
+        let source = root.path().join("export.zip");
+        fs::write(&source, b"apple-health-bytes").unwrap();
+
+        let id1 = format!("{:064x}", 10);
+        let mut item1 = stage(store.root(), &source, id1.clone(), 100).unwrap();
+        item1.saved = Some(SavedProgress {
+            journal: "journal-a".into(),
+            saved: SavedImport {
+                path: "/imports/20261122_143000/export.zip".into(),
+                timestamp: "20261122_143000".into(),
+            },
+        });
+        item1.review = Some(ReviewState {
+            journal: "journal-a".into(),
+            import_id: "20261122_143000".into(),
+            reason_code: "import_preview_required".into(),
+            kind: "body_confirmation_required".into(),
+            expired: false,
+        });
+        store.put(item1).unwrap();
+
+        // Unchanged & AuthStop preserve local bytes.
+        assert_eq!(
+            store
+                .apply_reconcile(
+                    &id1,
+                    "20261122_143000",
+                    "journal-a",
+                    ReconcileReply::Unchanged,
+                    5000
+                )
+                .unwrap(),
+            ReconcileOutcome::Unchanged
+        );
+        assert!(store.payload(&id1).exists());
+
+        // Stale mismatched journal or import_id is discarded safely.
+        assert_eq!(
+            store
+                .apply_reconcile(
+                    &id1,
+                    "20261122_143000",
+                    "journal-b",
+                    ReconcileReply::Confirmed,
+                    5000
+                )
+                .unwrap(),
+            ReconcileOutcome::Stale
+        );
+        assert!(store.payload(&id1).exists());
+
+        // 404 marks expired AND preserves local bytes; send_again resets to waiting.
+        assert_eq!(
+            store
+                .apply_reconcile(
+                    &id1,
+                    "20261122_143000",
+                    "journal-a",
+                    ReconcileReply::Expired,
+                    5000
+                )
+                .unwrap(),
+            ReconcileOutcome::Expired
+        );
+        assert!(store.payload(&id1).exists());
+        assert!(store.items[&id1].review.as_ref().unwrap().expired);
+
+        // Stale Confirmed after expiry or send_again is rejected.
+        assert_eq!(
+            store
+                .apply_reconcile(
+                    &id1,
+                    "20261122_143000",
+                    "journal-a",
+                    ReconcileReply::Confirmed,
+                    6000
+                )
+                .unwrap(),
+            ReconcileOutcome::Stale
+        );
+        assert!(store.send_again(&id1).unwrap());
+        assert!(store.items[&id1].review.is_none());
+        assert!(store.items[&id1].saved.is_none());
+        assert!(store.payload(&id1).exists());
+
+        // Confirmed writes 24h recent receipt durably BEFORE deleting bytes.
+        let mut item1_again = store.items[&id1].clone();
+        item1_again.review = Some(ReviewState {
+            journal: "journal-a".into(),
+            import_id: "20261122_150000".into(),
+            reason_code: "import_preview_required".into(),
+            kind: "body_confirmation_required".into(),
+            expired: false,
+        });
+        store.put(item1_again).unwrap();
+        assert_eq!(
+            store
+                .apply_reconcile(
+                    &id1,
+                    "20261122_150000",
+                    "journal-a",
+                    ReconcileReply::Confirmed,
+                    9000
+                )
+                .unwrap(),
+            ReconcileOutcome::Confirmed
+        );
+        assert!(!store.payload(&id1).exists());
+        let recent = store.recent_for("journal-a", 9500);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].import_id.as_deref(), Some("20261122_150000"));
+
+        // Re-pair to a different journal resets ready_to_review and review_expired items to waiting.
+        let id2 = format!("{:064x}", 11);
+        let mut item2 = stage(store.root(), &source, id2.clone(), 200).unwrap();
+        item2.saved = Some(SavedProgress {
+            journal: "journal-a".into(),
+            saved: SavedImport {
+                path: "/imports/20261122_150100/export.zip".into(),
+                timestamp: "20261122_150100".into(),
+            },
+        });
+        item2.review = Some(ReviewState {
+            journal: "journal-a".into(),
+            import_id: "20261122_150100".into(),
+            reason_code: "import_preview_required".into(),
+            kind: "body_confirmation_required".into(),
+            expired: false,
+        });
+        store.put(item2).unwrap();
+        assert!(store.reset_foreign_reviews("journal-b").unwrap());
+        assert!(store.items[&id2].review.is_none());
+        assert!(store.items[&id2].saved.is_none());
+        assert!(store.payload(&id2).exists());
+    }
+
+    #[test]
+    fn handoff_status_emits_additive_v2_fields_without_breaking_states() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open(root.path().join("import")).unwrap();
+        let mut item = make_item('a', "export.zip", 10);
+        item.size = 42_000;
+        item.review = Some(ReviewState {
+            journal: "j1".into(),
+            import_id: "20261122_143000".into(),
+            reason_code: "import_preview_required".into(),
+            kind: "body_confirmation_required".into(),
+            expired: false,
+        });
+        fs::create_dir_all(store.root().join(&item.id)).unwrap();
+        store.put(item.clone()).unwrap();
+
+        let ready = handoff_status_json(None, Some(&store), "j1", "2.0.56", &item.id);
+        assert_eq!(ready["state"], "attention");
+        assert_eq!(ready["review_required"], true);
+        assert_eq!(ready["review_expired"], false);
+        assert_eq!(ready["reason_code"], "import_preview_required");
+        assert_eq!(ready["kind"], "body_confirmation_required");
+        assert_eq!(ready["import_id"], "20261122_143000");
+        assert_eq!(ready["retryable"], false);
+        assert_eq!(ready["device_noun"], "PC");
+        assert_eq!(ready["size_bytes"], 42_000);
+        assert_eq!(
+            ready["reason"],
+            "saved in your journal. preview and confirm to start."
+        );
+
+        item.review.as_mut().unwrap().expired = true;
+        store.put(item.clone()).unwrap();
+        let expired = handoff_status_json(None, Some(&store), "j1", "2.0.56", &item.id);
+        assert_eq!(expired["state"], "attention");
+        assert_eq!(expired["review_required"], false);
+        assert_eq!(expired["review_expired"], true);
+        assert_eq!(expired["retryable"], true);
+        assert_eq!(
+            expired["reason"],
+            "the waiting copy in your journal expired. this device still holds the file."
+        );
+
+        item.review = None;
+        store.put(item.clone()).unwrap();
+        store.active = Some(item.id.clone());
+        let uploading = handoff_status_json(None, Some(&store), "j1", "2.0.56", &item.id);
+        assert_eq!(uploading["state"], "uploading");
+        assert_eq!(uploading["size"], 42_000);
+        assert_eq!(uploading["size_bytes"], 42_000);
+        assert_eq!(uploading["device_noun"], "PC");
+
+        store.active = None;
+        let waiting = handoff_status_json(None, Some(&store), "j1", "2.0.56", &item.id);
+        assert_eq!(waiting["state"], "waiting");
+        assert_eq!(waiting["size_bytes"], 42_000);
+        assert_eq!(waiting["device_noun"], "PC");
+
+        let delivered = handoff_status_json(
+            Some(Some("20261122_143000")),
+            Some(&store),
+            "j1",
+            "2.0.56",
+            &item.id,
+        );
+        assert_eq!(delivered["state"], "delivered");
+        assert_eq!(delivered["import_id"], "20261122_143000");
+
+        let gone = handoff_status_json(None, Some(&store), "j1", "2.0.56", "missing");
+        assert_eq!(gone["state"], "gone");
     }
 
     #[cfg(feature = "transport-tests")]

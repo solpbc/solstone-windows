@@ -1,0 +1,16 @@
+{
+  "description": "State word for an import saved in the journal awaiting confirmation",
+  "context": "Windows app import tile and import pane row status label.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "0cb39d259ccc43fe91a45900235280447458a9d04d867c4cbac6a04fea1a44fd",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1863,9 +1863,43 @@ pub async fn import_open_journal_page(
     state: tauri::State<'_, crate::app::AppState>,
 ) -> Result<(), String> {
     crate::logs::require_settings(&window)?;
-    crate::windows::open_journal_at(&state, &app, Some(&app), Some("/app/import/"))
+    crate::windows::open_journal_at_silent(&state, &app, Some(&app), Some("/app/import/"))
         .await
         .map_err(|e| e.token().to_string())
+}
+
+/// Deep-link directly to `/app/import/<id>` after strict ASCII `^[0-9]{8}_[0-9]{6}$` validation.
+#[tauri::command]
+pub async fn import_open_journal_item(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::app::AppState>,
+    id: String,
+) -> Result<(), String> {
+    crate::logs::require_settings(&window)?;
+    let Some(path) = observer_model::import_item_journal_path(&id) else {
+        return Err("invalid_import_id".into());
+    };
+    crate::windows::open_journal_at_silent(&state, &app, Some(&app), Some(&path))
+        .await
+        .map_err(|e| e.token().to_string())
+}
+
+#[tauri::command]
+pub fn import_send_again(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<(), String> {
+    crate::logs::require_settings(&window)?;
+    crate::import::send_again(&app, &id).map_err(|_| "import_send_again_failed".into())
+}
+
+#[tauri::command]
+pub fn import_reconcile(window: tauri::WebviewWindow) -> Result<(), String> {
+    crate::logs::require_settings(&window)?;
+    crate::import::trigger_reconcile();
+    Ok(())
 }
 
 #[tauri::command]

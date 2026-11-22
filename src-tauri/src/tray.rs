@@ -386,6 +386,7 @@ pub fn apply_state(
         browsers,
         crate::obsidian::needs_attention(),
         crate::screenshots::needs_attention(),
+        dump.sync.imports_need_owner,
         dump.app_state == AppPhase::Paused,
     );
     if let Some(name) = source {
@@ -574,6 +575,7 @@ fn owner_attention_name(name: &str) -> String {
         "screen" => message("windows.ui.screen", &[]),
         "browsers" => message("windows.ui.browsers", &[]),
         "screenshots" => message("windows.ui.screenshots", &[]),
+        "import" => message("windows.ui.import", &[]),
         _ => name.to_string(),
     }
 }

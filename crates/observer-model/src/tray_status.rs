@@ -43,6 +43,7 @@ pub fn attention_source(
     browsers_need_attention: bool,
     obsidian_needs_attention: bool,
     screenshots_need_attention: bool,
+    imports_need_attention: bool,
     paused: bool,
 ) -> Option<&'static str> {
     let faulted = |kind: SourceKind| {
@@ -84,6 +85,9 @@ pub fn attention_source(
     }
     if screenshots_need_attention {
         return Some("screenshots");
+    }
+    if imports_need_attention {
+        return Some("import");
     }
     None
 }
@@ -154,7 +158,19 @@ pub fn menu_status_line(dump: &crate::HealthDump) -> String {
                     )
                 }
             }
-            Some(crate::JournalLink::Connected) => message("windows.ui.connected", &[]),
+            Some(crate::JournalLink::Connected) => match crate::connected_pill_state(
+                waiting,
+                dump.sync.imports_need_owner,
+                dump.sync.imports_ready_to_review,
+            ) {
+                crate::ConnectedPillState::ReadyToReview(count) => message(
+                    "windows.pill.readytoreview",
+                    &[("display", Value::String(&count.to_string()))],
+                ),
+                crate::ConnectedPillState::WaitingToSync
+                | crate::ConnectedPillState::Attention
+                | crate::ConnectedPillState::Connected => message("windows.ui.connected", &[]),
+            },
             Some(crate::JournalLink::Connecting) | None => message("windows.ui.connecting", &[]),
         },
     }
@@ -936,38 +952,42 @@ mod tests {
             faulted_source(SourceKind::Screen, "x"),
         ];
         assert_eq!(
-            attention_source(&mic, |_| true, true, true, false, false),
+            attention_source(&mic, |_| true, true, true, false, false, false),
             Some("audio")
         );
         let screen = [faulted_source(SourceKind::DesktopActivity, "x")];
         assert_eq!(
-            attention_source(&screen, |_| true, false, false, false, false),
+            attention_source(&screen, |_| true, false, false, false, false, false),
             Some("screen")
         );
         assert_eq!(
-            attention_source(&[], |_| true, true, true, false, false),
+            attention_source(&[], |_| true, true, true, false, false, false),
             Some("browsers")
         );
         assert_eq!(
-            attention_source(&[], |_| true, false, true, false, false),
+            attention_source(&[], |_| true, false, true, false, false, false),
             Some("Obsidian")
         );
         assert_eq!(
-            attention_source(&[], |_| true, false, false, true, false),
+            attention_source(&[], |_| true, false, false, true, false, false),
             Some("screenshots")
         );
         assert_eq!(
-            attention_source(&[], |_| true, false, true, true, false),
+            attention_source(&[], |_| true, false, false, false, true, false),
+            Some("import")
+        );
+        assert_eq!(
+            attention_source(&[], |_| true, false, true, true, true, false),
             Some("Obsidian"),
             "in tile order"
         );
         assert_eq!(
-            attention_source(&[], |_| true, false, false, false, false),
+            attention_source(&[], |_| true, false, false, false, false, false),
             None
         );
         let off = [denied(SourceKind::Mic)];
         assert_eq!(
-            attention_source(&off, |_| false, false, false, false, false),
+            attention_source(&off, |_| false, false, false, false, false, false),
             None
         );
     }
@@ -988,17 +1008,34 @@ mod tests {
         ];
         let enabled = |kind: SourceKind| kind == SourceKind::SystemAudio;
         assert_eq!(
-            attention_source(&sources, enabled, false, false, false, false),
+            attention_source(&sources, enabled, false, false, false, false, false),
             Some("audio")
         );
         assert_eq!(
-            attention_source(&sources, enabled, false, false, false, true),
+            attention_source(&sources, enabled, false, false, false, false, true),
             None
         );
         assert_eq!(
-            attention_source(&sources, |_| false, false, false, false, false),
+            attention_source(&sources, |_| false, false, false, false, false, false),
             None
         );
+    }
+
+    #[test]
+    fn menu_status_line_shows_ready_to_review_only_without_waiting_or_faults() {
+        let mut review = dump_with(PairingPhase::Paired, Some(crate::JournalLink::Connected), 0);
+        review.sync.imports_ready_to_review = 2;
+        assert_eq!(menu_status_line(&review), "2 ready to review");
+
+        // Attention outranks ready-to-review and keeps fault text out of the pill.
+        let mut fault_and_review = review.clone();
+        fault_and_review.sync.imports_need_owner = true;
+        assert_eq!(menu_status_line(&fault_and_review), "connected");
+
+        // Waiting items keep connected in menu_status_line (no ready-to-review override).
+        let mut waiting_and_review = review;
+        waiting_and_review.sync.imports_waiting = 1;
+        assert_eq!(menu_status_line(&waiting_and_review), "connected");
     }
 
     fn dump_with(

@@ -1,0 +1,16 @@
+{
+  "description": "Status pane lead headline and row sub-line when imports need attention",
+  "context": "Windows app status pane lead when waiting is 0 and imports have faults.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "916fb76ec8ae9602c0a1a55e8ffd28fc4db1d0c72890a43c57ddcfbfb2bc0450",
+  "risk": "routine",
+  "auto_merge": true
+}

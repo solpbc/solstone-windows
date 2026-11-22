@@ -111,6 +111,11 @@ pub mod settings {
     pub const SOURCES_OBSIDIAN_FOUND: &str = "settings.sources.obsidian.found";
     pub const IMPORT_CHOOSE: &str = "settings.import.choose";
     pub const IMPORT_MORE: &str = "settings.import.more";
+    pub const IMPORT_REVIEW_SECTION: &str = "settings.import.reviewSection";
+    pub const IMPORT_DEVICE_SECTION: &str = "settings.import.deviceSection";
+    pub const IMPORT_RECENT_SECTION: &str = "settings.import.recentSection";
+    pub const IMPORT_ALL_HISTORY: &str = "settings.import.allHistory";
+    pub const IMPORT_LIVE_REGION: &str = "settings.import.liveRegion";
     pub const SOURCES_OBSIDIAN_CHOOSE: &str = "settings.sources.obsidian.choose";
     pub const SOURCES_OBSIDIAN_REFUSAL: &str = "settings.sources.obsidian.refusal";
     pub const SOURCES_OBSIDIAN_WARNING: &str = "settings.sources.obsidian.warning";
@@ -360,6 +365,20 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         ),
         ("settings.import.choose", settings::IMPORT_CHOOSE),
         ("settings.import.more", settings::IMPORT_MORE),
+        (
+            "settings.import.reviewSection",
+            settings::IMPORT_REVIEW_SECTION,
+        ),
+        (
+            "settings.import.deviceSection",
+            settings::IMPORT_DEVICE_SECTION,
+        ),
+        (
+            "settings.import.recentSection",
+            settings::IMPORT_RECENT_SECTION,
+        ),
+        ("settings.import.allHistory", settings::IMPORT_ALL_HISTORY),
+        ("settings.import.liveRegion", settings::IMPORT_LIVE_REGION),
         (
             "settings.sources.obsidian.choose",
             settings::SOURCES_OBSIDIAN_CHOOSE,

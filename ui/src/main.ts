@@ -32,8 +32,11 @@ import {
   derivedComputerSoundWanted,
   durationTotal,
   greeting,
+  importTileView,
+  isValidImportId,
   journalFacts,
   journalPill,
+  journalPillVisual,
   legacyRoute,
   obsidianTile,
   pauseTimeLeft,
@@ -42,11 +45,14 @@ import {
   screenTile,
   settingsNavigate,
   shelfBadges,
+  sortImportRows,
   spaceOnTile,
   statusLead,
   startedLabel,
   widthClass,
   type CounterDocument,
+  type CounterSourceName,
+  type ImportRowState,
   type JournalPillInput,
   type Pane,
   type ShelfRow,
@@ -54,7 +60,7 @@ import {
   type SourceId, screenshotsTile, screenshotsPage, screenshotsConfirm, type ScreenshotsStateName,
 } from "./shell/derive";
 import { otherDevices, deviceLine, remoteCard, remoteHeading, updateSharedClocks, type KnownSources, type OtherDevice } from "./shell/shared-sources";
-import { renderDesk, type DeskStatusRow, type DeskTile } from "./shell/view";
+import { patchDeskJournalFoot, patchDeskPill, patchDeskTile, renderDesk, type DeskStatusRow, type DeskTile, type DeskView } from "./shell/view";
 
 type FrontendOrigin = "settings" | "about" | "none";
 type FrontendErrorKind = "error" | "unhandled_rejection";
@@ -255,6 +261,7 @@ interface SyncSnapshot {
   pairing: PairingState;
   upload: UploadStatus;
   imports_waiting?: number;
+  imports_ready_to_review?: number;
   imports_need_owner?: boolean;
   journal_version?: string | null;
   journal_version_fresh?: boolean;
@@ -530,6 +537,10 @@ let deskKeysBound = false;
 let startupDestination: string | null = null;
 let renderBeaconFired = false;
 let focusPaneTitleOnRender = false;
+let focusDeskPaneTitle = false;
+let liveRegionEl: HTMLDivElement | null = null;
+let lastLiveAnnouncement = "";
+let importPageRoot: HTMLDivElement | null = null;
 type ProofConsumerState = "mic" | "system_audio" | "screen" | "closed";
 let openProofKind: ProofConsumerState = "closed";
 let currentAcceptedProofGeneration = 0;
@@ -1033,21 +1044,36 @@ let screenshotsBusy = false;
 /** The span the owner picked in the chooser; the first choice is preselected. */
 let screenshotsSpan: ScreenshotsSpan = "thirty_days";
 
+interface ImportReceipt {
+  filename: string;
+  import_id?: string | null;
+  instance_id?: string;
+  delivered_at_epoch_ms: number;
+}
 interface ImportRow {
   id: string;
   name: string;
-  state: "waiting" | "sending" | "refused";
+  state: ImportRowState;
   reason: string | null;
   retryable: boolean;
   may_have_reached: boolean;
   missing_copy: boolean;
+  import_id?: string | null;
+  reason_code?: string | null;
+  review_kind?: string | null;
+  review_expired?: boolean;
+  added?: number;
+  size?: number;
 }
 interface ImportDocument {
   recent: string;
+  recent_receipts?: ImportReceipt[];
+  hold_reason?: string | null;
   rows: ImportRow[];
   intake: { copying: boolean; done: number; total: number; accepted: number; refused: { name: string; reason: string }[] } | null;
   interrupted: boolean;
   waiting: number;
+  ready_to_review?: number;
   needs_owner: boolean;
   available: boolean;
 }
@@ -3184,6 +3210,7 @@ function renderExclusionsSection(rules: ExclusionRules, dump: HealthDump, desk =
 
 function resetRoot(rootId: string): void {
   root.replaceChildren();
+  importPageRoot = null;
   pauseStatusEls = [];
   nextSaveEl = null;
   lastSyncedEl = null;
@@ -5765,6 +5792,26 @@ function bindDeskKeys(): void {
 
 function onDeskKey(event: KeyboardEvent): void {
   if (!latestHealth || !showsDesktopShell(latestHealth)) return;
+  if (
+    event.key === "Escape" &&
+    deskRow === "home" &&
+    deskPane !== "status" &&
+    !document.querySelector("dialog[open]") &&
+    !isTextEntryTarget(event.target)
+  ) {
+    event.preventDefault();
+    const closedPane = deskPane;
+    deskPane = "status";
+    deskPhonePane = false;
+    deskShelfOpen = false;
+    focusDeskPaneTitle = false;
+    rerender();
+    const targetTile = closedPane === "screenLeftOut" ? "screen" : closedPane;
+    root
+      .querySelector<HTMLButtonElement>(`[data-tile="${targetTile}"] .desk-tile-open`)
+      ?.focus();
+    return;
+  }
   if (event.ctrlKey && event.key === ",") {
     if (isTextEntryTarget(event.target)) return;
     event.preventDefault();
@@ -5824,6 +5871,10 @@ function deskPausedLine(dump: HealthDump): string | null {
 function deskJournalInput(dump: HealthDump): JournalPillInput {
   const phase = dump.sync.pairing.phase;
   const waiting = (dump.sync.upload.pending_segments ?? 0) + (latestImport?.waiting ?? dump.sync.imports_waiting ?? 0);
+  const readyFromDoc = latestImport
+    ? (latestImport.ready_to_review ??
+        latestImport.rows.filter((r) => r.state === "ready_to_review").length)
+    : undefined;
   const link = dump.sync.journal_link;
   const paired = phase === "paired" || phase === "awaiting_confirmation" || phase === "pairing";
   return {
@@ -5838,6 +5889,7 @@ function deskJournalInput(dump: HealthDump): JournalPillInput {
     waiting,
     sourceNeedsAttention: false,
     importsNeedOwner: latestImport?.needs_owner ?? dump.sync.imports_need_owner ?? false,
+    importsReadyToReview: readyFromDoc ?? dump.sync.imports_ready_to_review ?? 0,
   };
 }
 
@@ -5858,17 +5910,19 @@ function deskSourceName(id: string): string {
   if (id === "screen") return t("windows.ui.screen");
   if (id === "browsers") return t("windows.ui.browsers");
   if (id === "screenshots") return t("windows.ui.screenshots");
+  if (id === "import") return t("windows.ui.import");
   return id;
 }
 
-function totalWords(source: SourceId, total: number): string {
+function totalWords(source: CounterSourceName, total: number): string {
   if (source === "audio" || source === "screen") return durationTotal(total);
   if (source === "browsers") return quantity("pages", total);
   if (source === "screenshots") return SCREENSHOTS_COPY.S20(total);
+  if (source === "import") return quantity("items", total);
   return quantity("notes", total);
 }
 
-function factFor(source: SourceId): SourceFacts | undefined {
+function factFor(source: CounterSourceName): SourceFacts | undefined {
   const facts = counterFacts(latestCounters ?? null);
   return facts?.find((fact) => fact.source === source);
 }
@@ -5878,6 +5932,9 @@ function openDeskSource(id: string): void {
   deskPane = id === "addMore" ? "addMore" : (id as Pane);
   deskPhonePane = true;
   deskShelfOpen = false;
+  if (widthClass(window.innerWidth || 1180) === "phone") {
+    focusDeskPaneTitle = true;
+  }
   rerender();
 }
 
@@ -5959,7 +6016,32 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
     : [];
   return deckTiles().map((id) => {
     if (id === "import") {
-      return { id, name: t("windows.ui.import"), word: "", sub: t("windows.ui.files"), switchOn: null, switchId: null, switchLabel: "", selected: deskPane === "import" };
+      const phase = dump.sync.pairing.phase;
+      const waitingForJournal =
+        Boolean(latestImport?.hold_reason) ||
+        phase !== "paired" ||
+        dump.sync.journal_link === "offline";
+      const view = importTileView({
+        rows: latestImport ? sortImportRows(latestImport.rows) : [],
+        waitingForJournal,
+        needsAttention: Boolean(
+          latestImport?.needs_owner || (latestImport && !latestImport.available),
+        ),
+        copying: latestImport?.intake?.copying
+          ? { done: latestImport.intake.done, total: latestImport.intake.total }
+          : null,
+      });
+      return {
+        id,
+        name: t("windows.ui.import"),
+        word: view.word,
+        sub: view.sub,
+        ariaLabel: view.ariaLabel,
+        switchOn: null,
+        switchId: null,
+        switchLabel: "",
+        selected: deskPane === "import",
+      };
     }
     if (id === "addMore") {
       return {
@@ -6071,7 +6153,82 @@ function deskStatusRows(): DeskStatusRow[] {
       hasFacts: true,
     };
   });
-  rows.push({ id: "import", name: t("windows.ui.import"), nothingYet: false, total: latestImport?.recent ?? "", relative: "", hasFacts: latestImport !== null });
+  const importRows = latestImport ? sortImportRows(latestImport.rows) : [];
+  const hasImportAttention = Boolean(
+    latestImport &&
+      (latestImport.needs_owner ||
+        !latestImport.available ||
+        importRows.some((r) => r.state === "refused" || r.state === "review_expired")),
+  );
+  const readyCount = latestImport
+    ? (latestImport.ready_to_review ??
+        importRows.filter((r) => r.state === "ready_to_review").length)
+    : 0;
+  const hasSending = importRows.some((r) => r.state === "sending");
+  const hasWaiting = Boolean(
+    latestImport &&
+      (latestImport.waiting > 0 || importRows.some((r) => r.state === "waiting")),
+  );
+  if (hasImportAttention) {
+    rows.push({
+      id: "import",
+      name: t("windows.ui.import"),
+      nothingYet: false,
+      total: t("windows.import.statusattentionheadline"),
+      relative: "",
+      hasFacts: true,
+    });
+  } else if (readyCount > 0) {
+    rows.push({
+      id: "import",
+      name: t("windows.ui.import"),
+      nothingYet: false,
+      total: t("windows.pill.readytoreview", {
+        display: number(readyCount, { useGrouping: false }),
+      }),
+      relative: "",
+      hasFacts: true,
+    });
+  } else if (hasSending) {
+    rows.push({
+      id: "import",
+      name: t("windows.ui.import"),
+      nothingYet: false,
+      total: t("windows.import.rowsending"),
+      relative: "",
+      hasFacts: true,
+    });
+  } else if (hasWaiting) {
+    rows.push({
+      id: "import",
+      name: t("windows.ui.import"),
+      nothingYet: false,
+      total: t("windows.ui.waitingtogotoyourjournal"),
+      relative: "",
+      hasFacts: true,
+    });
+  } else {
+    const importFact = factFor("import");
+    if (importFact) {
+      rows.push({
+        id: "import",
+        name: t("windows.ui.import"),
+        nothingYet: importFact.nothingYet,
+        total: importFact.nothingYet ? "" : totalWords("import", importFact.total),
+        relative: importFact.last === null ? "" : relativeTaken(importFact.last, now),
+        hasFacts: true,
+      });
+    } else {
+      rows.push({
+        id: "import",
+        name: t("windows.ui.import"),
+        nothingYet: false,
+        total: latestImport?.recent ?? "",
+        relative: "",
+        hasFacts: latestImport !== null,
+      });
+    }
+  }
   return rows;
 }
 
@@ -6081,7 +6238,7 @@ function deskSection(title: string): HTMLElement {
   return node;
 }
 
-function deskFactBlock(source: SourceId): HTMLElement | null {
+function deskFactBlock(source: CounterSourceName): HTMLElement | null {
   const fact = factFor(source);
   if (!fact) return null;
   const block = document.createElement("div");
@@ -6302,11 +6459,73 @@ function deskBrowserChildren(status: BrowserStatus): HTMLElement | null {
 }
 
 
+function ensureLiveRegion(): HTMLDivElement {
+  if (liveRegionEl?.isConnected) return liveRegionEl;
+  const existing = document.getElementById("solstone-live-region");
+  if (existing instanceof HTMLDivElement) {
+    liveRegionEl = existing;
+    return existing;
+  }
+  const region = document.createElement("div");
+  region.id = "solstone-live-region";
+  region.className = "desk-sr-only";
+  region.setAttribute("role", "status");
+  region.setAttribute("aria-live", "polite");
+  region.setAttribute("aria-atomic", "true");
+  region.dataset.automationId = ids["settings.import.liveRegion"];
+  document.body.append(region);
+  liveRegionEl = region;
+  return region;
+}
+
+function announceImport(message: string): void {
+  const region = ensureLiveRegion();
+  const trimmed = message.trim();
+  if (!trimmed || trimmed === lastLiveAnnouncement) return;
+  lastLiveAnnouncement = trimmed;
+  region.textContent = trimmed;
+}
+
+function isPairedAndConfirmed(dump: HealthDump): boolean {
+  return dump.sync.pairing.phase === "paired";
+}
+
+function syncChildrenOrder(parent: HTMLElement, desired: readonly HTMLElement[]): void {
+  const keep = new Set<Element>(desired);
+  for (const child of Array.from(parent.children)) {
+    if (!keep.has(child)) child.remove();
+  }
+  for (let i = 0; i < desired.length; i++) {
+    const node = desired[i];
+    if (parent.children[i] !== node) {
+      parent.insertBefore(node, parent.children[i] ?? null);
+    }
+  }
+}
+
+function importCheckSvg(): SVGSVGElement {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 16 16");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("class", "desk-import-check");
+  const path = document.createElementNS(ns, "path");
+  path.setAttribute("d", "M3.2 8.4 6.5 11.7 12.8 4.8");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "2");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  svg.append(path);
+  return svg;
+}
+
 async function refreshImportStatus(): Promise<void> {
   if (label !== "settings") return;
   const next = await invoke<ImportDocument | null>("import_status").catch(() => null);
   if (JSON.stringify(next) !== JSON.stringify(latestImport)) {
     latestImport = next;
+    countersFor = null;
     requestRerender();
   }
 }
@@ -6318,8 +6537,13 @@ async function importAction(command: string, args?: Record<string, unknown>): Pr
   requestRerender();
 }
 
-async function askRemoveImport(row: ImportRow): Promise<void> {
-  const prompt = await invoke<{ name: string; may_have_reached: boolean; missing_copy: boolean } | null>("import_prepare_remove", { id: row.id }).catch(() => null);
+async function askRemoveImport(row: ImportRow, trigger?: HTMLElement | null): Promise<void> {
+  const prompt = await invoke<{
+    name: string;
+    may_have_reached: boolean;
+    missing_copy: boolean;
+    ready_to_review?: boolean;
+  } | null>("import_prepare_remove", { id: row.id }).catch(() => null);
   if (!prompt) { await refreshImportStatus(); return; }
   const dialog = document.createElement("dialog");
   dialog.className = "desk-import-confirm";
@@ -6331,17 +6555,37 @@ async function askRemoveImport(row: ImportRow): Promise<void> {
   const title = text("h2", t("windows.ui.removearg0", { "arg0": String(prompt.name) }));
   title.id = "import-remove-title";
   dialog.setAttribute("aria-labelledby", title.id);
-  const reason = text("p", prompt.missing_copy
-    ? t("windows.ui.thecopyisalreadygonesothisonlyclearsitfromhere")
-    : prompt.may_have_reached
-    ? t("windows.ui.thisremovesthecopyonthisdeviceyourjournalmaystil")
-    : t("windows.ui.thisremovesthecopyonthisdevicesoitwontreachyourj"));
+  const readyToReview = prompt.ready_to_review === true || row.state === "ready_to_review" || row.state === "review_expired";
+  const reason = text(
+    "p",
+    prompt.missing_copy
+      ? t("windows.ui.thecopyisalreadygonesothisonlyclearsitfromhere")
+      : readyToReview
+        ? t("windows.import.removereadybody")
+        : prompt.may_have_reached
+          ? t("windows.ui.thisremovesthecopyonthisdeviceyourjournalmaystil")
+          : t("windows.ui.thisremovesthecopyonthisdevicesoitwontreachyourj"),
+  );
+  const closeDialog = (): void => {
+    if (typeof dialog.close === "function") {
+      try {
+        dialog.close();
+        return;
+      } catch {
+        // Fallback for non-modal / jsdom dialogs.
+      }
+    }
+    dialog.removeAttribute("open");
+    dialog.dispatchEvent(new Event("close"));
+  };
+  let removed = false;
   const actions = document.createElement("div");
   actions.className = "desk-actions";
-  const cancel = deskAction(t("windows.desktop.shared.setup.cancel"), () => dialog.close());
+  const cancel = deskAction(t("windows.desktop.shared.setup.cancel"), () => closeDialog());
   const remove = deskAction(t("windows.ui.removex7e5608ab"), () => {
     void invoke("import_remove", { id: row.id }).then(() => {
-      dialog.close();
+      removed = true;
+      closeDialog();
       void refreshImportStatus();
     }).catch(() => {
       reason.textContent = t("windows.ui.couldntremovethistryagain");
@@ -6350,71 +6594,530 @@ async function askRemoveImport(row: ImportRow): Promise<void> {
   actions.append(cancel, remove);
   dialog.append(title, reason, actions);
   dialog.addEventListener("close", () => {
-    void invoke("import_cancel_remove", { id: row.id }).catch(() => undefined);
+    if (!removed) {
+      void invoke("import_cancel_remove", { id: row.id }).catch(() => undefined);
+    }
     dialog.remove();
+    if (trigger?.isConnected) {
+      trigger.focus();
+    } else {
+      root
+        .querySelector<HTMLElement>(`[data-automation-id="${ids["settings.import.choose"]}"]`)
+        ?.focus();
+    }
   }, { once: true });
   document.body.append(dialog);
-  dialog.showModal();
+  if (typeof dialog.showModal === "function") {
+    dialog.showModal();
+  } else {
+    dialog.setAttribute("open", "");
+  }
   cancel.focus();
 }
 
-function renderImportPage(): HTMLElement {
+type ImportRowActionKind = "review" | "sendAgain" | "retry" | "remove";
+
+interface ImportRowNodeState {
+  li: HTMLLIElement;
+  nameEl: HTMLElement;
+  badgeEl: HTMLSpanElement;
+  detailEl: HTMLParagraphElement;
+  actionsEl: HTMLDivElement;
+  buttons: Partial<Record<ImportRowActionKind, HTMLButtonElement>>;
+  row: ImportRow;
+}
+
+interface ImportPageNodes {
+  introEl: HTMLElement;
+  actionsEl: HTMLDivElement;
+  chooseBtn: HTMLButtonElement;
+  moreBtn: HTMLButtonElement;
+  helperEl: HTMLParagraphElement;
+  bannersEl: HTMLDivElement;
+  reviewSection: HTMLElement;
+  reviewList: HTMLUListElement;
+  deviceSection: HTMLElement;
+  deviceHoldEl: HTMLParagraphElement;
+  deviceList: HTMLUListElement;
+  recentSection: HTMLElement;
+  recentList: HTMLUListElement;
+  recentEmptyEl: HTMLParagraphElement;
+  allHistoryBtn: HTMLButtonElement;
+  factsSlot: HTMLDivElement;
+  rowNodes: Map<string, ImportRowNodeState>;
+}
+
+const importPageState = new WeakMap<HTMLDivElement, ImportPageNodes>();
+
+function deriveImportHoldReason(dump: HealthDump, doc: ImportDocument | null): string | null {
+  if (!doc) return null;
+  if (doc.hold_reason) return doc.hold_reason;
+  const hasPending = doc.rows.some((r) => r.state === "waiting" || r.state === "sending");
+  if (!hasPending) return null;
+  const phase = dump.sync.pairing.phase;
+  if (phase === "not_paired" || phase === "pairing") {
+    return t("windows.ui.importswaitonthisdeviceuntilyouconnectajournal");
+  }
+  if (phase === "awaiting_confirmation") {
+    return t("windows.ui.importswaituntilyouconfirmyourjournalsmark");
+  }
+  if (phase === "failed") {
+    return t("windows.ui.yourjournalstoppedacceptingthisdeviceimportswait");
+  }
+  if (dump.sync.journal_link === "offline") {
+    return t("windows.import.holdoffline");
+  }
+  return null;
+}
+
+function getOrCreateImportRowButton(
+  state: ImportRowNodeState,
+  kind: ImportRowActionKind,
+  labelText: string,
+  ariaLabel: string,
+  className: string,
+  onClick: () => void,
+): HTMLButtonElement {
+  let btn = state.buttons[kind];
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.type = "button";
+    btn.dataset.action = kind;
+    btn.dataset.automationId = `settings.import.row.${state.row.id}.${kind}`;
+    state.buttons[kind] = btn;
+  }
+  if (btn.className !== className) btn.className = className;
+  if (btn.textContent !== labelText) btn.textContent = labelText;
+  if (btn.getAttribute("aria-label") !== ariaLabel) btn.setAttribute("aria-label", ariaLabel);
+  btn.onclick = onClick;
+  return btn;
+}
+
+function reconcileImportRowItem(
+  nodes: ImportPageNodes,
+  row: ImportRow,
+  pairedConfirmed: boolean,
+): HTMLLIElement {
+  let item = nodes.rowNodes.get(row.id);
+  if (!item) {
+    const li = document.createElement("li");
+    li.className = "desk-import-item";
+    li.dataset.importId = row.id;
+    const head = document.createElement("div");
+    head.className = "desk-import-item-head";
+    const nameEl = document.createElement("strong");
+    nameEl.className = "desk-import-name";
+    const badgeEl = document.createElement("span");
+    badgeEl.className = "desk-import-badge";
+    head.append(nameEl, badgeEl);
+    const detailEl = document.createElement("p");
+    detailEl.className = "desk-import-detail";
+    const actionsEl = document.createElement("div");
+    actionsEl.className = "desk-actions";
+    li.append(head, detailEl);
+    item = { li, nameEl, badgeEl, detailEl, actionsEl, buttons: {}, row };
+    nodes.rowNodes.set(row.id, item);
+  }
+  item.row = row;
+
+  if (item.nameEl.textContent !== row.name) item.nameEl.textContent = row.name;
+
+  const badgeKey =
+    row.state === "ready_to_review"
+      ? "ready to review"
+      : row.state === "review_expired"
+        ? "expired"
+        : row.state === "refused"
+          ? "needs attention"
+          : row.state;
+  const badgeLabel = stateWord(badgeKey);
+  if (item.badgeEl.dataset.state !== badgeKey) item.badgeEl.dataset.state = badgeKey;
+  if (item.badgeEl.textContent !== badgeLabel) item.badgeEl.textContent = badgeLabel;
+
+  const detailText =
+    row.state === "ready_to_review"
+      ? row.reason ??
+        (row.review_kind === "body_confirmation_required"
+          ? t("windows.import.reviewdetailbody")
+          : t("windows.import.reviewdetail"))
+      : row.state === "review_expired"
+        ? row.reason ?? t("windows.import.reviewexpired")
+        : row.state === "refused"
+          ? row.reason ?? t("windows.ui.yourjournalcouldntacceptthis")
+          : row.state === "sending"
+            ? t("windows.import.rowsending")
+            : t("windows.ui.waitingtogotoyourjournal");
+  if (item.detailEl.textContent !== detailText) item.detailEl.textContent = detailText;
+
+  const desiredButtons: HTMLButtonElement[] = [];
+  if (row.state === "ready_to_review") {
+    const canOpen = pairedConfirmed && isValidImportId(row.import_id);
+    const reviewBtn = getOrCreateImportRowButton(
+      item,
+      "review",
+      t("windows.import.reviewaction"),
+      t("windows.import.reviewactiona11y", { name: row.name }),
+      "desk-connect desk-import-primary",
+      () => {
+        const importId = item!.row.import_id;
+        if (isValidImportId(importId)) {
+          void importAction("import_open_journal_item", { id: importId });
+        }
+      },
+    );
+    reviewBtn.disabled = !canOpen;
+    desiredButtons.push(reviewBtn);
+    const removeBtn = getOrCreateImportRowButton(
+      item,
+      "remove",
+      t("windows.ui.removex7e5608ab"),
+      t("windows.ui.remove", { value: row.name }),
+      "desk-connect desk-import-secondary",
+      () => {
+        void askRemoveImport(item!.row, item!.buttons.remove);
+      },
+    );
+    desiredButtons.push(removeBtn);
+  } else if (row.state === "review_expired") {
+    const sendAgainBtn = getOrCreateImportRowButton(
+      item,
+      "sendAgain",
+      t("windows.import.sendagainaction"),
+      t("windows.import.sendagainactiona11y", { name: row.name }),
+      "desk-connect desk-import-primary",
+      () => {
+        void importAction("import_send_again", { id: item!.row.id });
+      },
+    );
+    sendAgainBtn.disabled = false;
+    desiredButtons.push(sendAgainBtn);
+    const removeBtn = getOrCreateImportRowButton(
+      item,
+      "remove",
+      t("windows.ui.removex7e5608ab"),
+      t("windows.ui.remove", { value: row.name }),
+      "desk-connect desk-import-secondary",
+      () => {
+        void askRemoveImport(item!.row, item!.buttons.remove);
+      },
+    );
+    desiredButtons.push(removeBtn);
+  } else if (row.state !== "sending") {
+    if (row.state === "refused" && row.retryable) {
+      const retryBtn = getOrCreateImportRowButton(
+        item,
+        "retry",
+        t("windows.ui.trynow"),
+        t("windows.ui.trynowarg0", { arg0: row.name }),
+        "desk-connect",
+        () => {
+          void importAction("import_retry", { id: item!.row.id });
+        },
+      );
+      retryBtn.disabled = false;
+      desiredButtons.push(retryBtn);
+    }
+    const removeBtn = getOrCreateImportRowButton(
+      item,
+      "remove",
+      t("windows.ui.removex7e5608ab"),
+      t("windows.ui.remove", { value: row.name }),
+      "desk-connect desk-import-secondary",
+      () => {
+        void askRemoveImport(item!.row, item!.buttons.remove);
+      },
+    );
+    desiredButtons.push(removeBtn);
+  }
+
+  if (desiredButtons.length > 0) {
+    syncChildrenOrder(item.actionsEl, desiredButtons);
+    if (item.actionsEl.parentElement !== item.li) {
+      item.li.append(item.actionsEl);
+    }
+  } else if (item.actionsEl.parentElement === item.li) {
+    item.actionsEl.remove();
+  }
+
+  return item.li;
+}
+
+function createImportPageNodes(): { body: HTMLDivElement; nodes: ImportPageNodes } {
   const body = document.createElement("div");
   body.className = "desk-import-page";
-  body.append(breath(t("windows.ui.addspdfsaudioimagesandtextyouchoosehereordropont")));
-  const choose = deskAction(t("windows.ui.choosefiles"), () => { void importAction("import_choose_files"); }, ids["settings.import.choose"]);
-  choose.disabled = latestImport?.available === false;
-  // The journal's own import page has every source, with its own steps.
-  const more = deskAction(t("windows.ui.moreimports"), () => { void importAction("import_open_journal_page"); }, ids["settings.import.more"]);
-  const actions = document.createElement("div");
-  actions.className = "desk-actions";
-  actions.append(choose, more);
-  body.append(actions);
+
+  const introEl = breath(t("windows.import.intro"));
+  const actionsEl = document.createElement("div");
+  actionsEl.className = "desk-actions";
+  const chooseBtn = deskAction(
+    t("windows.ui.choosefiles"),
+    () => {
+      void importAction("import_choose_files");
+    },
+    ids["settings.import.choose"],
+  );
+  const moreBtn = deskAction(
+    t("windows.ui.moreimports"),
+    () => {
+      void importAction("import_open_journal_page");
+    },
+    ids["settings.import.more"],
+  );
+  const helperEl = document.createElement("p");
+  helperEl.className = "desk-import-helper";
+  helperEl.textContent = t("windows.import.morehelper");
+
+  const bannersEl = document.createElement("div");
+  bannersEl.className = "desk-import-banners";
+
+  const reviewSection = document.createElement("section");
+  reviewSection.className = "desk-import-card desk-import-card-review";
+  reviewSection.dataset.automationId = ids["settings.import.reviewSection"];
+  const reviewHeading = deskSection(t("windows.import.sectionreview"));
+  reviewHeading.classList.add("desk-import-card-heading");
+  const reviewList = document.createElement("ul");
+  reviewList.className = "desk-import-list";
+  reviewSection.append(reviewHeading, reviewList);
+
+  const deviceSection = document.createElement("section");
+  deviceSection.className = "desk-import-card desk-import-card-device";
+  deviceSection.dataset.automationId = ids["settings.import.deviceSection"];
+  const deviceHeading = deskSection(t("windows.ui.onthisdevice"));
+  deviceHeading.classList.add("desk-import-card-heading");
+  const deviceHoldEl = document.createElement("p");
+  deviceHoldEl.className = "desk-import-hold";
+  const deviceList = document.createElement("ul");
+  deviceList.className = "desk-import-list";
+  deviceSection.append(deviceHeading, deviceList);
+
+  const recentSection = document.createElement("section");
+  recentSection.className = "desk-import-card desk-import-card-recent";
+  recentSection.dataset.automationId = ids["settings.import.recentSection"];
+  const recentHeading = deskSection(t("windows.ui.recent"));
+  recentHeading.classList.add("desk-import-card-heading");
+  const recentList = document.createElement("ul");
+  recentList.className = "desk-import-list desk-import-recent-list";
+  const recentEmptyEl = document.createElement("p");
+  recentEmptyEl.className = "desk-import-empty";
+  const allHistoryBtn = document.createElement("button");
+  allHistoryBtn.type = "button";
+  allHistoryBtn.className = "desk-import-history-link";
+  allHistoryBtn.dataset.automationId = ids["settings.import.allHistory"];
+  allHistoryBtn.append(
+    text("span", t("windows.import.allhistory")),
+    (() => {
+      const chev = text("span", "\u203A");
+      chev.className = "desk-chevron";
+      chev.setAttribute("aria-hidden", "true");
+      return chev;
+    })(),
+  );
+  allHistoryBtn.onclick = () => {
+    void importAction("import_open_journal_page");
+  };
+  recentSection.append(recentHeading);
+
+  const factsSlot = document.createElement("div");
+
+  const nodes: ImportPageNodes = {
+    introEl,
+    actionsEl,
+    chooseBtn,
+    moreBtn,
+    helperEl,
+    bannersEl,
+    reviewSection,
+    reviewList,
+    deviceSection,
+    deviceHoldEl,
+    deviceList,
+    recentSection,
+    recentList,
+    recentEmptyEl,
+    allHistoryBtn,
+    factsSlot,
+    rowNodes: new Map(),
+  };
+  importPageState.set(body, nodes);
+  return { body, nodes };
+}
+
+function patchImportPage(body: HTMLDivElement, dump: HealthDump): void {
+  const nodes = importPageState.get(body);
+  if (!nodes) return;
+  ensureLiveRegion();
+
+  const pairedConfirmed = isPairedAndConfirmed(dump);
+  nodes.chooseBtn.disabled = latestImport?.available === false;
+
+  const desiredActions: HTMLElement[] = [nodes.chooseBtn];
+  if (pairedConfirmed) desiredActions.push(nodes.moreBtn);
+  syncChildrenOrder(nodes.actionsEl, desiredActions);
+
+  // Banners (intake progress, error, interrupted intake)
+  let announcement = "";
+  const bannerChildren: HTMLElement[] = [];
   const intake = latestImport?.intake;
   if (intake) {
     const line = intake.copying
-      ? t("windows.ui.savingonthisdevicearg0ofarg1", { "arg0": String(Math.min(intake.done + 1, intake.total)), "arg1": String(intake.total) })
-      : intake.accepted === 0 ? t("windows.ui.nothingwassavedonthisdevice") : t("windows.ui.savedonthisdevicearg0", { "arg0": String(intake.accepted) });
-    const result = deskReason(line);
-    result.setAttribute("aria-live", "polite");
-    body.append(result);
-    for (const refused of intake.refused) body.append(deskReason(t("windows.ui.text6", { "status": String(refused.name), "reason": String(refused.reason) })));
-  }
-  if (importActionError) body.append(deskReason(importActionError));
-  if (latestImport?.interrupted) {
-    body.append(deskReason(t("windows.ui.somethingyouwereaddingdidntfinishsavingadditagai")));
-    body.append(deskAction(t("windows.desktop.shared.settings.severity"), () => { void importAction("import_dismiss_interrupted"); }));
-  }
-  body.append(deskSection(t("windows.ui.recent")));
-  if (latestImport) {
-    const recent = deskReason(latestImport.recent);
-    recent.setAttribute("aria-live", "polite");
-    body.append(recent);
-  }
-  if (latestImport?.rows.length) {
-    body.append(deskSection(t("windows.ui.onthisdevice")));
-    for (const row of latestImport.rows) {
-      const item = document.createElement("div");
-      item.className = "desk-import-item";
-      item.dataset.importId = row.id;
-      item.append(text("strong", row.name));
-      item.append(deskReason(row.state === "refused" ? row.reason ?? t("windows.ui.yourjournalcouldntacceptthis") : stateWord(row.state)));
-      if (row.state !== "sending") {
-        const actions = document.createElement("div");
-        actions.className = "desk-actions";
-        if (row.state === "refused" && row.retryable) {
-          const retry = deskAction(t("windows.ui.trynow"), () => { void importAction("import_retry", { id: row.id }); });
-          retry.setAttribute("aria-label", t("windows.ui.trynowarg0", { "arg0": String(row.name) }));
-          actions.append(retry);
-        }
-        const remove = deskAction(t("windows.ui.removex7e5608ab"), () => { void askRemoveImport(row); });
-        remove.setAttribute("aria-label", t("windows.ui.remove", { "value": String(row.name) }));
-        actions.append(remove);
-        item.append(actions);
-      }
-      body.append(item);
+      ? t("windows.ui.savingonthisdevicearg0ofarg1", {
+          arg0: String(Math.min(intake.done + 1, intake.total)),
+          arg1: String(intake.total),
+        })
+      : intake.accepted === 0
+        ? t("windows.ui.nothingwassavedonthisdevice")
+        : t("windows.ui.savedonthisdevicearg0", { arg0: String(intake.accepted) });
+    announcement = line;
+    bannerChildren.push(deskReason(line));
+    for (const refused of intake.refused) {
+      bannerChildren.push(
+        deskReason(t("windows.ui.text6", { status: String(refused.name), reason: String(refused.reason) })),
+      );
     }
   }
+  if (importActionError) {
+    announcement = importActionError;
+    bannerChildren.push(deskReason(importActionError));
+  }
+  if (latestImport?.interrupted) {
+    bannerChildren.push(
+      deskReason(t("windows.ui.somethingyouwereaddingdidntfinishsavingadditagai")),
+      deskAction(t("windows.desktop.shared.settings.severity"), () => {
+        void importAction("import_dismiss_interrupted");
+      }),
+    );
+  }
+  nodes.bannersEl.replaceChildren(...bannerChildren);
+
+  const sortedRows = latestImport ? sortImportRows(latestImport.rows) : [];
+  const reviewRows = sortedRows.filter(
+    (r) => r.state === "ready_to_review" || r.state === "review_expired",
+  );
+  const deviceRows = sortedRows.filter(
+    (r) => r.state === "refused" || r.state === "sending" || r.state === "waiting",
+  );
+
+  // Prune cached row states no longer present in the document.
+  const activeIds = new Set(sortedRows.map((r) => r.id));
+  for (const id of Array.from(nodes.rowNodes.keys())) {
+    if (!activeIds.has(id)) nodes.rowNodes.delete(id);
+  }
+
+  // Waiting for your review
+  if (reviewRows.length > 0) {
+    const items = reviewRows.map((row) => reconcileImportRowItem(nodes, row, pairedConfirmed));
+    syncChildrenOrder(nodes.reviewList, items);
+  } else {
+    nodes.reviewList.replaceChildren();
+  }
+
+  // On this device
+  const holdReason = deriveImportHoldReason(dump, latestImport);
+  if (deviceRows.length > 0) {
+    const deviceHeading = nodes.deviceSection.querySelector<HTMLElement>(".desk-import-card-heading")!;
+    const desiredDeviceChildren: HTMLElement[] = [deviceHeading];
+    if (holdReason) {
+      if (nodes.deviceHoldEl.textContent !== holdReason) nodes.deviceHoldEl.textContent = holdReason;
+      desiredDeviceChildren.push(nodes.deviceHoldEl);
+    }
+    desiredDeviceChildren.push(nodes.deviceList);
+    syncChildrenOrder(nodes.deviceSection, desiredDeviceChildren);
+    const items = deviceRows.map((row) => reconcileImportRowItem(nodes, row, pairedConfirmed));
+    syncChildrenOrder(nodes.deviceList, items);
+  } else {
+    nodes.deviceList.replaceChildren();
+  }
+
+  // Recent (last 24h receipts, up to 5)
+  const receipts = pairedConfirmed ? (latestImport?.recent_receipts ?? []).slice(0, 5) : [];
+  const recentHeading = nodes.recentSection.querySelector<HTMLElement>(".desk-import-card-heading")!;
+  const desiredRecentChildren: HTMLElement[] = [recentHeading];
+  if (receipts.length > 0) {
+    const now = nowSecs();
+    const recentItems: HTMLLIElement[] = [];
+    for (const receipt of receipts) {
+      const li = document.createElement("li");
+      li.className = "desk-import-recent-item";
+      const deliveredSecs = Math.floor(receipt.delivered_at_epoch_ms / 1000);
+      const rel = relativeTaken(deliveredSecs, now);
+      const metaText = t("windows.import.recentmeta", { relative: rel });
+      const textWrap = document.createElement("span");
+      textWrap.className = "desk-import-recent-text";
+      const nameSpan = text("strong", receipt.filename);
+      nameSpan.className = "desk-import-name";
+      const metaSpan = text("span", metaText);
+      metaSpan.className = "desk-import-recent-meta";
+      textWrap.append(nameSpan, metaSpan);
+
+      if (pairedConfirmed && isValidImportId(receipt.import_id)) {
+        const openId = receipt.import_id;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "desk-import-recent-link";
+        btn.dataset.automationId = `settings.import.recent.${openId}`;
+        btn.setAttribute(
+          "aria-label",
+          t("windows.import.recenta11y", { name: receipt.filename, relative: rel }),
+        );
+        const chev = text("span", "\u203A");
+        chev.className = "desk-chevron";
+        chev.setAttribute("aria-hidden", "true");
+        btn.append(importCheckSvg(), textWrap, chev);
+        btn.onclick = () => {
+          void importAction("import_open_journal_item", { id: openId });
+        };
+        li.append(btn);
+      } else {
+        const rowDiv = document.createElement("div");
+        rowDiv.className = "desk-import-recent-row";
+        rowDiv.append(importCheckSvg(), textWrap);
+        li.append(rowDiv);
+      }
+      recentItems.push(li);
+    }
+    nodes.recentList.replaceChildren(...recentItems);
+    desiredRecentChildren.push(nodes.recentList);
+  } else {
+    const emptyText =
+      latestImport && !latestImport.available
+        ? latestImport.recent
+        : t("windows.ui.nothingyetxec5a8da6");
+    if (nodes.recentEmptyEl.textContent !== emptyText) nodes.recentEmptyEl.textContent = emptyText;
+    desiredRecentChildren.push(nodes.recentEmptyEl);
+  }
+  if (pairedConfirmed) {
+    desiredRecentChildren.push(nodes.allHistoryBtn);
+  }
+  syncChildrenOrder(nodes.recentSection, desiredRecentChildren);
+
+  // So far / last taken in
+  const facts = deskFactBlock("import");
+  if (facts) {
+    nodes.factsSlot.replaceChildren(facts);
+  } else {
+    nodes.factsSlot.replaceChildren();
+  }
+
+  // Assemble top-level sections in place without detaching mounted nodes.
+  const desiredTop: HTMLElement[] = [nodes.introEl, nodes.actionsEl];
+  if (pairedConfirmed) desiredTop.push(nodes.helperEl);
+  if (bannerChildren.length > 0) desiredTop.push(nodes.bannersEl);
+  if (reviewRows.length > 0) desiredTop.push(nodes.reviewSection);
+  if (deviceRows.length > 0) desiredTop.push(nodes.deviceSection);
+  desiredTop.push(nodes.recentSection);
+  if (facts) desiredTop.push(nodes.factsSlot);
+  syncChildrenOrder(body, desiredTop);
+
+  if (!announcement && latestImport?.recent) {
+    announcement = latestImport.recent;
+  }
+  if (announcement) announceImport(announcement);
+}
+
+function renderImportPage(dump: HealthDump): HTMLElement {
+  const { body } = createImportPageNodes();
+  importPageRoot = body;
+  patchImportPage(body, dump);
   return body;
 }
 
@@ -6423,7 +7126,7 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
   if (homeShowsPairing(dump) && deskPane === "status") return renderRouteContent("journal", dump);
   if (deskPane === "status") return null;
   const body = document.createElement("div");
-  if (deskPane === "import") return renderImportPage();
+  if (deskPane === "import") return renderImportPage(dump);
   if (deskPane === "technical") {
     body.append(renderStatusStrip(dump));
     const restart = deskRestart(dump, "technicalDetails");
@@ -6704,6 +7407,7 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
   const journal = deskJournalInput(dump);
   const lead = statusLead(journal);
   const pill = journalPill(journal);
+  const pillKind = journalPillVisual(journal);
   const tiles = deskTilesFor(dump);
   const pageTile =
     deskRow === "home" &&
@@ -6715,7 +7419,7 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
       ? tiles.find((tile) => tile.id === deskPane) ?? null
       : null;
   const statusOpen = deskRow === "home" && deskPane === "status" && !homeShowsPairing(dump);
-  const view = {
+  const view: DeskView = {
     width,
     row: deskRow,
     shelfOpen: deskShelfOpen,
@@ -6736,7 +7440,8 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
     paneTitle: deskPaneTitle(),
     titleGlyph: deskTitleGlyph(),
     paneIsStatus: statusOpen,
-    connected: pill === t("windows.ui.connected"),
+    connected: pillKind === "connected",
+    pillKind,
     leadHeadline: lead.headline || pill,
     leadLines: lead.lines,
     kept: statusOpen ? deskKept(dump) : null,
@@ -6794,9 +7499,15 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
         void invoke("resume").then(() => retryHealth());
       },
       onClosePane: () => {
+        const closedPane = deskPane;
         deskPane = "status";
         deskPhonePane = false;
+        focusDeskPaneTitle = false;
         rerender();
+        const targetTile = closedPane === "screenLeftOut" ? "screen" : closedPane;
+        root
+          .querySelector<HTMLButtonElement>(`[data-tile="${targetTile}"] .desk-tile-open`)
+          ?.focus();
       },
       onTechnical: () => {
         deskRow = "home";
@@ -6870,8 +7581,82 @@ function syncSetupSun(framed: boolean): void {
   watchCaption(ground);
 }
 
+function canPatchImportDesk(dump: HealthDump): HTMLElement | null {
+  if (startupDestination !== null) return null;
+  if (!showsDesktopShell(dump)) return null;
+  if (deskRow !== "home" || deskPane !== "import") return null;
+  if (!importPageRoot?.isConnected || !root.contains(importPageRoot)) return null;
+  const shell = root.querySelector<HTMLElement>(".desk-shell");
+  if (!shell) return null;
+  const width = widthClass(window.innerWidth || 1180);
+  const phoneShowsPane = width === "phone" && deskPhonePane;
+  if (
+    shell.dataset.width !== width ||
+    shell.dataset.row !== "home" ||
+    shell.dataset.shelf !== (deskShelfOpen ? "open" : "closed") ||
+    shell.dataset.page !== (phoneShowsPane ? "pane" : "deck")
+  ) {
+    return null;
+  }
+  const wantsPaused = deskPausedLine(dump) !== null;
+  if (wantsPaused !== (shell.querySelector(".desk-paused") !== null)) return null;
+  const wantsNotice = !dump.setup?.notice_dismissed;
+  if (wantsNotice !== (shell.querySelector(`[data-automation-id="${ids["settings.home.sourcesNotice"]}"]`) !== null)) {
+    return null;
+  }
+  const wantsUnread = dump.setup?.setup_read_failed === true;
+  if (wantsUnread !== (shell.querySelector(".save-failure") !== null)) return null;
+  const wantsSaveRetry = Boolean(
+    (dump.setup?.failed_sources && dump.setup.failed_sources.length > 0) ||
+      dump.setup?.desktop_activity_through_pause_save_failed ||
+      dump.setup?.desktop_activity_window_titles_save_failed ||
+      dump.setup?.desktop_activity_page_addresses_save_failed,
+  );
+  if (wantsSaveRetry !== (shell.querySelector(`[data-automation-id="${ids["settings.sources.saveRetry"]}"]`) !== null)) {
+    return null;
+  }
+  return shell;
+}
+
+function patchImportDesk(shell: HTMLElement, dump: HealthDump): void {
+  ensureShellCss();
+  ensureLiveRegion();
+  const journal = deskJournalInput(dump);
+  const pill = journalPill(journal);
+  const pillKind = journalPillVisual(journal);
+  patchDeskPill(shell, { pill, connected: pillKind === "connected", pillKind });
+  const greetingEl = shell.querySelector<HTMLElement>(".desk-greeting");
+  const nextGreeting = greeting(new Date().getHours());
+  if (greetingEl && greetingEl.textContent !== nextGreeting) greetingEl.textContent = nextGreeting;
+  const pausedEl = shell.querySelector<HTMLElement>(".desk-paused");
+  const pausedLine = deskPausedLine(dump);
+  if (pausedEl && pausedLine && pausedEl.textContent !== pausedLine) pausedEl.textContent = pausedLine;
+  for (const tile of deskTilesFor(dump)) {
+    patchDeskTile(shell, tile);
+  }
+  patchDeskJournalFoot(shell, {
+    journalName: deskJournalName(dump),
+    journalChips: deskJournalChips(dump),
+  });
+  if (importPageRoot) {
+    patchImportPage(importPageRoot, dump);
+  }
+}
+
 function renderSettings(dump: HealthDump): void {
   setLatestHealth(dump);
+  ensureLiveRegion();
+  const patchableShell = canPatchImportDesk(dump);
+  if (patchableShell) {
+    patchImportDesk(patchableShell, dump);
+    bindDeskKeys();
+    maybeRefreshCounters(dump);
+    if (focusDeskPaneTitle) {
+      focusDeskPaneTitle = false;
+      root.querySelector<HTMLElement>(".desk-pane-title")?.focus();
+    }
+    return;
+  }
   const logText = logHelp?.querySelector("textarea");
   const logPosition = logText ? [logText.selectionStart, logText.selectionEnd, logText.scrollTop, logText.scrollLeft] : null;
   resetRoot(ids["settings.window.root"]);
@@ -6921,6 +7706,10 @@ function renderSettings(dump: HealthDump): void {
     : root.querySelector<HTMLElement>(`[data-automation-id="${ids["settings.pairing.markCard"]}"]`);
   if (showDesk) {
     focusPaneTitleOnRender = false;
+    if (focusDeskPaneTitle) {
+      focusDeskPaneTitle = false;
+      root.querySelector<HTMLElement>(".desk-pane-title")?.focus();
+    }
   } else if (focusWizardPrimary) {
     focusWizardPrimary = false;
     focusPaneTitleOnRender = false;
@@ -7587,9 +8376,10 @@ function renderUpdatesSection(view: UpdateView): HTMLElement {
 
 function rerender(): void {
   const hadFocusWizardPrimary = focusWizardPrimary;
+  const hadFocusDeskPaneTitle = focusDeskPaneTitle;
   const active = document.activeElement;
   let activeSelector: string | null = null;
-  if (!hadFocusWizardPrimary && active && active !== document.body) {
+  if (!hadFocusWizardPrimary && !hadFocusDeskPaneTitle && active && active !== document.body) {
     const autoId = active.getAttribute("data-automation-id");
     if (autoId) {
       activeSelector = `[data-automation-id="${autoId}"]`;
@@ -7616,9 +8406,9 @@ function rerender(): void {
   }
   scheduleRenderBeacon();
 
-  if (!hadFocusWizardPrimary && activeSelector) {
+  if (!hadFocusWizardPrimary && !hadFocusDeskPaneTitle && activeSelector) {
     const el = document.querySelector(activeSelector) as HTMLElement | null;
-    if (el && typeof el.focus === "function") {
+    if (el && el !== document.activeElement && typeof el.focus === "function") {
       el.focus();
     }
   }
@@ -8029,7 +8819,10 @@ export function start(): void {
   root = queriedRoot;
 
   const queriedRoute = new URLSearchParams(window.location.search).get("route");
-  if (queriedRoute && ["sources", "audio", "screen", "browsers", "obsidian"].includes(queriedRoute)) {
+  if (
+    queriedRoute &&
+    ["sources", "audio", "screen", "browsers", "obsidian", "screenshots", "import"].includes(queriedRoute)
+  ) {
     startupDestination = queriedRoute;
     focusPaneTitleOnRender = true;
   }
@@ -8171,6 +8964,7 @@ export function start(): void {
   });
   void listen<ImportDocument>("import://changed", (event) => {
     latestImport = event.payload;
+    countersFor = null;
     requestRerender();
   });
   void listen<UpdateView>("update://changed", (event) => {
@@ -8180,7 +8974,10 @@ export function start(): void {
   void listen("shared-sources://changed", () => { void refreshRemotes("cached"); });
   window.addEventListener("blur", () => setProofWindowActive(false));
   window.addEventListener("focus", () => {
-    if (label === "settings") void refreshRemotes("focus");
+    if (label === "settings") {
+      void refreshRemotes("focus");
+      void invoke("import_reconcile").catch(() => undefined);
+    }
     setProofWindowActive(true);
     refreshPairingPrefillOnFocus();
   });
@@ -8188,6 +8985,9 @@ export function start(): void {
   window.addEventListener("pagehide", () => setProofWindowActive(false));
   void listen("proof://inactive", handleProofInactive);
   void listen("tauri://focus", () => {
+    if (label === "settings") {
+      void invoke("import_reconcile").catch(() => undefined);
+    }
     setProofWindowActive(true);
     refreshPairingPrefillOnFocus();
   });
@@ -8286,6 +9086,13 @@ export const __test__ = {
     screenshotsBusy = false;
     screenshotsSpan = "thirty_days";
   },
+  setImport(doc: ImportDocument | null) {
+    latestImport = doc;
+    importActionError = null;
+  },
+  getImport() {
+    return latestImport;
+  },
   setCounters(doc: CounterDocument | null) {
     latestCounters = doc;
     countersFor = latestHealth;
@@ -8361,6 +9168,13 @@ export const __test__ = {
     latestScreenshots = null;
     screenshotsBusy = false;
     screenshotsSpan = "thirty_days";
+    latestImport = null;
+    importActionError = null;
+    importPageRoot = null;
+    focusDeskPaneTitle = false;
+    lastLiveAnnouncement = "";
+    liveRegionEl?.remove();
+    liveRegionEl = null;
     obsidianFound = [];
     obsidianRefusal = null;
     obsidianBusy = false;

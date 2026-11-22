@@ -1,0 +1,21 @@
+{
+  "description": "Import tile sub-line when one or more files are waiting",
+  "context": "Windows app home deck import tile sub-line.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "display",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "0b4eb3f0724fa6b805e4c05acf6fdcc2455834a5b0beba2b0cb7dda095ff6272",
+  "risk": "routine",
+  "auto_merge": true
+}

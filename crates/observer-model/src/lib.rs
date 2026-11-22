@@ -22,6 +22,7 @@ use strum::{EnumIter, IntoStaticStr};
 
 pub mod about;
 pub mod desktop_activity;
+pub mod import_id;
 pub mod journal_link;
 pub mod journal_target;
 pub mod launch;
@@ -34,6 +35,9 @@ pub use desktop_activity::{
     normalize_url, ActivityState, AvailabilityCapability, AvailabilityStatus,
     DesktopActivityProbeEvent, DesktopActivityRow, DesktopActivitySource,
     DesktopActivityUrlRequest, DesktopActivityUrlResult,
+};
+pub use import_id::{
+    connected_pill_state, import_item_journal_path, is_valid_import_id, ConnectedPillState,
 };
 pub use journal_link::{JournalLink, LinkInput, LinkPresenter};
 pub use launch::{is_native_messaging_launch, launch_should_surface, FROM_AUTOSTART_ARG};
@@ -713,6 +717,8 @@ pub struct SyncSnapshot {
     pub imports_waiting: u64,
     #[serde(default)]
     pub imports_need_owner: bool,
+    #[serde(default)]
+    pub imports_ready_to_review: u64,
     pub pairing: PairingState,
     pub upload: UploadStatus,
     #[serde(default)]
@@ -749,6 +755,7 @@ impl Default for SyncSnapshot {
         Self {
             imports_waiting: 0,
             imports_need_owner: false,
+            imports_ready_to_review: 0,
             pairing: PairingState::default(),
             upload: UploadStatus::default(),
             journal_version: None,

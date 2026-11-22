@@ -1684,7 +1684,7 @@ impl ObserverClient {
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<(HttpResponse, SendMetadata), RouteError> {
-        debug_assert_eq!(OrdinaryRequest::ALL.len(), 20);
+        debug_assert_eq!(OrdinaryRequest::ALL.len(), 21);
         let spec = route.spec();
         if spec.gated && !self.gate_open() {
             return Err(RouteError::AwaitingConfirmation);
@@ -1693,7 +1693,9 @@ impl ObserverClient {
             OrdinaryRequest::IngestManifestDayGet | OrdinaryRequest::IngestSegmentsDayGet => {
                 route.path(target, None)
             }
-            OrdinaryRequest::ClientsRetireDelete => route.path(None, target),
+            OrdinaryRequest::ClientsRetireDelete | OrdinaryRequest::ImportStatusGet => {
+                route.path(None, target)
+            }
             _ => route.path(None, None),
         };
         let observer = self.observer.clone();

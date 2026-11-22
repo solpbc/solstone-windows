@@ -300,9 +300,198 @@ async fn an_early_http_refusal_stops_a_large_body_and_preserves_the_copy() {
         ImportReply::Refused {
             sentence: "your journal couldn't accept this.".into(),
             retryable: false,
-            clear_saved: false
+            clear_saved: false,
+            reason_code: None,
+            kind: None,
         }
     );
     server.await.unwrap();
     assert_eq!(std::fs::metadata(path).unwrap().len(), 128 * 1024 * 1024);
+}
+
+#[tokio::test]
+async fn import_status_reconciles_over_real_framed_mtls_route() {
+    let (cert, key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut tls = TlsAcceptor::from(Arc::new(server_config(cert, key)))
+            .accept(tcp)
+            .await
+            .unwrap();
+        let mut decoder = FrameDecoder::new();
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 4096];
+        let stream_id = 'req: loop {
+            let n = tls.read(&mut buffer).await.unwrap();
+            assert_ne!(n, 0);
+            decoder.feed(&buffer[..n]);
+            for frame in decoder.drain().unwrap() {
+                if frame.flags & FLAG_DATA != 0 {
+                    bytes.extend_from_slice(&frame.payload);
+                }
+                if frame.flags & FLAG_CLOSE != 0 {
+                    break 'req frame.stream_id;
+                }
+            }
+        };
+        let body = r#"{"status":"running","saved_start":{"active":true,"state":"consumed"}}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        tls.write_all(
+            &Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, response.into_bytes())
+                .encode()
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        tls.flush().await.unwrap();
+        String::from_utf8_lossy(&bytes).into_owned()
+    });
+    let client = ObserverClient::new(
+        direct_credential(pin, port),
+        Arc::new(AtomicBool::new(true)),
+    )
+    .unwrap();
+    let reply = client.import_status("20261122_143000").await.unwrap();
+    assert_eq!(
+        reply,
+        pl_transport_win::import_client::ReconcileReply::Confirmed
+    );
+    let head = server.await.unwrap();
+    assert!(
+        head.starts_with("GET /app/import/api/20261122_143000 "),
+        "{head}"
+    );
+}
+
+#[tokio::test]
+async fn window_bridge_one_time_token_redirects_directly_to_target_and_serves_offline_page() {
+    use std::sync::Mutex;
+
+    #[derive(Debug)]
+    struct ZeroOffset;
+    impl observer_model::LocalOffset for ZeroOffset {
+        fn local_zone(
+            &self,
+            _epoch_secs: u64,
+        ) -> Result<observer_model::LocalZone, observer_model::LocalOffsetError> {
+            Ok(observer_model::LocalZone {
+                utc_offset_seconds: 0,
+                tz: None,
+            })
+        }
+    }
+
+    let (cert, _key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let cred = direct_credential(pin, 1);
+    let binding = pl_transport_win::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
+    let paired = pl_transport_win::credential::PairedState {
+        credential: Some(cred),
+        ..Default::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let state_path = dir.path().join("pairing.json");
+    let journal_version = Arc::new(pl_transport_win::JournalVersionController::new(
+        dir.path().join("jv.json"),
+    ));
+    let sync = Arc::new(Mutex::new(observer_model::SyncSnapshot::default()));
+    let cfg = pl_transport_win::service::SyncConfig {
+        device_label: "window-bridge-test".into(),
+        period_secs: 300,
+        segments_root: dir.path().join("segments"),
+        state_path,
+        local_offset: Arc::new(ZeroOffset),
+        journal_version,
+        on_new_confirmation: Arc::new(|| {}),
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: Arc::new(Mutex::new(binding)),
+        tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
+    };
+    let access = pl_transport_win::CredentialAccess::bind(&paired, &cfg, sync, None).unwrap();
+    let handle = pl_transport_win::journal_bridge::start_for_window(
+        access,
+        Arc::new(|target| format!("<html>offline:{target}</html>")),
+    )
+    .await
+    .unwrap();
+
+    // 1. One-time token bootstrap URL redirects directly to `/app/import/20261122_143000` (no `/` flash).
+    let bootstrap = handle
+        .issue_url_for_path("/app/import/20261122_143000")
+        .unwrap();
+    let (_, req_target) = bootstrap
+        .split_once(&format!("127.0.0.1:{}", handle.port()))
+        .unwrap();
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", handle.port()))
+        .await
+        .unwrap();
+    stream
+        .write_all(
+            format!(
+                "GET {req_target} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+                handle.port()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut resp = Vec::new();
+    stream.read_to_end(&mut resp).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&resp);
+    assert!(resp_str.starts_with("HTTP/1.1 302 Found\r\n"), "{resp_str}");
+    assert!(
+        resp_str.contains("\r\nLocation: /app/import/20261122_143000\r\n"),
+        "{resp_str}"
+    );
+    let cookie_line = resp_str
+        .lines()
+        .find(|line| line.to_ascii_lowercase().starts_with("set-cookie:"))
+        .unwrap();
+    let cookie_pair = cookie_line
+        .split_once(':')
+        .unwrap()
+        .1
+        .trim()
+        .split(';')
+        .next()
+        .unwrap();
+
+    // 2. Same-origin `/_solstone/offline` serves calm HTML with 200 OK instead of 502.
+    let mut offline_stream = tokio::net::TcpStream::connect(("127.0.0.1", handle.port()))
+        .await
+        .unwrap();
+    offline_stream
+        .write_all(
+            format!(
+                "GET /_solstone/offline?next=%2Fapp%2Fimport%2F20261122_143000 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {cookie_pair}\r\nConnection: close\r\n\r\n",
+                handle.port()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut offline_resp = Vec::new();
+    offline_stream.read_to_end(&mut offline_resp).await.unwrap();
+    let offline_str = String::from_utf8_lossy(&offline_resp);
+    assert!(
+        offline_str.starts_with("HTTP/1.1 200 OK\r\n"),
+        "{offline_str}"
+    );
+    assert!(
+        offline_str.contains(
+            "<html>offline:/_solstone/offline?next=%2Fapp%2Fimport%2F20261122_143000</html>"
+        ),
+        "{offline_str}"
+    );
+
+    handle.shutdown_and_wait().await;
 }

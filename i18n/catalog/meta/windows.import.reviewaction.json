@@ -1,0 +1,16 @@
+{
+  "description": "Primary button label to open a ready-to-review import in the journal",
+  "context": "Windows app import pane review card primary row action.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "c2bebf641190076c985e116ddc61bb39a58fc0b45d52c225afd1728a61634f73",
+  "risk": "routine",
+  "auto_merge": true
+}

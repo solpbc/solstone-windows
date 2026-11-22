@@ -305,6 +305,94 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
       "string"
     ]
   ],
+  "windows.import.allhistory": [],
+  "windows.import.expiredword": [],
+  "windows.import.holdoffline": [],
+  "windows.import.intro": [],
+  "windows.import.morehelper": [],
+  "windows.import.readytoreviewword": [],
+  "windows.import.recenta11y": [
+    [
+      "name",
+      "string"
+    ],
+    [
+      "relative",
+      "string"
+    ]
+  ],
+  "windows.import.recentmeta": [
+    [
+      "relative",
+      "string"
+    ]
+  ],
+  "windows.import.removereadybody": [],
+  "windows.import.reviewaction": [],
+  "windows.import.reviewactiona11y": [
+    [
+      "name",
+      "string"
+    ]
+  ],
+  "windows.import.reviewdetail": [],
+  "windows.import.reviewdetailbody": [],
+  "windows.import.reviewexpired": [],
+  "windows.import.rowsending": [],
+  "windows.import.sectionreview": [],
+  "windows.import.sendagainaction": [],
+  "windows.import.sendagainactiona11y": [
+    [
+      "name",
+      "string"
+    ]
+  ],
+  "windows.import.statusattentionheadline": [],
+  "windows.import.statusattentionsub": [],
+  "windows.import.statusreviewheadline": [
+    [
+      "count",
+      "cardinal"
+    ],
+    [
+      "display",
+      "string"
+    ]
+  ],
+  "windows.import.statusreviewsub": [],
+  "windows.import.tilea11y": [
+    [
+      "state",
+      "string"
+    ],
+    [
+      "sub",
+      "string"
+    ]
+  ],
+  "windows.import.tilereadycount": [
+    [
+      "display",
+      "string"
+    ]
+  ],
+  "windows.import.tilesendingcount": [
+    [
+      "count",
+      "cardinal"
+    ],
+    [
+      "display",
+      "string"
+    ]
+  ],
+  "windows.import.tilewaitingcount": [
+    [
+      "display",
+      "string"
+    ]
+  ],
+  "windows.import.tilewaitingjournal": [],
   "windows.logs.availablelogsareshownbelowcheckthe": [],
   "windows.logs.copysaved": [],
   "windows.logs.couldntreadthelogfilestry": [],
@@ -399,6 +487,12 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
       "string"
     ]
   ],
+  "windows.pill.readytoreview": [
+    [
+      "display",
+      "string"
+    ]
+  ],
   "windows.pill.refused": [],
   "windows.pill.refusedwaiting": [
     [
@@ -414,6 +508,16 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
     ]
   ],
   "windows.quantity.hours": [
+    [
+      "count",
+      "cardinal"
+    ],
+    [
+      "display",
+      "string"
+    ]
+  ],
+  "windows.quantity.items": [
     [
       "count",
       "cardinal"

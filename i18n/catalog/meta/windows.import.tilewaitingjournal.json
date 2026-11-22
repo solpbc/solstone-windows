@@ -1,0 +1,16 @@
+{
+  "description": "Import tile sub-line when files wait while offline or unpaired",
+  "context": "Windows app home deck import tile sub-line when waiting and offline/unpaired.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "aed7b9720bdbea424dadfcc1eded216c855d92d0700f24a19d1d2cbc53aceb35",
+  "risk": "routine",
+  "auto_merge": true
+}

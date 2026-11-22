@@ -1,4 +1,4 @@
-import { t, formatLocale, locale, number } from "../i18n";
+import { t, stateWord, formatLocale, locale, number } from "../i18n";
 // Pure decisions for the desktop shell. No DOM and no commands.
 
 export type StateWord =
@@ -340,7 +340,34 @@ export type JournalPillInput = {
   waiting: number;
   sourceNeedsAttention: boolean;
   importsNeedOwner?: boolean;
+  importsReadyToReview?: number;
 };
+
+export type JournalPillKind = "connected" | "review" | "neutral";
+
+/**
+ * Pill indicator visual kind.
+ * Green dot ("connected") only when paired, connected, nothing waiting, no import faults,
+ * and no imports awaiting review. Orange bullseye ("review") when imports await review and
+ * no faults exist. Neutral ring ("neutral") otherwise (including import faults when waiting == 0).
+ */
+export function journalPillVisual(input: JournalPillInput): JournalPillKind {
+  if (
+    !input.paired ||
+    input.needsNewLink ||
+    input.refused ||
+    input.syncPaused ||
+    input.held ||
+    input.offline ||
+    input.connecting ||
+    input.waitingToSync
+  ) {
+    return "neutral";
+  }
+  if (input.importsNeedOwner) return "neutral";
+  if ((input.importsReadyToReview ?? 0) > 0) return "review";
+  return "connected";
+}
 
 /** Audio's companion line. Computer sound wins over a microphone name, on or paused. */
 export function audioSubline(input: {
@@ -393,6 +420,10 @@ export function journalPill(input: JournalPillInput): string {
   if (input.offline) return n === 0 ? t("windows.pill.offline") : t("windows.pill.offlinewaiting", { waiting: String(number(n, {useGrouping:false})) });
   if (input.connecting) return t("windows.ui.connecting");
   if (input.waitingToSync) return t("windows.ui.waitingtosync");
+  const ready = input.importsReadyToReview ?? 0;
+  if (!input.importsNeedOwner && ready > 0) {
+    return t("windows.pill.readytoreview", { display: number(ready, { useGrouping: false }) });
+  }
   return t("windows.ui.connected");
 }
 
@@ -407,7 +438,8 @@ export type StatusLead = {
  * A quiet offline lead is the word only: no zero, and nothing is on the device.
  */
 export function statusLead(input: JournalPillInput): StatusLead {
-  const caughtUp =
+  const ready = input.importsReadyToReview ?? 0;
+  const connected =
     input.paired &&
     !input.needsNewLink &&
     !input.refused &&
@@ -415,10 +447,24 @@ export function statusLead(input: JournalPillInput): StatusLead {
     !input.held &&
     !input.offline &&
     !input.connecting &&
-    !input.waitingToSync &&
-    !input.importsNeedOwner;
-  if (caughtUp) {
+    !input.waitingToSync;
+  if (connected && !input.importsNeedOwner && ready === 0) {
     return { headline: t("windows.ui.allcaughtup"), lines: [t("windows.ui.everythingisinyourjournal")] };
+  }
+  if (connected && input.importsNeedOwner) {
+    return {
+      headline: t("windows.import.statusattentionheadline"),
+      lines: [t("windows.import.statusattentionsub")],
+    };
+  }
+  if (connected && ready > 0) {
+    return {
+      headline: t("windows.import.statusreviewheadline", {
+        count: ready,
+        display: number(ready, { useGrouping: false }),
+      }),
+      lines: [t("windows.import.statusreviewsub")],
+    };
   }
   if (input.paired && input.offline) {
     if (input.waiting > 0) {
@@ -569,7 +615,7 @@ export function statusRowOpens(source: SourceId): Pane {
   return source;
 }
 
-export type CounterSourceName = "audio" | "screen" | "browsers" | "obsidian" | "screenshots";
+export type CounterSourceName = "audio" | "screen" | "browsers" | "obsidian" | "screenshots" | "import";
 
 export type CounterDocument = {
   started: string;
@@ -579,6 +625,8 @@ export type CounterDocument = {
   obsidian: { total: number; last: number | null };
   /** Absent from a document written before screenshots were counted. */
   screenshots?: { total: number; last: number | null };
+  /** Absent from a document written before imports were counted. */
+  imports?: { total: number; last: number | null };
 };
 
 export type SourceFacts = {
@@ -625,7 +673,10 @@ export function durationTotal(seconds: number): string {
 }
 
 /** A counted total. One uses `one`, any other count uses `many`. */
-export function quantity(kind: "pages" | "notes" | "screenshots" | "minutes" | "hours", count: number): string {
+export function quantity(
+  kind: "pages" | "notes" | "screenshots" | "items" | "minutes" | "hours",
+  count: number,
+): string {
   return t(`windows.quantity.${kind}`, { count, display: number(count) });
 }
 
@@ -661,6 +712,7 @@ export function counterFacts(document: CounterDocument | null): SourceFacts[] | 
     ["browsers", document.browsers.total, document.browsers.last],
     ["obsidian", document.obsidian.total, document.obsidian.last],
     ["screenshots", document.screenshots?.total ?? 0, document.screenshots?.last ?? null],
+    ["import", document.imports?.total ?? 0, document.imports?.last ?? null],
   ];
   return rows.map(([source, total, last]) => {
     const nothingYet = total === 0 && last === null;
@@ -672,5 +724,153 @@ export function counterFacts(document: CounterDocument | null): SourceFacts[] | 
       started: nothingYet ? null : document.started,
       pageIncludesStarted: !nothingYet,
     };
+  });
+}
+
+/** Strict ASCII `YYYYMMDD_HHMMSS` check matching `observer_model::import_id::is_valid_import_id`. */
+export function isValidImportId(value: string | null | undefined): value is string {
+  return typeof value === "string" && /^[0-9]{8}_[0-9]{6}$/.test(value);
+}
+
+export type ImportRowState =
+  | "ready_to_review"
+  | "review_expired"
+  | "refused"
+  | "sending"
+  | "waiting";
+
+export type ImportTileRow = {
+  name: string;
+  state: ImportRowState;
+};
+
+export type ImportTileInput = {
+  rows: readonly ImportTileRow[];
+  /** Queue is held because unpaired, mark held, pairing refused, offline, or journal too old. */
+  waitingForJournal: boolean;
+  /** Document-level attention even without individual refused rows (e.g. interrupted intake, unavailable store). */
+  needsAttention: boolean;
+  /** Active local intake copying progress. */
+  copying?: { done: number; total: number } | null;
+};
+
+export type ImportTileView = {
+  word: "" | "waiting" | "sending" | "ready to review" | "needs attention";
+  sub: string;
+  ariaLabel?: string;
+};
+
+/**
+ * Pure home `import` tile derivation.
+ * Quiet when idle (`word: ""`, `sub: "files"`).
+ * Active/held follows worst-signal-wins: `needs attention` > `ready to review` > `sending` > `waiting`.
+ */
+export function importTileView(input: ImportTileInput): ImportTileView {
+  const attentionRows = input.rows.filter(
+    (r) => r.state === "refused" || r.state === "review_expired",
+  );
+  const reviewRows = input.rows.filter((r) => r.state === "ready_to_review");
+  const sendingRows = input.rows.filter((r) => r.state === "sending");
+  const waitingRows = input.rows.filter((r) => r.state === "waiting");
+
+  if (attentionRows.length > 0 || input.needsAttention) {
+    const word = "needs attention" as const;
+    let sub: string;
+    if (attentionRows.length === 1) {
+      sub = attentionRows[0].name;
+    } else if (attentionRows.length > 1) {
+      sub = quantity("items", attentionRows.length);
+    } else if (waitingRows.length === 1) {
+      sub = waitingRows[0].name;
+    } else if (waitingRows.length > 1) {
+      sub = quantity("items", waitingRows.length);
+    } else {
+      sub = t("windows.ui.files");
+    }
+    return {
+      word,
+      sub,
+      ariaLabel: t("windows.import.tilea11y", { state: stateWord(word), sub }),
+    };
+  }
+
+  if (reviewRows.length > 0) {
+    const word = "ready to review" as const;
+    const sub =
+      reviewRows.length === 1
+        ? reviewRows[0].name
+        : t("windows.import.tilereadycount", {
+            display: number(reviewRows.length, { useGrouping: false }),
+          });
+    return {
+      word,
+      sub,
+      ariaLabel: t("windows.import.tilea11y", { state: stateWord(word), sub }),
+    };
+  }
+
+  if (sendingRows.length > 0) {
+    const word = "sending" as const;
+    const totalActive = sendingRows.length + waitingRows.length;
+    const sub =
+      totalActive === 1
+        ? sendingRows[0].name
+        : t("windows.import.tilesendingcount", {
+            count: totalActive,
+            display: number(totalActive, { useGrouping: false }),
+          });
+    return {
+      word,
+      sub,
+      ariaLabel: t("windows.import.tilea11y", { state: stateWord(word), sub }),
+    };
+  }
+
+  const copyingRemaining = input.copying
+    ? Math.max(0, input.copying.total - input.copying.done)
+    : 0;
+  const totalWaiting = waitingRows.length + copyingRemaining;
+  if (totalWaiting > 0) {
+    const word = "waiting" as const;
+    const sub = input.waitingForJournal
+      ? t("windows.import.tilewaitingjournal")
+      : t("windows.import.tilewaitingcount", {
+          display: number(totalWaiting, { useGrouping: false }),
+        });
+    return {
+      word,
+      sub,
+      ariaLabel: t("windows.import.tilea11y", { state: stateWord(word), sub }),
+    };
+  }
+
+  return { word: "", sub: t("windows.ui.files") };
+}
+
+function importRowRank(state: string): number {
+  switch (state) {
+    case "ready_to_review":
+      return 0;
+    case "review_expired":
+      return 1;
+    case "refused":
+      return 2;
+    case "sending":
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+/** Deterministic sort mirroring Rust `import_store::build_document`. */
+export function sortImportRows<T extends { id: string; state: string; added?: number }>(
+  rows: readonly T[],
+): T[] {
+  return [...rows].sort((a, b) => {
+    const rankDiff = importRowRank(a.state) - importRowRank(b.state);
+    if (rankDiff !== 0) return rankDiff;
+    const addedDiff = (b.added ?? 0) - (a.added ?? 0);
+    if (addedDiff !== 0) return addedDiff;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
 }

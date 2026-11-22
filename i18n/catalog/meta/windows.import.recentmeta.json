@@ -1,0 +1,21 @@
+{
+  "description": "Sub-line for a delivered recent import receipt",
+  "context": "Windows app import pane recent section row detail.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "relative",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "7a8b88a1e8ada60dc2f5f68b5889ed722bdf46662a6d4ec128047e2863b3d9bc",
+  "risk": "routine",
+  "auto_merge": true
+}

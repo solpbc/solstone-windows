@@ -1,0 +1,16 @@
+{
+  "description": "Row detail when the journal removed an unstarted waiting copy after expiry",
+  "context": "Windows app import pane expired review row detail and journal host status reason.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "9da0a1ab2586616f753a76e83acc6b4802da444f54509b65ba146a52adc6941d",
+  "risk": "routine",
+  "auto_merge": true
+}

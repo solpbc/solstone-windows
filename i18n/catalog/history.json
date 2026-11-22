@@ -1826,6 +1826,440 @@
       }
     },
     {
+      "id": "windows.import.allhistory",
+      "resource": "m77696e646f77732e696d706f72742e616c6c686973746f7279",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.expiredword",
+      "resource": "m77696e646f77732e696d706f72742e65787069726564776f7264",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.holdoffline",
+      "resource": "m77696e646f77732e696d706f72742e686f6c646f66666c696e65",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.intro",
+      "resource": "m77696e646f77732e696d706f72742e696e74726f",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.morehelper",
+      "resource": "m77696e646f77732e696d706f72742e6d6f726568656c706572",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.readytoreviewword",
+      "resource": "m77696e646f77732e696d706f72742e7265616479746f726576696577776f7264",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.recenta11y",
+      "resource": "m77696e646f77732e696d706f72742e726563656e7461313179",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "name",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "relative",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.recentmeta",
+      "resource": "m77696e646f77732e696d706f72742e726563656e746d657461",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "relative",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.removereadybody",
+      "resource": "m77696e646f77732e696d706f72742e72656d6f76657265616479626f6479",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.reviewaction",
+      "resource": "m77696e646f77732e696d706f72742e726576696577616374696f6e",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.reviewactiona11y",
+      "resource": "m77696e646f77732e696d706f72742e726576696577616374696f6e61313179",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "name",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.reviewdetail",
+      "resource": "m77696e646f77732e696d706f72742e72657669657764657461696c",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.reviewdetailbody",
+      "resource": "m77696e646f77732e696d706f72742e72657669657764657461696c626f6479",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.reviewexpired",
+      "resource": "m77696e646f77732e696d706f72742e72657669657765787069726564",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.rowsending",
+      "resource": "m77696e646f77732e696d706f72742e726f7773656e64696e67",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.sectionreview",
+      "resource": "m77696e646f77732e696d706f72742e73656374696f6e726576696577",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.sendagainaction",
+      "resource": "m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.sendagainactiona11y",
+      "resource": "m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e61313179",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "name",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.statusattentionheadline",
+      "resource": "m77696e646f77732e696d706f72742e737461747573617474656e74696f6e686561646c696e65",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.statusattentionsub",
+      "resource": "m77696e646f77732e696d706f72742e737461747573617474656e74696f6e737562",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.statusreviewheadline",
+      "resource": "m77696e646f77732e696d706f72742e737461747573726576696577686561646c696e65",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "cardinal",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "cardinal",
+          "numeric_style": "ungrouped",
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "display",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": {
+        "name": "count",
+        "type": "cardinal",
+        "enum_values": [],
+        "enum_default": null
+      }
+    },
+    {
+      "id": "windows.import.statusreviewsub",
+      "resource": "m77696e646f77732e696d706f72742e737461747573726576696577737562",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.tilea11y",
+      "resource": "m77696e646f77732e696d706f72742e74696c6561313179",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "state",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "sub",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.tilereadycount",
+      "resource": "m77696e646f77732e696d706f72742e74696c657265616479636f756e74",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "display",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.tilesendingcount",
+      "resource": "m77696e646f77732e696d706f72742e74696c6573656e64696e67636f756e74",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "cardinal",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "cardinal",
+          "numeric_style": "ungrouped",
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "display",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": {
+        "name": "count",
+        "type": "cardinal",
+        "enum_values": [],
+        "enum_default": null
+      }
+    },
+    {
+      "id": "windows.import.tilewaitingcount",
+      "resource": "m77696e646f77732e696d706f72742e74696c6577616974696e67636f756e74",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "display",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.import.tilewaitingjournal",
+      "resource": "m77696e646f77732e696d706f72742e74696c6577616974696e676a6f75726e616c",
+      "namespace": "windows.import",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
       "id": "windows.logs.availablelogsareshownbelowcheckthe",
       "resource": "m77696e646f77732e6c6f67732e617661696c61626c656c6f677361726573686f776e62656c6f77636865636b746865",
       "namespace": "windows.logs",
@@ -2322,6 +2756,26 @@
       "selector": null
     },
     {
+      "id": "windows.pill.readytoreview",
+      "resource": "m77696e646f77732e70696c6c2e7265616479746f726576696577",
+      "namespace": "windows.pill",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "display",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
       "id": "windows.pill.refused",
       "resource": "m77696e646f77732e70696c6c2e72656675736564",
       "namespace": "windows.pill",
@@ -2388,6 +2842,38 @@
     {
       "id": "windows.quantity.hours",
       "resource": "m77696e646f77732e7175616e746974792e686f757273",
+      "namespace": "windows.quantity",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "cardinal",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "cardinal",
+          "numeric_style": "ungrouped",
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "display",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": {
+        "name": "count",
+        "type": "cardinal",
+        "enum_values": [],
+        "enum_default": null
+      }
+    },
+    {
+      "id": "windows.quantity.items",
+      "resource": "m77696e646f77732e7175616e746974792e6974656d73",
       "namespace": "windows.quantity",
       "owner": "windows",
       "tombstone": false,

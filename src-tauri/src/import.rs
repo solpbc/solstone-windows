@@ -5,19 +5,23 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use observer_model::i18n::message;
 use observer_model::{PairingPhase, SyncSnapshot};
-use pl_transport_win::import_client::{Handoff, ImportFile, ImportReply};
+use pl_transport_win::import_client::{Handoff, ImportFile, ImportReply, ReconcileReply};
 use pl_transport_win::import_store::{
-    self, Intake, IntakeRefusal, Refusal, SavedProgress, Store, VersionGate,
+    self, Intake, IntakeRefusal, ReconcileOutcome, Refusal, ReviewState, SavedProgress, Store,
+    VersionGate,
 };
 use pl_transport_win::ObserverClient;
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 use tokio::sync::{watch, Notify};
+
+pub use pl_transport_win::import_store::{Document, Row};
 
 static SERVICE: OnceLock<Arc<Service>> = OnceLock::new();
 
@@ -31,36 +35,23 @@ struct Service {
     /// Items delivered this run and the journal row each became, so a journal
     /// page that handed one over can link to it.
     receipts: Mutex<VecDeque<(String, Option<String>)>>,
+    counters: Option<source_counters::SharedCounters>,
+    reconcile_requested: AtomicBool,
 }
 
 const RECEIPTS_KEPT: usize = 256;
-
-#[derive(Serialize)]
-pub struct Row {
-    id: String,
-    name: String,
-    state: &'static str,
-    reason: Option<String>,
-    retryable: bool,
-    may_have_reached: bool,
-    missing_copy: bool,
-}
-
-#[derive(Serialize)]
-pub struct Document {
-    recent: String,
-    rows: Vec<Row>,
-    intake: Option<Intake>,
-    interrupted: bool,
-    waiting: u64,
-    needs_owner: bool,
-    available: bool,
-}
 
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
 
@@ -78,122 +69,7 @@ fn document_for(
     journal: &str,
     auth_blocked: bool,
 ) -> Document {
-    let Some(store) = store else {
-        return Document {
-            recent: message(
-                "windows.ui.couldntreadimportsonthisdevicenothinghasbeenremo",
-                &[],
-            ),
-            rows: Vec::new(),
-            intake: None,
-            interrupted: false,
-            waiting: 0,
-            needs_owner: true,
-            available: false,
-        };
-    };
-    let gate =
-        import_store::version_gate(sync.journal_version.as_deref(), sync.journal_version_fresh);
-    let version = sync.journal_version.as_deref().unwrap_or("");
-    let mut rows = Vec::new();
-    // Intake continues independently of the page. Material still being copied
-    // is not in the item map yet, but can continue without another owner action.
-    let mut pending = store
-        .intake
-        .as_ref()
-        .filter(|intake| intake.copying)
-        .map_or(0, |intake| intake.total.saturating_sub(intake.done) as u64);
-    let mut attention = 0;
-    for item in store.items.values() {
-        let refusal = item
-            .refusal
-            .as_ref()
-            .filter(|_| item.refused_here(journal, version));
-        let active = store.active.as_deref() == Some(&item.id);
-        if refusal.is_some() {
-            attention += 1;
-        } else {
-            pending += 1;
-        }
-        rows.push(Row {
-            id: item.id.clone(),
-            name: item.name.clone(),
-            state: if active {
-                "sending"
-            } else if refusal.is_some() {
-                "refused"
-            } else {
-                "waiting"
-            },
-            reason: refusal.map(|r| r.sentence.clone()),
-            retryable: refusal.is_some_and(|r| r.retryable),
-            may_have_reached: item.may_have_reached,
-            missing_copy: item.missing_copy,
-        });
-    }
-    let recent = if pending > 0 {
-        if auth_blocked {
-            message(
-                "windows.ui.yourjournalstoppedacceptingthisdeviceimportswait",
-                &[],
-            )
-        } else {
-            match sync.pairing.phase {
-                PairingPhase::NotPaired => message(
-                    "windows.ui.importswaitonthisdeviceuntilyouconnectajournal",
-                    &[],
-                ),
-                PairingPhase::AwaitingConfirmation => {
-                    message("windows.ui.importswaituntilyouconfirmyourjournalsmark", &[])
-                }
-                PairingPhase::Failed => message(
-                    "windows.ui.yourjournalstoppedacceptingthisdeviceimportswait",
-                    &[],
-                ),
-                PairingPhase::Pairing => message(
-                    "windows.ui.thisdeviceisnotpairedwithyourjournalimportswaith",
-                    &[],
-                ),
-                PairingPhase::Paired => match gate {
-                    VersionGate::Unknown => message("windows.ui.checkingyourjournal", &[]),
-                    VersionGate::Old => {
-                        message("windows.ui.importswaituntilyourjournalisupdated", &[])
-                    }
-                    VersionGate::Supported if store.active.is_some() => {
-                        message("windows.ui.sendingtoyourjournal", &[])
-                    }
-                    VersionGate::Supported => {
-                        message("windows.ui.waitingtogotoyourjournalx5d789db5", &[])
-                    }
-                },
-            }
-        }
-    } else if attention > 0 {
-        message(
-            "windows.ui.notgoingtoyourjournalrightnoweachonesayswhy",
-            &[],
-        )
-    } else if !journal.is_empty() && store.delivered_to.as_deref() == Some(journal) {
-        message("windows.ui.inyourjournal", &[])
-    } else {
-        message("windows.ui.nothingyetxec5a8da6", &[])
-    };
-    Document {
-        available: true,
-        recent,
-        rows,
-        intake: store.intake.clone(),
-        interrupted: store.interrupted,
-        waiting: if gate == VersionGate::Old || auth_blocked {
-            0
-        } else {
-            pending
-        },
-        needs_owner: attention > 0
-            || (pending > 0 && gate == VersionGate::Old)
-            || store.interrupted
-            || (pending > 0 && auth_blocked),
-    }
+    import_store::build_document(store, sync, journal, auth_blocked, now_ms())
 }
 
 fn current_identity(service: &Service, sync: &SyncSnapshot) -> (String, bool) {
@@ -214,6 +90,14 @@ fn current_identity(service: &Service, sync: &SyncSnapshot) -> (String, bool) {
     (journal, blocked)
 }
 
+fn record_handoff_receipt(service: &Service, id: String, row: Option<String>) {
+    let mut receipts = service.receipts.lock().unwrap_or_else(|p| p.into_inner());
+    if receipts.len() == RECEIPTS_KEPT {
+        receipts.pop_front();
+    }
+    receipts.push_back((id, row));
+}
+
 fn publish(app: &tauri::AppHandle, service: &Service) {
     let sync = current_sync(app);
     let (journal, blocked) = current_identity(service, &sync);
@@ -231,6 +115,7 @@ fn publish(app: &tauri::AppHandle, service: &Service) {
         let state = app.state::<crate::app::AppState>();
         let mut sync = state.sync.lock().unwrap_or_else(|p| p.into_inner());
         sync.imports_waiting = document.waiting;
+        sync.imports_ready_to_review = document.ready_to_review;
         sync.imports_need_owner = document.needs_owner;
     }
     service.changes.send_replace(());
@@ -259,7 +144,15 @@ pub fn on_changes() -> Option<watch::Receiver<()>> {
     SERVICE.get().map(|s| s.changes.subscribe())
 }
 
-pub fn start(app: tauri::AppHandle) {
+/// Request reconciliation of `ready to review` items even when `waiting == 0`.
+pub fn trigger_reconcile() {
+    if let Some(service) = SERVICE.get() {
+        service.reconcile_requested.store(true, Ordering::Release);
+        service.wake.notify_one();
+    }
+}
+
+pub fn start(app: tauri::AppHandle, counters: Option<source_counters::SharedCounters>) {
     let root = platform_win::local_data_root().join("import");
     let store = match Store::open(root) {
         Ok(store) => Some(store),
@@ -277,6 +170,8 @@ pub fn start(app: tauri::AppHandle) {
         identity: Mutex::new(None),
         auth_blocked: Mutex::new(None),
         receipts: Mutex::new(VecDeque::new()),
+        counters,
+        reconcile_requested: AtomicBool::new(true),
     });
     let _ = SERVICE.set(service.clone());
     tauri::async_runtime::spawn(async move {
@@ -296,6 +191,60 @@ pub fn start(app: tauri::AppHandle) {
 async fn client(app: &tauri::AppHandle) -> Option<Arc<ObserverClient>> {
     let state = app.state::<crate::app::AppState>();
     pl_transport_win::access::load_current_client(&state.credential_access).await
+}
+
+async fn reconcile_reviews(
+    app: &tauri::AppHandle,
+    service: &Service,
+    client: &Arc<ObserverClient>,
+    binding: &str,
+    journal: &str,
+) -> std::io::Result<()> {
+    let candidates = {
+        let store = service.store.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(store) = store.as_ref() else {
+            return Ok(());
+        };
+        store.review_candidates(journal)
+    };
+    for (item_id, import_id) in candidates {
+        if !same_client(app, client).await {
+            break;
+        }
+        match client.import_status(&import_id).await {
+            Ok(ReconcileReply::AuthStop) => {
+                *service
+                    .auth_blocked
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = Some(binding.to_owned());
+                tracing::warn!(target: "import", "journal refused import reconciliation authentication");
+                break;
+            }
+            Ok(reply) => {
+                let outcome = {
+                    let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                    let Some(store) = guard.as_mut() else {
+                        break;
+                    };
+                    store.apply_reconcile(&item_id, &import_id, journal, reply, now_ms())?
+                };
+                match outcome {
+                    ReconcileOutcome::Confirmed => {
+                        record_handoff_receipt(service, item_id, Some(import_id));
+                        publish(app, service);
+                    }
+                    ReconcileOutcome::Expired => {
+                        publish(app, service);
+                    }
+                    ReconcileOutcome::Unchanged | ReconcileOutcome::Stale => {}
+                }
+            }
+            Err(error) => {
+                tracing::warn!(target: "import", %error, item = %item_id, "import reconciliation left copy unchanged");
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Result<()> {
@@ -318,15 +267,49 @@ async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Res
         return Ok(());
     }
     if sync.pairing.phase != PairingPhase::Paired
-        || import_store::version_gate(sync.journal_version.as_deref(), sync.journal_version_fresh)
-            != VersionGate::Supported
+        || !client.gate_open()
+        || client.journal_identity().client_cert_sha256 != sync.pairing.binding
     {
         return Ok(());
     }
-    if !client.gate_open() || client.journal_identity().client_cert_sha256 != sync.pairing.binding {
+    if client.refusal_stop().is_some() {
         return Ok(());
     }
     let journal = client.credential().instance_id.clone();
+
+    // Re-pairing to a different journal instance resets foreign review holds back to waiting.
+    let reset_foreign = {
+        let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(store) = guard.as_mut() {
+            store.reset_foreign_reviews(&journal)?
+        } else {
+            false
+        }
+    };
+    if reset_foreign {
+        publish(app, service);
+    }
+
+    // Reconcile `ready to review` items whenever triggered (close/blur, focus, reconnect, startup),
+    // even when `waiting == 0`.
+    if service.reconcile_requested.swap(false, Ordering::AcqRel) {
+        reconcile_reviews(app, service, &client, &binding, &journal).await?;
+        if service
+            .auth_blocked
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            == Some(&binding)
+        {
+            return Ok(());
+        }
+    }
+
+    if import_store::version_gate(sync.journal_version.as_deref(), sync.journal_version_fresh)
+        != VersionGate::Supported
+    {
+        return Ok(());
+    }
     let version = sync.journal_version.clone().unwrap_or_default();
     let ids: Vec<_> = {
         let store = service.store.lock().unwrap_or_else(|p| p.into_inner());
@@ -338,6 +321,7 @@ async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Res
             .values()
             .filter(|item| {
                 !item.refused_here(&journal, &version)
+                    && item.review_for(&journal).is_none()
                     && store.confirming_remove.as_deref() != Some(&item.id)
             })
             .collect();
@@ -356,7 +340,9 @@ async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Res
             let Some(mut item) = store.items.get(&id).cloned() else {
                 continue;
             };
-            if store.confirming_remove.as_deref() == Some(&id) {
+            if store.confirming_remove.as_deref() == Some(&id)
+                || item.review_for(&journal).is_some()
+            {
                 continue;
             }
             item.may_have_reached = true;
@@ -420,26 +406,42 @@ async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Res
                     let row = item
                         .progress_for(&journal)
                         .map(|saved| saved.timestamp.clone());
-                    store.delivered(&id, &journal)?;
-                    let mut receipts = service.receipts.lock().unwrap_or_else(|p| p.into_inner());
-                    if receipts.len() == RECEIPTS_KEPT {
-                        receipts.pop_front();
-                    }
-                    receipts.push_back((id.clone(), row));
+                    store.delivered_at(&id, &journal, row.as_deref(), now_ms())?;
+                    record_handoff_receipt(service, id.clone(), row);
+                }
+                Some(Ok(ImportReply::ReadyToReview {
+                    import_id,
+                    reason_code,
+                    kind,
+                })) => {
+                    item.refusal = None;
+                    item.review = Some(ReviewState {
+                        journal: journal.clone(),
+                        import_id,
+                        reason_code,
+                        kind,
+                        expired: false,
+                    });
+                    store.put(item)?;
                 }
                 Some(Ok(ImportReply::Refused {
                     sentence,
                     retryable,
                     clear_saved,
+                    reason_code,
+                    kind,
                 })) => {
                     if clear_saved {
                         item.saved = None;
                     }
+                    item.review = None;
                     item.refusal = Some(Refusal {
                         journal: journal.clone(),
                         version: version.clone(),
                         sentence,
                         retryable,
+                        reason_code,
+                        kind,
                     });
                     store.put(item)?;
                 }
@@ -455,11 +457,14 @@ async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Res
                     pl_transport_win::TransportError::Io(error),
                 ))) if error.kind() == std::io::ErrorKind::NotFound => {
                     item.missing_copy = true;
+                    item.review = None;
                     item.refusal = Some(Refusal {
                         journal: journal.clone(),
                         version: version.clone(),
                         sentence: message("windows.ui.thecopyonthisdeviceismissing", &[]),
                         retryable: false,
+                        reason_code: None,
+                        kind: None,
                     });
                     store.put(item)?;
                 }
@@ -547,8 +552,10 @@ async fn intake(
         let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
         let store = guard.as_mut()?;
         let mut intake = store.intake.take().unwrap_or_default();
+        let mut counted_item: Option<(String, i64)> = None;
         match result {
             Ok(Ok(item)) => {
+                counted_item = Some((item.id.clone(), item.added as i64));
                 accepted.push((item.id.clone(), item.name.clone()));
                 store.items.insert(item.id.clone(), item);
                 intake.accepted += 1;
@@ -569,6 +576,9 @@ async fn intake(
         intake.done += 1;
         store.intake = Some(intake);
         drop(guard);
+        if let (Some(counters), Some((id, added))) = (&service.counters, counted_item) {
+            counters.add_imports(&[id], added);
+        }
         publish(app, service);
     }
     if let Some(store) = service
@@ -587,43 +597,26 @@ async fn intake(
 }
 
 /// Where one handed-over item stands, in the page's words: waiting, uploading,
-/// attention (with the journal's reason), delivered (with its row) or gone.
+/// attention (with review/expiry/reason metadata), delivered (with its row) or gone.
 pub fn handoff_status(app: &tauri::AppHandle, id: &str) -> serde_json::Value {
-    use serde_json::json;
     let Some(service) = SERVICE.get() else {
-        return json!({"state": "gone"});
+        return serde_json::json!({"state": "gone"});
     };
-    if let Some((_, row)) = service
+    let delivered_row = service
         .receipts
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .iter()
         .find(|(item, _)| item == id)
-    {
-        return json!({"state": "delivered", "import_id": row});
+        .map(|(_, row)| row.clone());
+    if let Some(row) = delivered_row {
+        return import_store::handoff_status_json(Some(row.as_deref()), None, "", "", id);
     }
     let sync = current_sync(app);
     let (journal, _) = current_identity(service, &sync);
     let version = sync.journal_version.as_deref().unwrap_or("");
     let guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
-    let Some(store) = guard.as_ref() else {
-        return json!({"state": "gone"});
-    };
-    let Some(item) = store.items.get(id) else {
-        return json!({"state": "gone"});
-    };
-    if let Some(refusal) = item
-        .refusal
-        .as_ref()
-        .filter(|_| item.refused_here(&journal, version))
-    {
-        return json!({"state": "attention", "reason": refusal.sentence,
-            "import_id": item.progress_for(&journal).map(|saved| &saved.timestamp)});
-    }
-    if store.active.as_deref() == Some(id) {
-        return json!({"state": "uploading", "size": item.size});
-    }
-    json!({"state": "waiting"})
+    import_store::handoff_status_json(None, guard.as_ref(), &journal, version, id)
 }
 
 pub fn remove(app: &tauri::AppHandle, id: &str) -> std::io::Result<()> {
@@ -657,6 +650,22 @@ pub fn retry(app: &tauri::AppHandle, id: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+pub fn send_again(app: &tauri::AppHandle, id: &str) -> std::io::Result<()> {
+    if let Some(service) = SERVICE.get() {
+        if let Some(store) = service
+            .store
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_mut()
+        {
+            store.send_again(id)?;
+        }
+        publish(app, service);
+        service.wake.notify_one();
+    }
+    Ok(())
+}
+
 pub fn dismiss_interrupted(app: &tauri::AppHandle) -> std::io::Result<()> {
     if let Some(service) = SERVICE.get() {
         if let Some(store) = service
@@ -677,17 +686,20 @@ pub struct RemovePrompt {
     name: String,
     may_have_reached: bool,
     missing_copy: bool,
+    ready_to_review: bool,
 }
 
 pub fn prepare_remove(id: &str) -> Option<RemovePrompt> {
     let service = SERVICE.get()?;
     let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
     let item = guard.as_mut()?.prepare_remove(id)?;
+    let ready_to_review = item.review.as_ref().is_some_and(|r| !r.expired);
     Some(RemovePrompt {
         name: item.name,
         may_have_reached: item.may_have_reached,
         missing_copy: item.missing_copy
             || guard.as_ref()?.payload(id).try_exists().ok() == Some(false),
+        ready_to_review,
     })
 }
 
@@ -733,6 +745,8 @@ mod tests {
             version: "2.0.52".into(),
             sentence: "refused".into(),
             retryable: true,
+            reason_code: None,
+            kind: None,
         });
         store.put(item).unwrap();
         let refused = document_for(Some(&store), &sync, "one", false);

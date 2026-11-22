@@ -1,0 +1,16 @@
+{
+  "description": "Status pane lead sub-line when imports need attention",
+  "context": "Windows app status pane lead sub-line for faulted imports.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "9fb1b863852ee507f198d89887c2bc1b415f883d48463563bc8a01dc929ccef7",
+  "risk": "routine",
+  "auto_merge": true
+}

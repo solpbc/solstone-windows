@@ -1,0 +1,16 @@
+{
+  "description": "Footer link in the import pane recent section",
+  "context": "Windows app import pane link to /app/import/ when paired and confirmed.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "c6a2f1c801f821a3f133465688943056da9de68e008adb87ec8afd8609a3b8ff",
+  "risk": "routine",
+  "auto_merge": true
+}

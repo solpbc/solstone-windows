@@ -1,0 +1,16 @@
+{
+  "description": "State word for an import whose waiting copy in the journal expired",
+  "context": "Windows app import pane row status label when the 1-hour staged copy expired.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "66955023749c19d861e677c73ac155f49a57546420c7453839ca69f7dda345b6",
+  "risk": "routine",
+  "auto_merge": true
+}

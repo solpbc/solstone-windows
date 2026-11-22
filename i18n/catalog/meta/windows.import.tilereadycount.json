@@ -1,0 +1,21 @@
+{
+  "description": "Import tile sub-line when multiple imports await review",
+  "context": "Windows app home deck import tile sub-line when 2+ items are ready to review.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "display",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "bf39e33edeb711860a562b29760603490f77f2af8e08b45a17f32e23d3b95683",
+  "risk": "routine",
+  "auto_merge": true
+}

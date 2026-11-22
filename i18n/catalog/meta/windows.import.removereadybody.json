@@ -1,0 +1,16 @@
+{
+  "description": "Remove confirmation dialog body for an import already saved in the journal",
+  "context": "Windows app import remove confirmation dialog when ready to review.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "08ce8b8d493997d6c962e942363bbd51aa56c48403981ef3c63c3a14204ecc1e",
+  "risk": "routine",
+  "auto_merge": true
+}

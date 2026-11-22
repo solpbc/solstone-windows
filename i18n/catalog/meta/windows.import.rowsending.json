@@ -1,0 +1,16 @@
+{
+  "description": "Row detail and status row sub-line while a file is uploading",
+  "context": "Windows app import pane row detail and status pane import row.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "34597557dc2c2c015053f1c47749a0545cec827bafa7065176c790f2a833ca34",
+  "risk": "routine",
+  "auto_merge": true
+}

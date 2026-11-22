@@ -224,7 +224,7 @@ fn build_settings(app: &tauri::AppHandle, destination: &str) -> tauri::Result<()
         WebviewUrl::App("index.html?route=sources".into())
     } else if matches!(
         destination,
-        "audio" | "screen" | "browsers" | "obsidian" | "updates"
+        "audio" | "screen" | "browsers" | "obsidian" | "screenshots" | "import" | "updates"
     ) {
         WebviewUrl::App(format!("index.html?route={destination}").into())
     } else {
@@ -248,6 +248,9 @@ fn build_settings(app: &tauri::AppHandle, destination: &str) -> tauri::Result<()
             if let Some(window) = teardown_app.get_webview_window("settings") {
                 let _ = window.emit("settings://navigate", "import");
             }
+        }
+        if matches!(event, tauri::WindowEvent::Focused(true)) {
+            crate::import::trigger_reconcile();
         }
         if matches!(event, tauri::WindowEvent::Destroyed) {
             crate::import::cancel_remove(None);
@@ -286,7 +289,7 @@ pub fn open_settings_updates(app: &tauri::AppHandle) -> tauri::Result<()> {
 /// Open (or focus) the Settings window on one source's page.
 pub fn open_settings_source(app: &tauri::AppHandle, source: &str) -> tauri::Result<()> {
     let destination = match source {
-        "audio" | "screen" | "browsers" | "obsidian" => source,
+        "audio" | "screen" | "browsers" | "obsidian" | "screenshots" | "import" => source,
         _ => "sources",
     };
     open_settings_internal(app, destination)
@@ -410,10 +413,21 @@ pub async fn open_journal_at<S: JournalSurface>(
     page: Option<&str>,
 ) -> Result<(), OpenJournalError> {
     let result = open_journal_inner(state, surface, app, page).await;
-    if result.is_err() && app.is_some() {
+    if matches!(result, Err(OpenJournalError::OpenFailed)) && app.is_some() {
         std::thread::spawn(crate::journal_links::show_failure);
     }
     result
+}
+
+/// Open (or focus) the paired journal window without spawning a Win32 MessageBox
+/// on failure; Settings IPC callers surface calm inline state instead.
+pub async fn open_journal_at_silent<S: JournalSurface>(
+    state: &crate::app::AppState,
+    surface: &S,
+    app: Option<&tauri::AppHandle>,
+    page: Option<&str>,
+) -> Result<(), OpenJournalError> {
+    open_journal_inner(state, surface, app, page).await
 }
 
 fn navigate_journal(window: &WebviewWindow, path: &str) -> tauri::Result<()> {
@@ -495,19 +509,46 @@ async fn open_journal_inner<S: JournalSurface>(
                 .as_ref(),
             );
 
-            let handle = match pl_transport_win::journal_bridge::start_with_facts(access).await {
-                Ok(handle) => handle,
-                Err(pl_transport_win::journal_bridge::BridgeStartError::AwaitingConfirmation) => {
-                    let _ = surface.open_settings();
-                    return Ok(());
-                }
-                Err(pl_transport_win::journal_bridge::BridgeStartError::NotReady) => {
-                    return Err(OpenJournalError::Unpaired);
-                }
-                Err(
-                    pl_transport_win::journal_bridge::BridgeStartError::Bind(_)
-                    | pl_transport_win::journal_bridge::BridgeStartError::Client(_),
-                ) => {
+            let offline_html: Arc<dyn Fn(&str) -> String + Send + Sync> = Arc::new(|target| {
+                let next = journal_window::offline_next_from_target(target);
+                journal_window::offline_page_html(
+                    &observer_model::i18n::message("windows.import.holdoffline", &[]),
+                    &observer_model::i18n::message("windows.desktop.shared.copy.offlinebody", &[]),
+                    &observer_model::i18n::message("windows.desktop.shared.copy.tryagain", &[]),
+                    &next,
+                )
+            });
+
+            let handle =
+                match pl_transport_win::journal_bridge::start_for_window(access, offline_html).await
+                {
+                    Ok(handle) => handle,
+                    Err(pl_transport_win::journal_bridge::BridgeStartError::AwaitingConfirmation) => {
+                        let _ = surface.open_settings();
+                        return Ok(());
+                    }
+                    Err(pl_transport_win::journal_bridge::BridgeStartError::NotReady) => {
+                        return Err(OpenJournalError::Unpaired);
+                    }
+                    Err(
+                        pl_transport_win::journal_bridge::BridgeStartError::Bind(_)
+                        | pl_transport_win::journal_bridge::BridgeStartError::Client(_),
+                    ) => {
+                        tracing::warn!(
+                            target: "window",
+                            label = "journal",
+                            outcome = "open_failed",
+                            "window open"
+                        );
+                        return Err(OpenJournalError::OpenFailed);
+                    }
+                };
+
+            let initial_path = target_path.as_deref().unwrap_or("/");
+            let url = match handle.issue_url_for_path(initial_path) {
+                Ok(url) => url,
+                Err(_) => {
+                    handle.begin_shutdown();
                     tracing::warn!(
                         target: "window",
                         label = "journal",
@@ -517,8 +558,6 @@ async fn open_journal_inner<S: JournalSurface>(
                     return Err(OpenJournalError::OpenFailed);
                 }
             };
-
-            let url = handle.bootstrap_url();
             tracing::info!(
                 target: "window",
                 label = "journal",
@@ -622,6 +661,14 @@ async fn open_journal_inner<S: JournalSurface>(
 
             let teardown_app = app.clone();
             window.on_window_event(move |event| {
+                if matches!(
+                    event,
+                    tauri::WindowEvent::CloseRequested { .. }
+                        | tauri::WindowEvent::Destroyed
+                        | tauri::WindowEvent::Focused(false)
+                ) {
+                    crate::import::trigger_reconcile();
+                }
                 if matches!(event, tauri::WindowEvent::Destroyed) {
                     if let Some(state) = teardown_app.try_state::<crate::app::AppState>() {
                         if let Ok(mut guard) = state.journal_bridge.lock() {
@@ -638,11 +685,9 @@ async fn open_journal_inner<S: JournalSurface>(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .opened(label);
 
-            if let Some(path) = target_path.as_deref() {
-                navigate_journal(&window, path).map_err(|_| OpenJournalError::OpenFailed)?;
-                if let Some(target) = pending.target.as_deref() {
-                    pl_transport_win::journal_target::clear_used(root, target).map_err(|_| OpenJournalError::OpenFailed)?;
-                }
+            if let Some(target) = pending.target.as_deref() {
+                pl_transport_win::journal_target::clear_used(root, target)
+                    .map_err(|_| OpenJournalError::OpenFailed)?;
             }
 
             tracing::info!(
@@ -926,10 +971,21 @@ fn build_journal_window(
         let installed_for_callback = Arc::clone(&installed);
         let window_for_callback = window.clone();
         let import_origin = origin.clone();
+        let offline_origin = origin.clone();
         let import_app = app.clone();
         let import_label = label.to_string();
         let import_for_view = import_host.as_ref().map(|(host, _)| host.clone());
         let with_webview_result = window.with_webview(move |webview| {
+            let offline_installed = platform_win::journal_document_filter::install_offline_handler(
+                &webview.controller(),
+                offline_origin,
+            );
+            tracing::info!(
+                target: "window",
+                label = "journal",
+                installed = offline_installed,
+                "journal offline handler"
+            );
             if let Some(host) = import_for_view {
                 let installed = platform_win::journal_import_channel::install(
                     &webview.controller(),

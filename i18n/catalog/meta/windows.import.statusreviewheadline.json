@@ -1,0 +1,30 @@
+{
+  "description": "Status pane lead headline when imports await owner confirmation",
+  "context": "Windows app status pane lead when waiting is 0 and imports await review.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "count",
+      "type": "cardinal",
+      "numeric_style": "ungrouped"
+    },
+    {
+      "name": "display",
+      "type": "string"
+    }
+  ],
+  "format_intent": "cardinal",
+  "max_length": 600,
+  "source_revision": "5ed525d70e3222e11c6ad612b0a2cf1464f14ca73b3fa908f2ed6fcf554a3358",
+  "risk": "routine",
+  "auto_merge": true,
+  "selector": {
+    "name": "count",
+    "type": "cardinal"
+  }
+}

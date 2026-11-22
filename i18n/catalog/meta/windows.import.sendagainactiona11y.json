@@ -1,0 +1,21 @@
+{
+  "description": "Accessible label for the send again to review row button",
+  "context": "Windows app import pane aria-label on send again action button.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "name",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "b45f29ad663c514f157606db365cce4b6fccd7b9fbc0ab9f77703db91519e855",
+  "risk": "routine",
+  "auto_merge": true
+}

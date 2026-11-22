@@ -28,6 +28,8 @@ export function stateWord(word: string): string {
     paused: "windows.ui.pausedword",
     "setting up": "windows.ui.settingupword",
     "ready to set up": "windows.ui.readytosetupword",
+    "ready to review": "windows.import.readytoreviewword",
+    expired: "windows.import.expiredword",
     "checking…": "windows.ui.checkingword",
     "needs attention": "windows.ui.needsattentionword",
     unavailable: "windows.ui.unavailableword",

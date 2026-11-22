@@ -14,7 +14,8 @@ use observer_pl::{
 use spl_core::bridge::BridgeNames;
 use spl_transport::client::CarrierOpenError;
 use spl_transport::journal_bridge::{
-    self as shared_bridge, BridgePolicy, CarrierOpener, JournalBridgeConfig, JournalBridgeStatus,
+    self as shared_bridge, BootstrapMode, BridgePolicy, BrowserAuthorizationError, CarrierOpener,
+    JournalBridgeConfig, JournalBridgeStatus, LocalResponse,
 };
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -59,6 +60,20 @@ impl JournalBridgeHandle {
             .expect("journal bridge handle is live")
             .bootstrap_url()
             .expect("Windows journal bridge always enables capability authorization")
+    }
+
+    /// Issue a single-use bootstrap URL that redirects directly to `path`
+    /// without first loading `/` (eliminating the cold-open `/` flash).
+    pub fn issue_url_for_path(&self, path: &str) -> Result<String, BrowserAuthorizationError> {
+        let authorizer = self
+            .inner
+            .lock()
+            .expect("journal bridge handle lock")
+            .as_ref()
+            .expect("journal bridge handle is live")
+            .browser_authorizer()
+            .ok_or(BrowserAuthorizationError::InvalidPath)?;
+        authorizer.issue_url_for_path(path)
     }
 
     pub fn begin_shutdown(mut self) {
@@ -140,6 +155,39 @@ pub async fn start_observed(
 pub async fn start_observed_with_facts(
     access: CredentialAccess,
 ) -> Result<JournalBridgeHandle, BridgeStartError> {
+    start_with_policy(access, BridgePolicy::default()).await
+}
+
+/// Start a loopback journal bridge for the native WebView2 journal window:
+/// uses single-use path-bound bootstrap tokens (`BootstrapMode::OneTimeToken`)
+/// to avoid the cold-open `/` flash, and serves the calm offline page at
+/// `/_solstone/offline` locally without hitting upstream.
+pub async fn start_for_window(
+    access: CredentialAccess,
+    offline_html: Arc<dyn Fn(&str) -> String + Send + Sync>,
+) -> Result<JournalBridgeHandle, BridgeStartError> {
+    let policy = BridgePolicy {
+        bootstrap_mode: BootstrapMode::OneTimeToken,
+        local_response: Arc::new(move |head, _status| {
+            if head.method == "GET" && head.path() == "/_solstone/offline" {
+                Some(LocalResponse {
+                    status: 200,
+                    content_type: "text/html; charset=utf-8".into(),
+                    body: offline_html(&head.target).into_bytes(),
+                })
+            } else {
+                None
+            }
+        }),
+        ..BridgePolicy::default()
+    };
+    start_with_policy(access, policy).await
+}
+
+async fn start_with_policy(
+    access: CredentialAccess,
+    policy: BridgePolicy,
+) -> Result<JournalBridgeHandle, BridgeStartError> {
     let client_slot = access.client_slot();
     let client = client_slot.load();
     if !client.gate_open() {
@@ -161,7 +209,7 @@ pub async fn start_observed_with_facts(
             protocol_version_header_name: PROTOCOL_VERSION_HEADER.to_ascii_lowercase(),
         },
         endpoint_hosts,
-        policy: BridgePolicy::default(),
+        policy,
     };
     let handle = shared_bridge::start(config)
         .await

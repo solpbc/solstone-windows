@@ -636,6 +636,9 @@ pub fn run(
             crate::ipc::import_status,
             crate::ipc::import_choose_files,
             crate::ipc::import_open_journal_page,
+            crate::ipc::import_open_journal_item,
+            crate::ipc::import_send_again,
+            crate::ipc::import_reconcile,
             crate::ipc::import_remove,
             crate::ipc::import_prepare_remove,
             crate::ipc::import_cancel_remove,
@@ -964,8 +967,8 @@ pub fn run(
             // The Obsidian vault source: scan, hold, deliver when asked.
             crate::obsidian::start(app.handle().clone(), source_counters.clone());
             // The screenshots source: the folder, the count, then each one as it's taken.
-            crate::screenshots::start(app.handle().clone(), source_counters);
-            crate::import::start(app.handle().clone());
+            crate::screenshots::start(app.handle().clone(), source_counters.clone());
+            crate::import::start(app.handle().clone(), source_counters);
             crate::shared_sources::start(app.handle().clone());
 
             // In-app updater: construct the Velopack-backed controller (honest
@@ -1094,6 +1097,7 @@ pub fn run(
                 let liveness = liveness.clone();
                 let mut rx = watch_rx;
                 let mut previous_pairing = shared_sync.lock().ok().map(|s| s.pairing.phase);
+                let mut previous_link = shared_sync.lock().ok().and_then(|s| s.journal_link);
                 async move {
                     let mut previous: Option<HealthDump> = None;
                     let notify_id = tauri::async_runtime::spawn_blocking(crate::notify::identity)
@@ -1116,6 +1120,7 @@ pub fn run(
                         let mut dump = rx.borrow_and_update().clone();
                         if let Ok(sync) = shared_sync.lock() {
                             dump.sync.imports_waiting = sync.imports_waiting;
+                            dump.sync.imports_ready_to_review = sync.imports_ready_to_review;
                             dump.sync.imports_need_owner = sync.imports_need_owner;
                         }
                         // One presented link for the tray, its notices and Settings.
@@ -1157,7 +1162,17 @@ pub fn run(
                                 }
                             });
                         }
+                        if dump.sync.pairing.phase == observer_model::PairingPhase::Paired
+                            && (previous_pairing
+                                .is_some_and(|phase| phase != observer_model::PairingPhase::Paired)
+                                || (link == Some(observer_model::JournalLink::Connected)
+                                    && previous_link
+                                        != Some(observer_model::JournalLink::Connected)))
+                        {
+                            crate::import::trigger_reconcile();
+                        }
                         previous_pairing = Some(dump.sync.pairing.phase);
+                        previous_link = link;
                         let changed = previous
                             .as_ref()
                             .is_none_or(|prev| should_emit(prev, &dump));

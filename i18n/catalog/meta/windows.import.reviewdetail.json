@@ -1,0 +1,16 @@
+{
+  "description": "Row detail for an import saved in the journal awaiting preview and confirmation",
+  "context": "Windows app import pane review card row detail and journal host status reason.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "8296da31d7ac410d832c807d57f0a434a400db586898e53e69c53ab27f35b90e",
+  "risk": "routine",
+  "auto_merge": true
+}

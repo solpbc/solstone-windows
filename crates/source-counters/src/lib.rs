@@ -37,6 +37,7 @@ pub enum Source {
     Browsers,
     Obsidian,
     Screenshots,
+    Imports,
 }
 
 /// One accepted browser batch, in record order.
@@ -150,6 +151,16 @@ impl SharedCounters {
 
     pub fn screenshot_count(&self) -> u64 {
         self.with_mut(|c| c.disk.screenshots.total)
+    }
+
+    /// Files taken in by import, each by its stable custody item id. One already
+    /// counted adds nothing, so `send_again` or retries never double-count.
+    pub fn add_imports(&self, ids: &[String], at_secs: i64) -> bool {
+        self.with_mut(|c| c.add_imports(ids, at_secs))
+    }
+
+    pub fn import_count(&self) -> u64 {
+        self.with_mut(|c| c.disk.imports.total)
     }
 
     pub fn last_intake_id(&self) -> u64 {
@@ -296,6 +307,10 @@ struct Disk {
     screenshots: CountTotal,
     #[serde(default)]
     screenshot_hashes: BTreeSet<String>,
+    #[serde(default)]
+    imports: CountTotal,
+    #[serde(default)]
+    import_ids: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -336,6 +351,8 @@ impl Counters {
                     note_hashes: BTreeSet::new(),
                     screenshots: CountTotal::default(),
                     screenshot_hashes: BTreeSet::new(),
+                    imports: CountTotal::default(),
+                    import_ids: BTreeSet::new(),
                 }
             }
         };
@@ -394,6 +411,7 @@ impl Counters {
             Source::Browsers => self.disk.browsers.last,
             Source::Obsidian => self.disk.obsidian.last,
             Source::Screenshots => self.disk.screenshots.last,
+            Source::Imports => self.disk.imports.last,
         }
     }
 
@@ -630,6 +648,22 @@ impl Counters {
                 self.disk.screenshots.last = Some(
                     self.disk
                         .screenshots
+                        .last
+                        .map_or(at_secs, |prev| prev.max(at_secs)),
+                );
+                self.dirty = true;
+            }
+        }
+        self.persist_ok()
+    }
+
+    pub fn add_imports(&mut self, ids: &[String], at_secs: i64) -> bool {
+        for id in ids {
+            if self.disk.import_ids.insert(id.clone()) {
+                self.disk.imports.total = self.disk.imports.total.saturating_add(1);
+                self.disk.imports.last = Some(
+                    self.disk
+                        .imports
                         .last
                         .map_or(at_secs, |prev| prev.max(at_secs)),
                 );
@@ -971,6 +1005,7 @@ pub struct WindowCounterDocument {
     pub browsers: WindowSourceTotal,
     pub obsidian: WindowSourceTotal,
     pub screenshots: WindowSourceTotal,
+    pub imports: WindowSourceTotal,
 }
 
 /// What the settings window's read found.
@@ -1009,6 +1044,7 @@ pub struct WindowCounterPayload {
     pub browsers: WindowCountCell,
     pub obsidian: WindowCountCell,
     pub screenshots: WindowCountCell,
+    pub imports: WindowCountCell,
 }
 
 /// Map a window read onto the document the window renders.
@@ -1041,6 +1077,10 @@ pub fn window_payload(read: &WindowCounterRead) -> Option<WindowCounterPayload> 
             total: doc.screenshots.total,
             last: doc.screenshots.last,
         },
+        imports: WindowCountCell {
+            total: doc.imports.total,
+            last: doc.imports.last,
+        },
     })
 }
 
@@ -1070,6 +1110,10 @@ pub fn read_window_counters(dir: &Path) -> io::Result<WindowCounterRead> {
                 screenshots: WindowSourceTotal {
                     total: disk.screenshots.total,
                     last: disk.screenshots.last,
+                },
+                imports: WindowSourceTotal {
+                    total: disk.imports.total,
+                    last: disk.imports.last,
                 },
             })),
             Err(_) => Ok(WindowCounterRead::NoRows),
@@ -1913,5 +1957,42 @@ mod tests {
         let mut reopened = Counters::open(dir.path(), "2026-11-13").unwrap();
         assert!(reopened.add_screenshots(&["aa".to_string()], 300));
         assert_eq!(reopened.disk.screenshots.total, 1);
+    }
+
+    #[test]
+    fn an_import_counts_once_by_its_id_and_an_older_file_still_reads() {
+        let (dir, mut counters) = open_at("2026-11-22");
+        let ids = vec![
+            "item-1".to_string(),
+            "item-2".to_string(),
+            "item-1".to_string(),
+        ];
+        assert!(counters.add_imports(&ids, 100));
+        // Repeated intake or send_again with the same id never double-counts.
+        assert!(counters.add_imports(&["item-2".to_string()], 200));
+        assert_eq!(counters.disk.imports.total, 2);
+        assert_eq!(counters.last(Source::Imports), Some(100));
+        let payload = window_payload(&read_window_counters(dir.path()).unwrap()).unwrap();
+        assert_eq!(payload.imports.total, 2);
+        assert_eq!(payload.imports.last, Some(100));
+
+        // A pre-existing counter file without `imports` still decodes cleanly.
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join(FILE_NAME)).unwrap()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("imports");
+        object.remove("import_ids");
+        fs::write(
+            dir.path().join(FILE_NAME),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        let payload = window_payload(&read_window_counters(dir.path()).unwrap()).unwrap();
+        assert_eq!(payload.imports.total, 0);
+        assert_eq!(payload.imports.last, None);
+        let mut reopened = Counters::open(dir.path(), "2026-11-22").unwrap();
+        assert!(reopened.add_imports(&["item-1".to_string()], 300));
+        assert_eq!(reopened.disk.imports.total, 1);
+        assert_eq!(reopened.last(Source::Imports), Some(300));
     }
 }

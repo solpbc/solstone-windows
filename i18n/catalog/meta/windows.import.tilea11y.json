@@ -1,0 +1,25 @@
+{
+  "description": "Accessible name for the home import tile when active, awaiting review, or faulted",
+  "context": "Windows app home deck import tile aria-label.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "state",
+      "type": "string"
+    },
+    {
+      "name": "sub",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "11537b6c50533cccaeef492acc1af98b0a03cfc4a7c5d37813a1f4d5d18c1b9e",
+  "risk": "routine",
+  "auto_merge": true
+}

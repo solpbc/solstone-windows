@@ -28,13 +28,43 @@ pub struct SavedImport {
 pub enum ImportReply {
     Saved(SavedImport),
     Delivered,
+    ReadyToReview {
+        import_id: String,
+        reason_code: String,
+        kind: String,
+    },
     Retry,
     AuthStop,
     Refused {
         sentence: String,
         retryable: bool,
         clear_saved: bool,
+        reason_code: Option<String>,
+        kind: Option<String>,
     },
+}
+
+/// Outcome of reconciling one `ready to review` item via `GET /app/import/api/<id>`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReconcileReply {
+    /// Journal moved past pending eligibility (`running`/`success`/`failed`/`unconfirmed`/
+    /// `noted`/`unavailable`, `saved_start.active == true`, or `saved_start.state == "consumed"`).
+    /// Persist a 24h recent receipt durably before deleting local bytes.
+    Confirmed,
+    /// `404`: waiting copy expired or was discarded; keep local bytes for `send_again`.
+    Expired,
+    /// `401`/`403`: halt reconciliation batch and record pairing refusal without deleting bytes.
+    AuthStop,
+    /// Still awaiting review (`pending` + `eligible`/`unknown`/absent `saved_start`), or
+    /// `400`/`429`/`5xx`/malformed JSON: leave item unchanged and preserve local bytes.
+    Unchanged,
+}
+
+/// True only for explicit confirmation-required refusal kinds.
+pub fn is_confirmation_required_kind(kind: &str) -> bool {
+    kind == "body_confirmation_required"
+        || kind == "confirmation_required"
+        || kind.ends_with("_confirmation_required")
 }
 
 /// What the journal page asked for when it handed a file to the app: the import
@@ -168,6 +198,22 @@ impl ObserverClient {
             .await?;
         Ok(classify(&response, false, Some(&saved.timestamp)))
     }
+
+    pub async fn import_status(&self, import_id: &str) -> Result<ReconcileReply, RouteError> {
+        if !observer_model::is_valid_import_id(import_id) {
+            return Ok(ReconcileReply::Unchanged);
+        }
+        let headers = self.proxy_headers(&[]);
+        let (response, _) = self
+            .ordinary_request(
+                OrdinaryRequest::ImportStatusGet,
+                Some(import_id),
+                &headers,
+                &[],
+            )
+            .await?;
+        Ok(classify_reconcile(&response))
+    }
 }
 
 fn nonempty(value: &serde_json::Value, key: &str) -> Option<String> {
@@ -178,15 +224,11 @@ fn nonempty(value: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-pub(crate) fn classify(
-    response: &HttpResponse,
-    save: bool,
-    expected_import: Option<&str>,
-) -> ImportReply {
+pub fn classify(response: &HttpResponse, save: bool, expected_import: Option<&str>) -> ImportReply {
     if matches!(response.status, 401 | 403) {
         return ImportReply::AuthStop;
     }
-    if response.status >= 500 {
+    if response.status >= 500 || response.status == 429 {
         return ImportReply::Retry;
     }
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&response.body) else {
@@ -197,6 +239,8 @@ pub(crate) fn classify(
                 sentence: message("windows.ui.yourjournalcouldntacceptthis", &[]),
                 retryable: false,
                 clear_saved: false,
+                reason_code: None,
+                kind: None,
             }
         };
     };
@@ -231,25 +275,99 @@ pub(crate) fn classify(
     if (200..300).contains(&response.status) {
         return ImportReply::Retry;
     }
-    let Some((sentence, reason)) = nonempty(&value, "error").zip(nonempty(&value, "reason_code"))
-    else {
+    let reason = nonempty(&value, "reason_code");
+    let kind = nonempty(&value, "kind");
+    let sentence = nonempty(&value, "error");
+
+    if !save && response.status == 409 && reason.as_deref() == Some("import_preview_required") {
+        let candidate_id = match value.get("import_id") {
+            Some(serde_json::Value::String(id)) if !id.is_empty() => Some(id.as_str()),
+            Some(serde_json::Value::String(_)) | Some(serde_json::Value::Null) | None => {
+                expected_import
+            }
+            Some(_) => None,
+        };
+        if let (Some(kind_str), Some(import_id)) = (
+            kind.as_deref().filter(|k| is_confirmation_required_kind(k)),
+            candidate_id.filter(|id| observer_model::is_valid_import_id(id)),
+        ) {
+            return ImportReply::ReadyToReview {
+                import_id: import_id.to_owned(),
+                reason_code: "import_preview_required".to_owned(),
+                kind: kind_str.to_owned(),
+            };
+        }
+        let retryable = matches!(kind.as_deref(), Some("source_changed" | "already_running"));
+        let clear_saved = kind.as_deref() == Some("source_changed");
+        return ImportReply::Refused {
+            sentence: sentence
+                .unwrap_or_else(|| message("windows.ui.yourjournalcouldntacceptthis", &[])),
+            retryable,
+            clear_saved,
+            reason_code: reason,
+            kind,
+        };
+    }
+
+    let Some((sentence, reason)) = sentence.zip(reason) else {
         return ImportReply::Refused {
             sentence: message("windows.ui.yourjournalcouldntacceptthis", &[]),
             retryable: false,
             clear_saved: false,
+            reason_code: None,
+            kind,
         };
     };
     let retryable = matches!(
         reason.as_str(),
-        "import_queue_unreachable"
-            | "import_metadata_failed"
-            | "import_not_found"
-            | "import_preview_required"
-    ) && value["kind"] != "client_item_conflict";
+        "import_queue_unreachable" | "import_metadata_failed" | "import_not_found"
+    ) && kind.as_deref() != Some("client_item_conflict");
     ImportReply::Refused {
         sentence,
         retryable,
         clear_saved: retryable && reason == "import_not_found",
+        reason_code: Some(reason),
+        kind,
+    }
+}
+
+/// Classify `GET /app/import/api/<id>` for safe reconciliation of a `ready to review` item.
+pub fn classify_reconcile(response: &HttpResponse) -> ReconcileReply {
+    if matches!(response.status, 401 | 403) {
+        return ReconcileReply::AuthStop;
+    }
+    if response.status == 404 {
+        return ReconcileReply::Expired;
+    }
+    if response.status != 200 {
+        return ReconcileReply::Unchanged;
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&response.body) else {
+        return ReconcileReply::Unchanged;
+    };
+    let Some(object) = value.as_object() else {
+        return ReconcileReply::Unchanged;
+    };
+    let status = object.get("status").and_then(serde_json::Value::as_str);
+    let saved_start = object
+        .get("saved_start")
+        .and_then(serde_json::Value::as_object);
+    let active = saved_start
+        .and_then(|s| s.get("active"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true);
+    let saved_state = saved_start
+        .and_then(|s| s.get("state"))
+        .and_then(serde_json::Value::as_str);
+    if matches!(
+        status,
+        Some("running" | "success" | "failed" | "unconfirmed" | "noted" | "unavailable")
+    ) || active
+        || saved_state == Some("consumed")
+    {
+        ReconcileReply::Confirmed
+    } else {
+        ReconcileReply::Unchanged
     }
 }
 
@@ -323,7 +441,6 @@ mod tests {
             "import_queue_unreachable",
             "import_metadata_failed",
             "import_not_found",
-            "import_preview_required",
         ] {
             let body = serde_json::json!({"error":"held", "reason_code":reason}).to_string();
             assert_eq!(
@@ -331,7 +448,9 @@ mod tests {
                 ImportReply::Refused {
                     sentence: "held".into(),
                     retryable: true,
-                    clear_saved: reason == "import_not_found"
+                    clear_saved: reason == "import_not_found",
+                    reason_code: Some(reason.into()),
+                    kind: None,
                 }
             );
         }
@@ -339,6 +458,7 @@ mod tests {
             "not json",
             r#"{"error":"held"}"#,
             r#"{"error":"held","reason_code":"unknown"}"#,
+            r#"{"error":"held","reason_code":"import_preview_required"}"#,
             r#"{"error":"held","reason_code":"import_not_found","kind":"client_item_conflict"}"#,
         ] {
             assert!(matches!(
@@ -349,6 +469,234 @@ mod tests {
                 }
             ));
         }
+    }
+
+    #[test]
+    fn preview_required_409_enters_ready_to_review_only_for_confirmation_kinds_with_valid_ascii_id()
+    {
+        for kind in [
+            "body_confirmation_required",
+            "confirmation_required",
+            "future_source_confirmation_required",
+        ] {
+            let with_response_id = serde_json::json!({
+                "error": "preview required",
+                "reason_code": "import_preview_required",
+                "kind": kind,
+                "import_id": "20261122_143059",
+            })
+            .to_string();
+            assert_eq!(
+                classify(
+                    &answer(409, &with_response_id),
+                    false,
+                    Some("20261122_000001")
+                ),
+                ImportReply::ReadyToReview {
+                    import_id: "20261122_143059".into(),
+                    reason_code: "import_preview_required".into(),
+                    kind: kind.into(),
+                }
+            );
+
+            // Falls back to persisted `/save` timestamp when response omits `import_id`.
+            let fallback_id = serde_json::json!({
+                "error": "preview required",
+                "reason_code": "import_preview_required",
+                "kind": kind,
+            })
+            .to_string();
+            assert_eq!(
+                classify(&answer(409, &fallback_id), false, Some("20261122_143059")),
+                ImportReply::ReadyToReview {
+                    import_id: "20261122_143059".into(),
+                    reason_code: "import_preview_required".into(),
+                    kind: kind.into(),
+                }
+            );
+        }
+
+        // Non-retryable 409 preview errors never enter ready_to_review.
+        for kind in [
+            "plan_failed",
+            "nothing_to_import",
+            "invalid_request",
+            "not_found",
+            "unknown_kind",
+        ] {
+            let body = serde_json::json!({
+                "error": "could not plan",
+                "reason_code": "import_preview_required",
+                "kind": kind,
+                "import_id": "20261122_143059",
+            })
+            .to_string();
+            assert_eq!(
+                classify(&answer(409, &body), false, Some("20261122_143059")),
+                ImportReply::Refused {
+                    sentence: "could not plan".into(),
+                    retryable: false,
+                    clear_saved: false,
+                    reason_code: Some("import_preview_required".into()),
+                    kind: Some(kind.into()),
+                },
+                "kind={kind}"
+            );
+        }
+
+        // source_changed and already_running route to needs attention (never ready_to_review).
+        let source_changed = serde_json::json!({
+            "error": "source changed",
+            "reason_code": "import_preview_required",
+            "kind": "source_changed",
+            "import_id": "20261122_143059",
+        })
+        .to_string();
+        assert_eq!(
+            classify(
+                &answer(409, &source_changed),
+                false,
+                Some("20261122_143059")
+            ),
+            ImportReply::Refused {
+                sentence: "source changed".into(),
+                retryable: true,
+                clear_saved: true,
+                reason_code: Some("import_preview_required".into()),
+                kind: Some("source_changed".into()),
+            }
+        );
+
+        let already_running = serde_json::json!({
+            "error": "already running",
+            "reason_code": "import_preview_required",
+            "kind": "already_running",
+            "import_id": "20261122_143059",
+        })
+        .to_string();
+        assert_eq!(
+            classify(
+                &answer(409, &already_running),
+                false,
+                Some("20261122_143059")
+            ),
+            ImportReply::Refused {
+                sentence: "already running".into(),
+                retryable: true,
+                clear_saved: false,
+                reason_code: Some("import_preview_required".into()),
+                kind: Some("already_running".into()),
+            }
+        );
+
+        // Absent kind or invalid/Unicode import_id route to non-retryable needs attention.
+        for (body, expected) in [
+            (
+                r#"{"error":"missing kind","reason_code":"import_preview_required","import_id":"20261122_143059"}"#,
+                Some("20261122_143059"),
+            ),
+            (
+                r#"{"error":"bad id","reason_code":"import_preview_required","kind":"body_confirmation_required","import_id":"../escape"}"#,
+                Some("20261122_143059"),
+            ),
+            (
+                r#"{"error":"unicode id","reason_code":"import_preview_required","kind":"body_confirmation_required","import_id":"\u0662\u0660\u0662\u0666\u0661\u0661\u0662\u0662_\u0661\u0664\u0663\u0660\u0665\u0669"}"#,
+                Some("20261122_143059"),
+            ),
+            (
+                r#"{"error":"no id","reason_code":"import_preview_required","kind":"body_confirmation_required"}"#,
+                Some("not-a-timestamp"),
+            ),
+            (
+                r#"{"error":"no id","reason_code":"import_preview_required","kind":"body_confirmation_required"}"#,
+                None,
+            ),
+        ] {
+            assert!(
+                matches!(
+                    classify(&answer(409, body), false, expected),
+                    ImportReply::Refused {
+                        retryable: false,
+                        ..
+                    }
+                ),
+                "body={body}"
+            );
+        }
+    }
+
+    #[test]
+    fn reconcile_classification_deletes_only_on_explicit_confirmation_proofs() {
+        for status in [
+            "running",
+            "success",
+            "failed",
+            "unconfirmed",
+            "noted",
+            "unavailable",
+        ] {
+            let body = serde_json::json!({"status": status}).to_string();
+            assert_eq!(
+                classify_reconcile(&answer(200, &body)),
+                ReconcileReply::Confirmed,
+                "status={status}"
+            );
+        }
+        assert_eq!(
+            classify_reconcile(&answer(
+                200,
+                r#"{"status":"pending","saved_start":{"active":true,"state":"eligible"}}"#
+            )),
+            ReconcileReply::Confirmed
+        );
+        assert_eq!(
+            classify_reconcile(&answer(
+                200,
+                r#"{"status":"pending","saved_start":{"active":false,"state":"consumed"}}"#
+            )),
+            ReconcileReply::Confirmed
+        );
+
+        // Must preserve local bytes on pending + eligible/unknown/omitted saved_start,
+        // 400, 429, 5xx, and malformed JSON.
+        for (code, body) in [
+            (
+                200,
+                r#"{"status":"pending","saved_start":{"active":false,"state":"eligible"}}"#,
+            ),
+            (
+                200,
+                r#"{"status":"pending","saved_start":{"active":false,"state":"unknown"}}"#,
+            ),
+            (200, r#"{"status":"pending"}"#),
+            (200, r#"{"status":"pending","saved_start":null}"#),
+            (200, "not json"),
+            (200, "[]"),
+            (400, r#"{"error":"bad"}"#),
+            (429, r#"{"error":"slow down"}"#),
+            (500, "internal error"),
+            (502, "journal unreachable"),
+            (503, "busy"),
+        ] {
+            assert_eq!(
+                classify_reconcile(&answer(code, body)),
+                ReconcileReply::Unchanged,
+                "code={code} body={body}"
+            );
+        }
+
+        assert_eq!(
+            classify_reconcile(&answer(404, r#"{"error":"not found"}"#)),
+            ReconcileReply::Expired
+        );
+        assert_eq!(
+            classify_reconcile(&answer(401, "")),
+            ReconcileReply::AuthStop
+        );
+        assert_eq!(
+            classify_reconcile(&answer(403, "")),
+            ReconcileReply::AuthStop
+        );
     }
 
     #[test]

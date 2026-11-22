@@ -1456,3 +1456,70 @@ windows.sharedsources.labelage = { $label } · { $relative }
 windows.sharedsources.labelstate = { $label } · { $state }
 
 windows.sharedsources.stateage = { $state } · { $relative }
+
+windows.quantity.items = { $count ->
+        [one] { $display } item
+       *[other] { $display } items
+    }
+
+windows.pill.readytoreview = { $display } ready to review
+
+windows.import.readytoreviewword = ready to review
+
+windows.import.expiredword = expired
+
+windows.import.tilewaitingcount = { $display } waiting
+
+windows.import.tilewaitingjournal = waiting for your journal
+
+windows.import.tilesendingcount = { $count ->
+        [one] { $display } file
+       *[other] { $display } files
+    }
+
+windows.import.tilereadycount = { $display } ready in your journal
+
+windows.import.tilea11y = import, { $state }. { $sub }.
+
+windows.import.intro = adds any file you choose here or drop on this window. your journal works out what it is.
+
+windows.import.morehelper = guides, options, and import history in your journal
+
+windows.import.sectionreview = waiting for your review
+
+windows.import.reviewdetail = saved in your journal. preview and confirm to start.
+
+windows.import.reviewdetailbody = saved in your journal. review within an hour before your journal removes the waiting copy.
+
+windows.import.reviewexpired = the waiting copy in your journal expired. this device still holds the file.
+
+windows.import.reviewaction = review in your journal
+
+windows.import.reviewactiona11y = review { $name } in your journal
+
+windows.import.sendagainaction = send again to review
+
+windows.import.sendagainactiona11y = send { $name } again to review
+
+windows.import.holdoffline = waiting for your journal to reconnect.
+
+windows.import.rowsending = sending to your journal…
+
+windows.import.recentmeta = in your journal · { $relative }
+
+windows.import.recenta11y = { $name }, in your journal, { $relative }. open in your journal.
+
+windows.import.allhistory = all import history in your journal
+
+windows.import.removereadybody = this removes the copy on this device. the waiting copy in your journal stays there until you discard it or it expires.
+
+windows.import.statusreviewheadline = { $count ->
+        [one] { $display } import ready to review
+       *[other] { $display } imports ready to review
+    }
+
+windows.import.statusreviewsub = open import to review and start.
+
+windows.import.statusattentionheadline = imports need you
+
+windows.import.statusattentionsub = open import to see why.

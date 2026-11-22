@@ -761,6 +761,183 @@ const MESSAGES = {
       { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
     ],
   },
+  "windows.import.allhistory": {
+    resourceKey: "m77696e646f77732e696d706f72742e616c6c686973746f7279",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.expiredword": {
+    resourceKey: "m77696e646f77732e696d706f72742e65787069726564776f7264",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.holdoffline": {
+    resourceKey: "m77696e646f77732e696d706f72742e686f6c646f66666c696e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.intro": {
+    resourceKey: "m77696e646f77732e696d706f72742e696e74726f",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.morehelper": {
+    resourceKey: "m77696e646f77732e696d706f72742e6d6f726568656c706572",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.readytoreviewword": {
+    resourceKey: "m77696e646f77732e696d706f72742e7265616479746f726576696577776f7264",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.recenta11y": {
+    resourceKey: "m77696e646f77732e696d706f72742e726563656e7461313179",
+    formatIntent: "text",
+    arguments: [
+      { name: "name", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "relative", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.import.recentmeta": {
+    resourceKey: "m77696e646f77732e696d706f72742e726563656e746d657461",
+    formatIntent: "text",
+    arguments: [
+      { name: "relative", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.import.removereadybody": {
+    resourceKey: "m77696e646f77732e696d706f72742e72656d6f76657265616479626f6479",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.reviewaction": {
+    resourceKey: "m77696e646f77732e696d706f72742e726576696577616374696f6e",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.reviewactiona11y": {
+    resourceKey: "m77696e646f77732e696d706f72742e726576696577616374696f6e61313179",
+    formatIntent: "text",
+    arguments: [
+      { name: "name", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.import.reviewdetail": {
+    resourceKey: "m77696e646f77732e696d706f72742e72657669657764657461696c",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.reviewdetailbody": {
+    resourceKey: "m77696e646f77732e696d706f72742e72657669657764657461696c626f6479",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.reviewexpired": {
+    resourceKey: "m77696e646f77732e696d706f72742e72657669657765787069726564",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.rowsending": {
+    resourceKey: "m77696e646f77732e696d706f72742e726f7773656e64696e67",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.sectionreview": {
+    resourceKey: "m77696e646f77732e696d706f72742e73656374696f6e726576696577",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.sendagainaction": {
+    resourceKey: "m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.sendagainactiona11y": {
+    resourceKey: "m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e61313179",
+    formatIntent: "text",
+    arguments: [
+      { name: "name", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.import.statusattentionheadline": {
+    resourceKey: "m77696e646f77732e696d706f72742e737461747573617474656e74696f6e686561646c696e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.statusattentionsub": {
+    resourceKey: "m77696e646f77732e696d706f72742e737461747573617474656e74696f6e737562",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.statusreviewheadline": {
+    resourceKey: "m77696e646f77732e696d706f72742e737461747573726576696577686561646c696e65",
+    formatIntent: "cardinal",
+    selectorVar: "count",
+    arguments: [
+      { name: "count", type: "cardinal", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.import.statusreviewsub": {
+    resourceKey: "m77696e646f77732e696d706f72742e737461747573726576696577737562",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.tilea11y": {
+    resourceKey: "m77696e646f77732e696d706f72742e74696c6561313179",
+    formatIntent: "text",
+    arguments: [
+      { name: "state", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "sub", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.import.tilereadycount": {
+    resourceKey: "m77696e646f77732e696d706f72742e74696c657265616479636f756e74",
+    formatIntent: "text",
+    arguments: [
+      { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.import.tilesendingcount": {
+    resourceKey: "m77696e646f77732e696d706f72742e74696c6573656e64696e67636f756e74",
+    formatIntent: "cardinal",
+    selectorVar: "count",
+    arguments: [
+      { name: "count", type: "cardinal", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.import.tilewaitingcount": {
+    resourceKey: "m77696e646f77732e696d706f72742e74696c6577616974696e67636f756e74",
+    formatIntent: "text",
+    arguments: [
+      { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.import.tilewaitingjournal": {
+    resourceKey: "m77696e646f77732e696d706f72742e74696c6577616974696e676a6f75726e616c",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
   "windows.logs.availablelogsareshownbelowcheckthe": {
     resourceKey: "m77696e646f77732e6c6f67732e617661696c61626c656c6f677361726573686f776e62656c6f77636865636b746865",
     formatIntent: "text",
@@ -972,6 +1149,13 @@ const MESSAGES = {
       { name: "waiting", type: "string", min: null, max: null, numericStyle: "ungrouped" },
     ],
   },
+  "windows.pill.readytoreview": {
+    resourceKey: "m77696e646f77732e70696c6c2e7265616479746f726576696577",
+    formatIntent: "text",
+    arguments: [
+      { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
   "windows.pill.refused": {
     resourceKey: "m77696e646f77732e70696c6c2e72656675736564",
     formatIntent: "text",
@@ -1000,6 +1184,15 @@ const MESSAGES = {
   },
   "windows.quantity.hours": {
     resourceKey: "m77696e646f77732e7175616e746974792e686f757273",
+    formatIntent: "cardinal",
+    selectorVar: "count",
+    arguments: [
+      { name: "count", type: "cardinal", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.quantity.items": {
+    resourceKey: "m77696e646f77732e7175616e746974792e6974656d73",
     formatIntent: "cardinal",
     selectorVar: "count",
     arguments: [

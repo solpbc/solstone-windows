@@ -10,6 +10,7 @@ export interface DeskTile {
   name: string;
   word: string;
   sub: string;
+  ariaLabel?: string;
   switchOn: boolean | null;
   switchId: string | null;
   switchLabel: string;
@@ -57,6 +58,8 @@ export interface DeskView {
   paneIsStatus: boolean;
   /** Caught up: a green dot beside the word. No other pill is green. */
   connected: boolean;
+  /** Pill marker kind ("connected" green dot, "review" orange bullseye, "neutral" ring). */
+  pillKind?: "connected" | "review" | "neutral";
   leadHeadline: string;
   leadLines: readonly string[];
   /** Unpaired storage, when a real size is known. Not a journal fact. */
@@ -122,7 +125,7 @@ export function renderDesk(view: DeskView, parts: DeskParts, actions: DeskAction
   shell.append(renderShelf(view, actions));
 
   if (view.shelfPage && parts.shelfBody) {
-    const page = el("div", "desk-deck");
+    const page = el("main", "desk-deck");
     page.setAttribute("data-automation-id", "settings.deck");
     if (view.width !== "full") page.append(backHome(actions));
     page.append(parts.shelfBody);
@@ -163,8 +166,34 @@ function backHome(actions: DeskActions): HTMLButtonElement {
   return back;
 }
 
+function applyPillState(
+  pill: HTMLButtonElement,
+  view: Pick<DeskView, "pill" | "connected" | "pillKind">,
+): void {
+  if (pill.textContent !== view.pill) pill.textContent = view.pill;
+  const kind = view.pillKind ?? (view.connected ? "connected" : "neutral");
+  if (kind === "connected") {
+    pill.dataset.connected = "true";
+  } else {
+    delete pill.dataset.connected;
+  }
+  if (kind === "review") {
+    pill.dataset.pillKind = "review";
+  } else {
+    delete pill.dataset.pillKind;
+  }
+}
+
+export function patchDeskPill(
+  shell: HTMLElement,
+  view: Pick<DeskView, "pill" | "connected" | "pillKind">,
+): void {
+  const pill = shell.querySelector<HTMLButtonElement>(".desk-pill");
+  if (pill) applyPillState(pill, view);
+}
+
 function renderDeck(view: DeskView, parts: DeskParts, actions: DeskActions): HTMLElement {
-  const deck = el("div", "desk-deck");
+  const deck = el("main", "desk-deck");
   deck.setAttribute("data-automation-id", "settings.deck");
   if (parts.unread) deck.append(parts.unread);
 
@@ -190,7 +219,7 @@ function renderDeck(view: DeskView, parts: DeskParts, actions: DeskActions): HTM
 
   const pill = el("button", "desk-pill", view.pill);
   pill.type = "button";
-  if (view.connected) pill.dataset.connected = "true";
+  applyPillState(pill, view);
   pill.onclick = () => actions.onPill();
   head.append(pill);
   deck.append(head);
@@ -245,6 +274,7 @@ function renderTile(tile: DeskTile, actions: DeskActions): HTMLElement {
   if (tile.selected) card.setAttribute("aria-current", "true");
   const open = el("button", "desk-tile-open");
   open.type = "button";
+  if (tile.ariaLabel) open.setAttribute("aria-label", tile.ariaLabel);
   open.append(glyph(glyphForTile(tile.id)));
   open.append(el("span", "desk-tile-name", tile.name));
   if (tile.remote?.length) {
@@ -261,6 +291,109 @@ function renderTile(tile: DeskTile, actions: DeskActions): HTMLElement {
     card.append(switchControl(tile.id, tile.switchOn, tile.switchId, tile.switchLabel, "desk-switch desk-tile-switch", actions));
   }
   return card;
+}
+
+/** Patch an existing tile card in place so active focus on `.desk-tile-open` or its switch is preserved. */
+export function patchDeskTile(shell: HTMLElement, tile: DeskTile): void {
+  const card = shell.querySelector<HTMLElement>(`.desk-tile[data-tile="${tile.id}"]`);
+  if (!card) return;
+  if (tile.selected) card.setAttribute("aria-current", "true");
+  else card.removeAttribute("aria-current");
+  const open = card.querySelector<HTMLButtonElement>(".desk-tile-open");
+  if (open) {
+    if (tile.ariaLabel) open.setAttribute("aria-label", tile.ariaLabel);
+    else open.removeAttribute("aria-label");
+    // Patch word and sub children without replacing the button node itself.
+    const existingName = open.querySelector<HTMLElement>(".desk-tile-name");
+    if (existingName && existingName.textContent !== tile.name) {
+      existingName.textContent = tile.name;
+    }
+    const existingRemote = open.querySelector(".desk-remote-word");
+    if (tile.remote?.length || existingRemote) {
+      // Rebuild inner content of `open` only when remote card state is involved.
+      const keepGlyph = open.querySelector(".desk-glyph") ?? glyph(glyphForTile(tile.id));
+      const keepName = existingName ?? el("span", "desk-tile-name", tile.name);
+      keepName.textContent = tile.name;
+      open.replaceChildren(keepGlyph, keepName);
+      if (tile.remote?.length) {
+        open.append(remoteHeading(tile.remote.length), deviceLine(tile.remote[0], true));
+      } else {
+        if (tile.word) {
+          const word = el("span", "desk-tile-word", stateWord(tile.word));
+          word.dataset.word = tile.word;
+          open.append(word);
+        }
+        if (tile.sub) open.append(el("span", "desk-tile-sub", tile.sub));
+      }
+    } else {
+      let wordEl = open.querySelector<HTMLElement>(".desk-tile-word");
+      let subEl = open.querySelector<HTMLElement>(".desk-tile-sub");
+      if (tile.word) {
+        if (!wordEl) {
+          wordEl = el("span", "desk-tile-word");
+          if (subEl) open.insertBefore(wordEl, subEl);
+          else open.append(wordEl);
+        }
+        const label = stateWord(tile.word);
+        if (wordEl.textContent !== label) wordEl.textContent = label;
+        if (wordEl.dataset.word !== tile.word) wordEl.dataset.word = tile.word;
+      } else if (wordEl) {
+        wordEl.remove();
+      }
+      if (tile.sub) {
+        if (!subEl) {
+          subEl = el("span", "desk-tile-sub");
+          open.append(subEl);
+        }
+        if (subEl.textContent !== tile.sub) subEl.textContent = tile.sub;
+      } else if (subEl) {
+        subEl.remove();
+      }
+    }
+  }
+  const input = card.querySelector<HTMLInputElement>(".desk-tile-switch input");
+  if (input && tile.switchOn !== null) {
+    input.checked = tile.switchOn;
+  }
+}
+
+export function patchDeskJournalFoot(
+  shell: HTMLElement,
+  view: Pick<DeskView, "journalName" | "journalChips">,
+): void {
+  const foot = shell.querySelector<HTMLButtonElement>(".desk-journal");
+  if (!foot) return;
+  const name = foot.querySelector<HTMLElement>(".desk-journal-name");
+  const currentChips = [...foot.querySelectorAll<HTMLElement>(".desk-mark-chip")].map((c) => c.style.borderColor);
+  const nextChips = view.journalChips?.map((c) => c.hex) ?? [];
+  const hasPlaceholder = foot.querySelector(".desk-mark-slot") !== null;
+  const wantsPlaceholder = view.journalName === "your \u00B7 journal";
+  if (
+    name &&
+    name.textContent === view.journalName &&
+    hasPlaceholder === wantsPlaceholder &&
+    currentChips.length === nextChips.length
+  ) {
+    return;
+  }
+  foot.replaceChildren();
+  if (wantsPlaceholder) {
+    const first = el("span", "desk-mark-slot");
+    const second = el("span", "desk-mark-slot");
+    first.setAttribute("aria-hidden", "true");
+    second.setAttribute("aria-hidden", "true");
+    foot.append(first, second);
+  } else if (view.journalChips) {
+    for (const chip of view.journalChips) {
+      const mark = el("span", "desk-mark-chip");
+      mark.setAttribute("aria-hidden", "true");
+      if (chip.rotated) mark.dataset.rotated = "true";
+      mark.style.borderColor = chip.hex;
+      mark.style.background = `${chip.hex}1f`;
+      foot.append(mark);
+    }
+  }
+  foot.append(el("span", "desk-journal-name", view.journalName));
 }
 
 function switchControl(

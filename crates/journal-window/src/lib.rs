@@ -458,6 +458,169 @@ pub fn bundled_initialization_script() -> Result<String, HostContractError> {
     initialization_script(bundled_host_contract())
 }
 
+/// Reserved same-origin bridge path served locally when the journal cannot be reached.
+pub const OFFLINE_PATH: &str = "/_solstone/offline";
+
+fn escape_html(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Validate an origin-relative destination path for the offline reconnect link.
+pub fn safe_offline_next_path(candidate: &str) -> String {
+    if candidate.starts_with('/')
+        && !candidate.starts_with("//")
+        && candidate != OFFLINE_PATH
+        && !candidate.starts_with(&format!("{OFFLINE_PATH}?"))
+        && !candidate.starts_with(&format!("{OFFLINE_PATH}/"))
+        && !candidate.starts_with("/_bridge/")
+        && candidate
+            .bytes()
+            .all(|byte| (b'!'..=b'~').contains(&byte) && byte != b'\\')
+    {
+        candidate.to_owned()
+    } else {
+        "/".to_owned()
+    }
+}
+
+/// Extract and validate the `next` destination from an `/_solstone/offline?...` target.
+pub fn offline_next_from_target(target: &str) -> String {
+    let Some((_, query)) = target.split_once('?') else {
+        return "/".to_owned();
+    };
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        if key == "next" {
+            return safe_offline_next_path(&value);
+        }
+    }
+    "/".to_owned()
+}
+
+/// Build the same-origin `/_solstone/offline?next=...` redirect URL for a failed
+/// internal main-frame navigation (such as HTTP 502 from an unreachable journal).
+pub fn offline_redirect_url(origin: &JournalOrigin, failed_url: &str) -> Option<String> {
+    let parsed = Url::parse(failed_url).ok()?;
+    if classify_url(origin, &parsed) != Class::Internal {
+        return None;
+    }
+    if parsed.path() == OFFLINE_PATH {
+        return None;
+    }
+    let mut raw_next = parsed.path().to_owned();
+    if let Some(query) = parsed.query() {
+        raw_next.push('?');
+        raw_next.push_str(query);
+    }
+    if let Some(fragment) = parsed.fragment() {
+        raw_next.push('#');
+        raw_next.push_str(fragment);
+    }
+    let next = safe_offline_next_path(&raw_next);
+    let encoded: String = url::form_urlencoded::byte_serialize(next.as_bytes()).collect();
+    Some(format!("{}{OFFLINE_PATH}?next={encoded}", origin.ascii()))
+}
+
+/// Calm, localized, self-contained HTML shown in the journal window when the
+/// paired journal cannot be reached (replacing raw `502 journal unreachable`).
+pub fn offline_page_html(title: &str, body: &str, retry_label: &str, next_path: &str) -> String {
+    let safe_next = safe_offline_next_path(next_path);
+    let title = escape_html(title);
+    let body = escape_html(body);
+    let retry_label = escape_html(retry_label);
+    let href = escape_html(&safe_next);
+    format!(
+        r#"<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+:root {{
+  color-scheme: light dark;
+  --bg: #fefcf8;
+  --ink: #1a1a1a;
+  --subtle: #5b5246;
+  --accent: #b06a1a;
+  --line: #ece3d0;
+}}
+@media (prefers-color-scheme: dark) {{
+  :root {{
+    --bg: #221c19;
+    --ink: #fcf3e4;
+    --subtle: #d0c6b8;
+    --accent: #e8913a;
+    --line: #484038;
+  }}
+}}
+html, body {{
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Segoe UI", system-ui, sans-serif;
+}}
+main {{
+  min-height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  max-width: 460px;
+  margin: 0 auto;
+  padding: 32px 24px;
+  gap: 14px;
+}}
+h1 {{
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.3;
+}}
+p {{
+  margin: 0;
+  color: var(--subtle);
+  line-height: 1.5;
+}}
+a.retry {{
+  align-self: flex-start;
+  margin-top: 6px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1.5px solid var(--accent);
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
+}}
+a.retry:focus-visible {{
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}}
+</style>
+</head>
+<body>
+<main>
+  <h1>{title}</h1>
+  <p>{body}</p>
+  <a class="retry" href="{href}">{retry_label}</a>
+</main>
+</body>
+</html>
+"#
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -717,6 +880,62 @@ mod tests {
             initialization_script(br#"{"version":2}"#).unwrap_err(),
             HostContractError::Unsupported
         );
+    }
+
+    #[test]
+    fn offline_redirect_and_html_stay_same_origin_and_escape_text() {
+        let origin = parse_origin("http://127.0.0.1:61234/");
+        assert_eq!(
+            offline_redirect_url(&origin, "http://127.0.0.1:61234/app/import/20261122_143000"),
+            Some(
+                "http://127.0.0.1:61234/_solstone/offline?next=%2Fapp%2Fimport%2F20261122_143000"
+                    .to_owned()
+            )
+        );
+        // Never redirect loops or outside origins.
+        assert_eq!(
+            offline_redirect_url(&origin, "http://127.0.0.1:61234/_solstone/offline?next=%2F"),
+            None
+        );
+        assert_eq!(
+            offline_redirect_url(&origin, "https://example.com/app/import/"),
+            None
+        );
+        // Bootstrap path falls back to home rather than replaying a spent token.
+        assert_eq!(
+            offline_redirect_url(
+                &origin,
+                "http://127.0.0.1:61234/_bridge/bootstrap?token=secret"
+            ),
+            Some("http://127.0.0.1:61234/_solstone/offline?next=%2F".to_owned())
+        );
+
+        assert_eq!(
+            offline_next_from_target("/_solstone/offline?next=%2Fapp%2Fimport%2F20261122_143000"),
+            "/app/import/20261122_143000"
+        );
+        for unsafe_next in [
+            "https://evil.example/",
+            "//evil.example/a",
+            "javascript:alert(1)",
+            "/_solstone/offline",
+            "/_bridge/bootstrap?token=x",
+            "/a\\b",
+        ] {
+            assert_eq!(safe_offline_next_path(unsafe_next), "/", "{unsafe_next}");
+        }
+
+        let html = offline_page_html(
+            "waiting for your journal to reconnect.",
+            "anything waiting stays <safe>.",
+            "try again",
+            "/app/import/20261122_143000",
+        );
+        assert!(html.contains("waiting for your journal to reconnect."));
+        assert!(html.contains("anything waiting stays &lt;safe&gt;."));
+        assert!(html.contains(r#"href="/app/import/20261122_143000""#));
+        assert!(!html.contains("502"));
+        assert!(!html.contains("journal unreachable"));
     }
 }
 

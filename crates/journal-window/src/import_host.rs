@@ -97,6 +97,7 @@ const PAGE_ADAPTER: &str = r#"((contract, auth, origin, nonce, path, ask, answer
   const items = new Map();
   let timer;
   async function update() {
+    let allReview = true;
     for (const [item, record] of items) {
       try {
         const status = await post({type:'host.status', id:record.id, item});
@@ -107,10 +108,16 @@ const PAGE_ADAPTER: &str = r#"((contract, auth, origin, nonce, path, ask, answer
             ...status, type:contract.status, item, name:record.name, id:record.id,
           }}));
         }
-        if (['attention', 'delivered', 'gone'].includes(status.state)) items.delete(item);
-      } catch (_) { /* Read the status again while the document is open. */ }
+        const awaitingReview = status.state === 'attention' && status.review_required === true;
+        if (status.state === 'delivered' || status.state === 'gone' ||
+            (status.state === 'attention' && !awaitingReview)) {
+          items.delete(item);
+        } else if (!awaitingReview) {
+          allReview = false;
+        }
+      } catch (_) { allReview = false; /* Read the status again while the document is open. */ }
     }
-    timer = items.size ? setTimeout(update, 400) : undefined;
+    timer = items.size ? setTimeout(update, allReview ? 2000 : 400) : undefined;
   }
   Object.defineProperty(window, contract.capability, {value:Object.freeze({
     version:contract.version, types:allTypes,
@@ -133,6 +140,12 @@ const PAGE_ADAPTER: &str = r#"((contract, auth, origin, nonce, path, ask, answer
     });
   });
   document.addEventListener('DOMContentLoaded', () => {
+    if (location.pathname !== '/_solstone/offline' &&
+        document.contentType === 'text/plain' &&
+        (document.body?.textContent || '').trim() === 'journal unreachable') {
+      location.replace('/_solstone/offline?next=' + encodeURIComponent(location.pathname + location.search + location.hash));
+      return;
+    }
     if (window.solstoneImportContract?.version === contract.version)
       post({type:'host.ready'}).catch(() => {});
   }, {once:true});
@@ -689,6 +702,9 @@ mod tests {
         assert!(script.contains(r#""prepare":"auth.prepare""#));
         assert!(script.contains(r#""authorize":"auth.authorize""#));
         assert!(script.contains(r#""cancel":"auth.cancel""#));
+        assert!(script.contains("status.review_required === true"));
+        assert!(script.contains("allReview ? 2000 : 400"));
+        assert!(script.contains("/_solstone/offline?next="));
     }
 
     #[test]

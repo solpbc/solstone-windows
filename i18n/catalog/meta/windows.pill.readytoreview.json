@@ -1,0 +1,21 @@
+{
+  "description": "Status pill when imports await review in the journal",
+  "context": "Windows app header status pill and tray status line when waiting is 0 and imports await owner confirmation.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "display",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "f24255d99d25f1278bca2c29c09648b42789b6ccd6cd063535e5511e6e7fbab1",
+  "risk": "routine",
+  "auto_merge": true
+}

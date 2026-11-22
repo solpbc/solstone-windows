@@ -1,0 +1,16 @@
+{
+  "description": "Import pane intro sentence",
+  "context": "Windows app import pane opening guidance.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "a4bf27766a52084e9ac78ee6b1c51d8bf14b8cb253685d16a6388dc33c867f5e",
+  "risk": "routine",
+  "auto_merge": true
+}

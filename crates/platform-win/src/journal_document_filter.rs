@@ -2,14 +2,18 @@
 // Copyright (c) 2026 sol pbc
 
 use journal_window::{
-    dispatch_document, DocumentDispatch, DocumentFault, FilterInstall, JournalOrigin,
+    dispatch_document, offline_redirect_url, DocumentDispatch, DocumentFault, FilterInstall,
+    JournalOrigin,
 };
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2Controller, ICoreWebView2Environment,
+    ICoreWebView2NavigationCompletedEventArgs, ICoreWebView2NavigationCompletedEventArgs2,
     ICoreWebView2WebResourceRequestedEventArgs, ICoreWebView2_22,
     COREWEBVIEW2_WEB_RESOURCE_CONTEXT_DOCUMENT, COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
 };
-use webview2_com::{CoTaskMemPWSTR, WebResourceRequestedEventHandler};
+use webview2_com::{
+    CoTaskMemPWSTR, NavigationCompletedEventHandler, WebResourceRequestedEventHandler,
+};
 use windows_core::{Error, Interface, HRESULT, HSTRING, PWSTR};
 
 pub fn install_document_filter(
@@ -110,4 +114,44 @@ pub fn install_document_filter(
     }
 
     FilterInstall::Comprehensive
+}
+
+/// Install a main-frame `NavigationCompleted` listener that replaces raw
+/// `502 journal unreachable` answers on `origin` with the same-origin
+/// `/_solstone/offline?next=...` reconnect page.
+pub fn install_offline_handler(
+    controller: &ICoreWebView2Controller,
+    origin: JournalOrigin,
+) -> bool {
+    let view = match unsafe { controller.CoreWebView2() } {
+        Ok(view) if !view.as_raw().is_null() => view,
+        _ => return false,
+    };
+    let handler = NavigationCompletedEventHandler::create(Box::new(
+        move |sender: Option<ICoreWebView2>,
+              args: Option<ICoreWebView2NavigationCompletedEventArgs>| {
+            let (Some(sender), Some(args)) = (sender, args) else {
+                return Ok(());
+            };
+            let Ok(args2) = args.cast::<ICoreWebView2NavigationCompletedEventArgs2>() else {
+                return Ok(());
+            };
+            let mut status: i32 = 0;
+            if unsafe { args2.HttpStatusCode(&mut status) }.is_err() || status != 502 {
+                return Ok(());
+            }
+            let mut raw = PWSTR::null();
+            let result = unsafe { sender.Source(&mut raw) };
+            let source = CoTaskMemPWSTR::from(raw);
+            if result.is_err() {
+                return Ok(());
+            }
+            if let Some(target) = offline_redirect_url(&origin, &source.to_string()) {
+                let _ = unsafe { sender.Navigate(&HSTRING::from(target.as_str())) };
+            }
+            Ok(())
+        },
+    ));
+    let mut token = 0_i64;
+    unsafe { view.add_NavigationCompleted(&handler, &mut token) }.is_ok()
 }

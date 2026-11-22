@@ -1486,6 +1486,195 @@
       "locales": []
     },
     {
+      "id": "windows.import.allhistory",
+      "source": "c6a2f1c801f821a3f133465688943056da9de68e008adb87ec8afd8609a3b8ff",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.expiredword",
+      "source": "66955023749c19d861e677c73ac155f49a57546420c7453839ca69f7dda345b6",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.holdoffline",
+      "source": "8d27a89b42c01f542f85abcdef4f83f160ad167c36e2617363af6c999ff30280",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.intro",
+      "source": "a4bf27766a52084e9ac78ee6b1c51d8bf14b8cb253685d16a6388dc33c867f5e",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.morehelper",
+      "source": "b2f76083a4313147697f91208578b967c7855fc235f6f3f3fdc2fd846c1ffd57",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.readytoreviewword",
+      "source": "0cb39d259ccc43fe91a45900235280447458a9d04d867c4cbac6a04fea1a44fd",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.recenta11y",
+      "source": "e4277ee17270df29b6d7d5053bc2733bd955ce44884468232a49529dfb85a890",
+      "contract": "280ccf478734c1fff73a859c22526a7d5742bbf5d59793eb511068584c163548",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.recentmeta",
+      "source": "7a8b88a1e8ada60dc2f5f68b5889ed722bdf46662a6d4ec128047e2863b3d9bc",
+      "contract": "6979d4d46857d915950df394a8566197077b1e1a3e797b2be0cb5523bc6d69a3",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.removereadybody",
+      "source": "08ce8b8d493997d6c962e942363bbd51aa56c48403981ef3c63c3a14204ecc1e",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.reviewaction",
+      "source": "c2bebf641190076c985e116ddc61bb39a58fc0b45d52c225afd1728a61634f73",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.reviewactiona11y",
+      "source": "3599f7010c4b07f95ead133dcf180da2d239a199c8d99a205b66d7be037308a8",
+      "contract": "85053d723b7e1f28ae28297c665d0d09f73ecf55449bd50a1109e25a8c40f725",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.reviewdetail",
+      "source": "8296da31d7ac410d832c807d57f0a434a400db586898e53e69c53ab27f35b90e",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.reviewdetailbody",
+      "source": "bbff647e10bbc0973f26c10260caa090cffc3942ff041087d38a2142923712ec",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.reviewexpired",
+      "source": "9da0a1ab2586616f753a76e83acc6b4802da444f54509b65ba146a52adc6941d",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.rowsending",
+      "source": "34597557dc2c2c015053f1c47749a0545cec827bafa7065176c790f2a833ca34",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.sectionreview",
+      "source": "fefe8601870a9f024b1f7a0c41ed823a1d0bc2d35eb4568dd6d765911be017fd",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.sendagainaction",
+      "source": "b9780ef2c9a44800b1ec3086de82a537484b2401fda08f97e1534164b1728942",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.sendagainactiona11y",
+      "source": "b45f29ad663c514f157606db365cce4b6fccd7b9fbc0ab9f77703db91519e855",
+      "contract": "85053d723b7e1f28ae28297c665d0d09f73ecf55449bd50a1109e25a8c40f725",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.statusattentionheadline",
+      "source": "916fb76ec8ae9602c0a1a55e8ffd28fc4db1d0c72890a43c57ddcfbfb2bc0450",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.statusattentionsub",
+      "source": "9fb1b863852ee507f198d89887c2bc1b415f883d48463563bc8a01dc929ccef7",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.statusreviewheadline",
+      "source": "5ed525d70e3222e11c6ad612b0a2cf1464f14ca73b3fa908f2ed6fcf554a3358",
+      "contract": "d47ec32665785fdbc476c9b03fc91c4ac16d1a4edfcc8730fd1fc407ad13c575",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.statusreviewsub",
+      "source": "e4e08e1c000af2959f97ccdecc04c047df15eba54535e2e5db036641bb582026",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.tilea11y",
+      "source": "11537b6c50533cccaeef492acc1af98b0a03cfc4a7c5d37813a1f4d5d18c1b9e",
+      "contract": "ff4b3d81137a0c4ac62da30d9b562025cf5f3f8279aff78cedf946dcd232b68d",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.tilereadycount",
+      "source": "bf39e33edeb711860a562b29760603490f77f2af8e08b45a17f32e23d3b95683",
+      "contract": "d52d363b4317a29e996fbf28a9b6e0346b9bdca12d16f5efe948b4558663efb9",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.tilesendingcount",
+      "source": "2522008317c422ed9a1e4d6f87edee61135b6d15bb8029a5c51c4200328047dc",
+      "contract": "d47ec32665785fdbc476c9b03fc91c4ac16d1a4edfcc8730fd1fc407ad13c575",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.tilewaitingcount",
+      "source": "0b4eb3f0724fa6b805e4c05acf6fdcc2455834a5b0beba2b0cb7dda095ff6272",
+      "contract": "d52d363b4317a29e996fbf28a9b6e0346b9bdca12d16f5efe948b4558663efb9",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.tilewaitingjournal",
+      "source": "aed7b9720bdbea424dadfcc1eded216c855d92d0700f24a19d1d2cbc53aceb35",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
       "id": "windows.logs.availablelogsareshownbelowcheckthe",
       "source": "7d35c7e549bc4f97c602028886816e011992ed125bd289e6f1ef91d5d87ff53e",
       "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
@@ -1885,6 +2074,13 @@
       "locales": []
     },
     {
+      "id": "windows.pill.readytoreview",
+      "source": "f24255d99d25f1278bca2c29c09648b42789b6ccd6cd063535e5511e6e7fbab1",
+      "contract": "d52d363b4317a29e996fbf28a9b6e0346b9bdca12d16f5efe948b4558663efb9",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
       "id": "windows.pill.refused",
       "source": "5f600fd084ecae678ff2e974738ae6a3ff615c69396ea291ec89fd1b478462f6",
       "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
@@ -1915,6 +2111,13 @@
     {
       "id": "windows.quantity.hours",
       "source": "8e156985010858c5573fe5ac815145597079afe2e76f3a17b94d69017bc5a396",
+      "contract": "d47ec32665785fdbc476c9b03fc91c4ac16d1a4edfcc8730fd1fc407ad13c575",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.quantity.items",
+      "source": "cf615d67cb9b789a055f24d853a8790a521c7c908fbffe295976b9ec8c6e5df3",
       "contract": "d47ec32665785fdbc476c9b03fc91c4ac16d1a4edfcc8730fd1fc407ad13c575",
       "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
       "locales": []
