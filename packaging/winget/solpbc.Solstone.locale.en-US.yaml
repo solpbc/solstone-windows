@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.55
+PackageVersion: 2.0.56
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -23,7 +23,10 @@ Tags:
   - solstone
 ReleaseNotes: |-
   Added
-  - if you share an Obsidian vault with your journal from another device, the solstone app for windows now shows which device. you can still add a vault on this PC.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.55
+  - once your journal's import page supports it, files you choose there wait on this PC until your journal has them, even if you close the journal window; the same goes for files you drop on the journal window.
+  - on the import tile's page, "more imports" opens your journal's import page in the journal window.
+  Changed
+  - the solstone app no longer turns a file away because of its kind. a file you choose or drop waits on this PC for your journal, and your journal says whether it can take it.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.56
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0
