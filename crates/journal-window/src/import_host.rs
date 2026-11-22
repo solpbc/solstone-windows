@@ -6,8 +6,11 @@
 //! and reports their progress. The page never receives a path, the bytes or the
 //! pairing credential.
 
+use std::sync::OnceLock;
+
 use serde_json::{json, Map, Value};
 
+use crate::auth_host::{self, AuthContract, AuthMessage};
 use crate::{HostContractError, JournalOrigin};
 
 /// The constants the journal publishes for this contract.
@@ -74,7 +77,7 @@ pub fn import_contract(bytes: &[u8]) -> Result<ImportContract, HostContractError
 /// The adapter installed in every journal document. It acts only in the top
 /// document on the paired origin: WebView2 runs initialization scripts in
 /// frames too, whatever the main-frame-only option says.
-const PAGE_ADAPTER: &str = r#"((contract, origin, nonce, path, ask, answer) => {
+const PAGE_ADAPTER: &str = r#"((contract, auth, origin, nonce, path, ask, answer) => {
   if (window !== window.top || location.origin !== origin) return;
   if (window[contract.capability] !== undefined) return;
   const fetch = window.fetch.bind(window);
@@ -87,6 +90,10 @@ const PAGE_ADAPTER: &str = r#"((contract, origin, nonce, path, ask, answer) => {
     if (!response.ok || !reply) throw new Error('host unavailable');
     return JSON.parse(decode(reply));
   };
+  const authTypes = auth && auth.version === contract.version && auth.capability === contract.capability
+    ? [auth.prepare, auth.authorize, auth.cancel]
+    : [];
+  const allTypes = Object.freeze([contract.pick, ...authTypes]);
   const items = new Map();
   let timer;
   async function update() {
@@ -106,9 +113,10 @@ const PAGE_ADAPTER: &str = r#"((contract, origin, nonce, path, ask, answer) => {
     timer = items.size ? setTimeout(update, 400) : undefined;
   }
   Object.defineProperty(window, contract.capability, {value:Object.freeze({
-    version:contract.version, types:Object.freeze([contract.pick]),
+    version:contract.version, types:allTypes,
     async send(message) {
       if (!message || typeof message.id !== 'string' || typeof message.type !== 'string') throw new TypeError();
+      if (authTypes.includes(message.type)) return await post(message);
       if (message.type !== contract.pick) return {type:contract.unsupported, id:message.id};
       const reply = await post(message);
       for (const item of reply.items || []) items.set(item.item, {id:message.id, name:item.name});
@@ -132,9 +140,28 @@ const PAGE_ADAPTER: &str = r#"((contract, origin, nonce, path, ask, answer) => {
 
 /// The page adapter, bound to one window's origin and secret.
 pub fn page_script(contract: &[u8], origin: &JournalOrigin, nonce: &str) -> String {
+    page_script_with_auth(
+        contract,
+        Some(auth_host::bundled_auth_contract()),
+        origin,
+        nonce,
+    )
+}
+
+/// The page adapter, bound to one window's origin, secret, and optional OAuth
+/// brokerage contract.
+pub fn page_script_with_auth(
+    contract: &[u8],
+    auth_contract: Option<&[u8]>,
+    origin: &JournalOrigin,
+    nonce: &str,
+) -> String {
     let contract: Value = serde_json::from_slice(contract).unwrap_or(Value::Null);
+    let auth: Value = auth_contract
+        .and_then(|bytes| serde_json::from_slice(bytes).ok())
+        .unwrap_or(Value::Null);
     format!(
-        "{PAGE_ADAPTER}({contract}, {}, {}, {}, {}, {});",
+        "{PAGE_ADAPTER}({contract}, {auth}, {}, {}, {}, {}, {});",
         Value::from(origin.ascii()),
         Value::from(nonce),
         Value::from(HOST_PATH),
@@ -175,6 +202,8 @@ pub enum Request {
     /// Where one held item stands. `None` is an item this app never issued.
     Status(Option<String>),
     Pick(Pick),
+    /// An OAuth brokerage message (`auth.prepare`, `auth.authorize`, `auth.cancel`).
+    Auth(AuthMessage),
     /// A pick this app cannot act on as asked.
     Refused(String),
     Unsupported(String),
@@ -186,9 +215,27 @@ fn token(value: &str, max: usize, allowed: impl Fn(char) -> bool) -> bool {
     !value.is_empty() && value.len() <= max && value.chars().all(allowed)
 }
 
+fn default_auth_contract() -> Option<&'static AuthContract> {
+    static BUNDLED: OnceLock<Option<AuthContract>> = OnceLock::new();
+    BUNDLED
+        .get_or_init(|| auth_host::auth_contract(auth_host::bundled_auth_contract()).ok())
+        .as_ref()
+}
+
 /// Check one request header from the page. `None` did not come from this
 /// window's adapter, and gets no answer but a refusal.
 pub fn parse(contract: &ImportContract, header: &str, nonce: &str) -> Option<Request> {
+    parse_with_auth(contract, default_auth_contract(), header, nonce)
+}
+
+/// Check one request header from the page against the import contract and
+/// optional OAuth brokerage contract.
+pub fn parse_with_auth(
+    contract: &ImportContract,
+    auth: Option<&AuthContract>,
+    header: &str,
+    nonce: &str,
+) -> Option<Request> {
     if header.len() > MAX_MESSAGE_BYTES * 2 {
         return None;
     }
@@ -222,6 +269,27 @@ pub fn parse(contract: &ImportContract, header: &str, nonce: &str) -> Option<Req
         kind if kind == contract.pick => match id {
             None => Request::Unsupported(String::new()),
             Some(id) => pick(contract, id, message),
+        },
+        kind if auth.is_some_and(|a| kind == a.prepare) => match id {
+            None => Request::Unsupported(String::new()),
+            Some(id) => Request::Auth(AuthMessage::Prepare {
+                id,
+                raw: message.clone(),
+            }),
+        },
+        kind if auth.is_some_and(|a| kind == a.authorize) => match id {
+            None => Request::Unsupported(String::new()),
+            Some(id) => Request::Auth(AuthMessage::Authorize {
+                id,
+                raw: message.clone(),
+            }),
+        },
+        kind if auth.is_some_and(|a| kind == a.cancel) => match id {
+            None => Request::Unsupported(String::new()),
+            Some(id) => Request::Auth(AuthMessage::Cancel {
+                id,
+                raw: message.clone(),
+            }),
         },
         _ => Request::Unsupported(id.unwrap_or_default()),
     };
@@ -617,6 +685,52 @@ mod tests {
         assert_eq!(
             drop_script(&c, "t"),
             r#"window.dispatchEvent(new CustomEvent("solstone-journal-host-drop", {cancelable:true, detail:{token:"t"}}));"#
+        );
+        assert!(script.contains(r#""prepare":"auth.prepare""#));
+        assert!(script.contains(r#""authorize":"auth.authorize""#));
+        assert!(script.contains(r#""cancel":"auth.cancel""#));
+    }
+
+    #[test]
+    fn auth_messages_route_only_with_valid_nonce_and_id() {
+        let c = contract();
+        let auth = auth_host::auth_contract(auth_host::bundled_auth_contract()).unwrap();
+        let prep_hdr = envelope(json!({
+            "type": "auth.prepare",
+            "id": "p-1",
+            "preferences": [{"mode": "loopback", "host": "127.0.0.1", "path": "/cb"}]
+        }));
+        assert!(matches!(
+            parse_with_auth(&c, Some(&auth), &prep_hdr, "secret"),
+            Some(Request::Auth(AuthMessage::Prepare { id, .. })) if id == "p-1"
+        ));
+        assert!(parse_with_auth(&c, Some(&auth), &prep_hdr, "wrong-nonce").is_none());
+
+        let auth_hdr = envelope(json!({
+            "type": "auth.authorize",
+            "id": "a-1",
+            "session_id": "s1",
+            "authorize_url": "https://provider.example/auth",
+            "expected_state": "st"
+        }));
+        assert!(matches!(
+            parse_with_auth(&c, Some(&auth), &auth_hdr, "secret"),
+            Some(Request::Auth(AuthMessage::Authorize { id, .. })) if id == "a-1"
+        ));
+
+        let cancel_hdr = envelope(json!({
+            "type": "auth.cancel",
+            "id": "c-1"
+        }));
+        assert!(matches!(
+            parse_with_auth(&c, Some(&auth), &cancel_hdr, "secret"),
+            Some(Request::Auth(AuthMessage::Cancel { id, .. })) if id == "c-1"
+        ));
+
+        let no_id = envelope(json!({"type": "auth.prepare"}));
+        assert_eq!(
+            parse_with_auth(&c, Some(&auth), &no_id, "secret"),
+            Some(Request::Unsupported(String::new()))
         );
     }
 }

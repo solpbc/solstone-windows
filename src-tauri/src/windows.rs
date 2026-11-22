@@ -778,12 +778,14 @@ fn build_journal_window(
             builder
         }
     };
-    // Import handoff: one message channel, from the journal's top page only.
-    let import_host = crate::journal_import::Host::new(&origin);
+    // Import handoff and OAuth brokerage: one message channel, from the
+    // journal's top page only.
+    let import_host = crate::journal_import::Host::new(app, &origin);
     let builder = match &import_host {
         Some((_, script)) => builder.initialization_script(script.clone()),
         None => builder,
     };
+    let page_load_auth_host = import_host.as_ref().map(|(host, _)| host.clone());
     let navigation_origin = origin.clone();
     let navigation_app = app.clone();
     let new_window_origin = origin.clone();
@@ -874,7 +876,12 @@ fn build_journal_window(
         })
         .on_page_load(move |_window, payload| {
             let kind = match payload.event() {
-                PageLoadEvent::Started => journal_window::PageLoadKind::Started,
+                PageLoadEvent::Started => {
+                    if let Some(host) = &page_load_auth_host {
+                        host.tear_down_auth();
+                    }
+                    journal_window::PageLoadKind::Started
+                }
                 PageLoadEvent::Finished => journal_window::PageLoadKind::Finished,
             };
             let effect =
@@ -1003,14 +1010,16 @@ fn build_journal_window(
         if let Some((host, _)) = import_host {
             let drop_app = app.clone();
             let drop_label = label.to_string();
-            window.on_window_event(move |event| {
-                if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) =
-                    event
-                {
+            window.on_window_event(move |event| match event {
+                tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
                     if let Some(window) = drop_app.get_webview_window(&drop_label) {
                         crate::journal_import::dropped(&window, &host, paths.clone());
                     }
                 }
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
+                    host.tear_down_auth();
+                }
+                _ => {}
             });
         }
         if window.navigate(bootstrap_url).is_err() {

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use journal_window::auth_host::{self, AuthBroker, AuthMessage};
 use journal_window::import_host::{
     self, Accepted, Declined, ImportContract, Outcome, Pick, Request,
 };
@@ -22,6 +23,7 @@ use tauri::{Manager, WebviewWindow};
 /// One journal window's side of the channel.
 pub struct Host {
     pub contract: ImportContract,
+    auth: Option<Arc<AuthBroker>>,
     nonce: String,
     busy: AtomicBool,
     /// The journal's pages carry this contract, so a drop can go to them. A
@@ -33,7 +35,7 @@ pub struct Host {
 impl Host {
     /// The host and the script that adapts the page to it, or `None` when the
     /// bundled contract cannot be read; then the page uploads on its own.
-    pub fn new(origin: &JournalOrigin) -> Option<(Arc<Self>, String)> {
+    pub fn new(app: &tauri::AppHandle, origin: &JournalOrigin) -> Option<(Arc<Self>, String)> {
         let contract = match import_host::import_contract(import_host::bundled_import_contract()) {
             Ok(contract) => contract,
             Err(error) => {
@@ -41,12 +43,41 @@ impl Host {
                 return None;
             }
         };
+        let auth = match auth_host::auth_contract(auth_host::bundled_auth_contract()) {
+            Ok(auth_contract) if auth_contract.capability == contract.capability => {
+                let open_app = app.clone();
+                Some(Arc::new(AuthBroker::new(
+                    auth_contract,
+                    move |url| {
+                        use tauri_plugin_opener::OpenerExt;
+                        open_app
+                            .opener()
+                            .open_url(url, None::<&str>)
+                            .map_err(|_| ())
+                    },
+                    || pl_transport_win::import_store::new_id().ok(),
+                )))
+            }
+            Ok(_) => {
+                tracing::warn!(target: "window", label = "journal", "journal auth contract capability mismatch");
+                None
+            }
+            Err(error) => {
+                tracing::warn!(target: "window", label = "journal", token = error.token(), "journal auth contract");
+                None
+            }
+        };
         let nonce = pl_transport_win::import_store::new_id().ok()?;
-        let script =
-            import_host::page_script(import_host::bundled_import_contract(), origin, &nonce);
+        let script = import_host::page_script_with_auth(
+            import_host::bundled_import_contract(),
+            auth.as_ref().map(|_| auth_host::bundled_auth_contract()),
+            origin,
+            &nonce,
+        );
         Some((
             Arc::new(Self {
                 contract,
+                auth,
                 nonce,
                 busy: AtomicBool::new(false),
                 ready: AtomicBool::new(false),
@@ -54,6 +85,14 @@ impl Host {
             }),
             script,
         ))
+    }
+
+    /// Cancels any active OAuth loopback session and settles any pending
+    /// `auth.authorize` request as `cancelled`.
+    pub fn tear_down_auth(&self) {
+        if let Some(broker) = &self.auth {
+            broker.tear_down();
+        }
     }
 }
 
@@ -64,10 +103,32 @@ pub fn receive(app: &tauri::AppHandle, label: &str, host: &Arc<Host>, id: u64, h
     let Some(window) = app.get_webview_window(label) else {
         return;
     };
-    let Some(request) = import_host::parse(&host.contract, &header, &host.nonce) else {
+    let Some(request) = import_host::parse_with_auth(
+        &host.contract,
+        host.auth.as_ref().map(|broker| broker.contract()),
+        &header,
+        &host.nonce,
+    ) else {
         answer_request(&window, id, None);
         return;
     };
+    if let Request::Auth(auth_message) = request {
+        let Some(broker) = host.auth.clone() else {
+            let msg_id = match &auth_message {
+                AuthMessage::Prepare { id, .. }
+                | AuthMessage::Authorize { id, .. }
+                | AuthMessage::Cancel { id, .. } => id.as_str(),
+            };
+            let reply = import_host::unsupported_reply(&host.contract, msg_id);
+            answer_request(&window, id, Some(reply));
+            return;
+        };
+        tauri::async_runtime::spawn_blocking(move || {
+            let reply = broker.handle(auth_message);
+            answer_request(&window, id, Some(reply));
+        });
+        return;
+    }
     // Requests arrive here in the order the page sent them, so a pick claims the
     // busy flag here rather than in its task: a second pick sent while the
     // picker is open is always the one told busy.
@@ -103,6 +164,14 @@ async fn answer(
         Request::Status(None) => serde_json::json!({"state": "gone"}),
         Request::Unsupported(id) => import_host::unsupported_reply(c, &id),
         Request::Refused(id) => import_host::pick_reply(c, &id, Outcome::Refused, &[], &[], None),
+        Request::Auth(auth_message) => {
+            let msg_id = match &auth_message {
+                AuthMessage::Prepare { id, .. }
+                | AuthMessage::Authorize { id, .. }
+                | AuthMessage::Cancel { id, .. } => id.as_str(),
+            };
+            import_host::unsupported_reply(c, msg_id)
+        }
         Request::Pick(pick) => {
             // `receive` claimed the busy flag for this request.
             let reply = take_files(app, window, host, pick).await;
