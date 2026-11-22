@@ -4,12 +4,14 @@
 #![cfg(unix)]
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 use serde_json::json;
+
+#[path = "support/exec_fixture.rs"]
+mod exec_fixture;
 
 const VERSION: &str = "0.2.11";
 const TAURI_CONFIG: &str = "src-tauri/tauri.conf.json";
@@ -121,7 +123,7 @@ impl Fixture {
     }
 
     fn write_fake_cargo(&self) {
-        fs::write(
+        exec_fixture::write_executable_script(
             &self.cargo,
             r#"#!/bin/sh
 set -eu
@@ -134,13 +136,8 @@ if [ "${FAKE_CARGO_EXIT-0}" -ne 0 ]; then
 fi
 cat "$FAKE_CARGO_METADATA"
 "#,
-        )
-        .expect("write fake cargo");
-        let mut permissions = fs::metadata(&self.cargo)
-            .expect("read fake cargo metadata")
-            .permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&self.cargo, permissions).expect("make fake cargo executable");
+            0o755,
+        );
     }
 
     fn command(&self) -> Command {

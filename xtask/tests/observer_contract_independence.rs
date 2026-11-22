@@ -7,6 +7,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(unix)]
+#[path = "support/exec_fixture.rs"]
+mod exec_fixture;
+
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -182,10 +186,9 @@ fn scan_for_contract_reference(path: &Path, logical_path: &Path) {
 #[cfg(unix)]
 #[test]
 fn observer_contract_command_boundary_is_offline_locked_and_propagates_failure() {
-    use std::os::unix::fs::PermissionsExt;
     let scratch = tempfile::tempdir().unwrap();
     let fake_cargo = scratch.path().join("cargo-fixture");
-    fs::write(
+    exec_fixture::write_executable_script(
         &fake_cargo,
         r#"#!/bin/sh
 set -eu
@@ -195,9 +198,8 @@ printf '\n' >> "$CALLS_PATH"
 count=$(wc -l < "$CALLS_PATH")
 if [ "$count" -eq "$FAIL_AT" ]; then exit 17; fi
 "#,
-    )
-    .unwrap();
-    fs::set_permissions(&fake_cargo, fs::Permissions::from_mode(0o755)).unwrap();
+        0o755,
+    );
     for fail_at in 0..=4 {
         let calls_path = scratch.path().join(format!("calls-{fail_at}"));
         let output = Command::new("make")

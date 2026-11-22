@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
+#[cfg(unix)]
+#[path = "support/exec_fixture.rs"]
+mod exec_fixture;
+
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 use twox_hash::XxHash64;
@@ -970,12 +974,7 @@ fn cli_never_forwards_child_stdout_canaries() {
 
 #[cfg(unix)]
 fn write_executable_tool(path: &Path, body: &str) {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    fs::write(path, body).expect("write synthetic child tool");
-    let mut permissions = fs::metadata(path).expect("tool metadata").permissions();
-    permissions.set_mode(0o700);
-    fs::set_permissions(path, permissions).expect("make synthetic tool executable");
+    exec_fixture::write_executable_script(path, body, 0o700);
 }
 
 #[cfg(unix)]
