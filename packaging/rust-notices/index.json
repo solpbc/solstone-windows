@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "75c2f4ffcd49793b2832d6f8f8ff7d55cd0a0d817b38a00362f6c9fd26108296",
+  "cargo_lock_sha256": "1cd9eebc9460df211374e8c7b3cf54fc732c6b388e38ad7de7e7b845988c9960",
   "notice_texts": [
     {
       "byte_end_exclusive": 2129,
@@ -2925,7 +2925,7 @@
       "version": "0.10.2"
     },
     {
-      "identity": "cookie@0.18.1 (registry+https://github.com/rust-lang/crates.io-index)",
+      "identity": "cookie@0.18.3 (registry+https://github.com/rust-lang/crates.io-index)",
       "license_election": "MIT",
       "license_expression": "MIT OR Apache-2.0",
       "name": "cookie",
@@ -2944,7 +2944,7 @@
         }
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "0.18.1"
+      "version": "0.18.3"
     },
     {
       "identity": "cpubits@0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -11180,7 +11180,7 @@
     "filter_platform": "x86_64-pc-windows-msvc",
     "notice_text_count": 297,
     "query": "cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc; follow non-dev edges from solstone-windows-app",
-    "query_utc": "2026-11-23T10:07:12.339921+00:00",
+    "query_utc": "2026-11-23T14:57:16.658375+00:00",
     "root_package": "solstone-windows-app",
     "source": "non-dev dependency closure; conservative inclusion, not exact PE link graph",
     "workspace_package_count": 29
