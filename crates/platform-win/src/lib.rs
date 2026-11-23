@@ -243,6 +243,40 @@ fn read_seal_audio_source(dir: &Path, source: SourceKind) -> io::Result<SealAudi
     }))
 }
 
+fn remove_audio_source_files(
+    pcm_path: &Path,
+    fmt_path: &Path,
+    timeline_path: &Path,
+) -> io::Result<()> {
+    remove_marker_if_exists(pcm_path)?;
+    remove_marker_if_exists(fmt_path)?;
+    remove_marker_if_exists(timeline_path)?;
+    Ok(())
+}
+
+fn remove_zero_byte_audio_sources(dir: &Path) -> io::Result<()> {
+    for source in [SourceKind::Mic, SourceKind::SystemAudio] {
+        let pcm_path = dir.join(source_file_name(source));
+        if pcm_path.is_file() && pcm_path.metadata()?.len() == 0 {
+            remove_audio_source_files(
+                &pcm_path,
+                &dir.join(source_fmt_file_name(source)),
+                &dir.join(source_timeline_file_name(source)),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_present_audio_sources(sources: [&SealAudioSource; 2]) -> io::Result<()> {
+    for source in sources {
+        if let SealAudioSource::Present(source) = source {
+            remove_audio_source_files(&source.pcm_path, &source.fmt_path, &source.timeline_path)?;
+        }
+    }
+    Ok(())
+}
+
 fn seal_audio_flac(dir: &Path) -> io::Result<()> {
     let mic = read_seal_audio_source(dir, SourceKind::Mic)?;
     let sys = read_seal_audio_source(dir, SourceKind::SystemAudio)?;
@@ -254,6 +288,8 @@ fn seal_audio_flac(dir: &Path) -> io::Result<()> {
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
 
     let Some(bytes) = flac else {
+        remove_present_audio_sources([&mic, &sys])?;
+        remove_zero_byte_audio_sources(dir)?;
         return Ok(());
     };
 
@@ -274,21 +310,8 @@ fn seal_audio_flac(dir: &Path) -> io::Result<()> {
     file.write_all(&heard)?;
     file.sync_all()?;
 
-    for source in [&mic, &sys] {
-        if let SealAudioSource::Present(source) = source {
-            fs::remove_file(&source.pcm_path)?;
-            match fs::remove_file(&source.fmt_path) {
-                Ok(()) => {}
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err),
-            }
-            match fs::remove_file(&source.timeline_path) {
-                Ok(()) => {}
-                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err),
-            }
-        }
-    }
+    remove_present_audio_sources([&mic, &sys])?;
+    remove_zero_byte_audio_sources(dir)?;
 
     Ok(())
 }
@@ -2179,6 +2202,60 @@ mod tests {
         assert!(sealed.join("system-audio.pcm").is_file());
         assert!(sealed.join("mic.fmt.json").is_file());
         assert!(!sealed.join("system-audio.fmt.json").exists());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn segment_finalize_removes_sub_frame_and_zero_byte_audio_sources() {
+        let root = temp_root("sub-frame-audio");
+        let _ = fs::remove_dir_all(&root);
+        let mut fs_impl = LocalSegmentFs::new(root.clone());
+        let key = key(15);
+
+        fs_impl.open_incomplete(key).unwrap();
+        let incomplete = root.join("15.incomplete");
+        let fmt = audio_format();
+        // One byte is less than one 2-byte mono i16 frame, so combine_timed_to_flac returns None.
+        fs::write(incomplete.join(source_file_name(SourceKind::Mic)), [0x7f]).unwrap();
+        fs::write(
+            incomplete.join(source_fmt_file_name(SourceKind::Mic)),
+            serde_json::to_vec(&fmt).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            incomplete.join(source_timeline_file_name(SourceKind::Mic)),
+            b"",
+        )
+        .unwrap();
+        // Zero-byte system audio with sidecars is also cleaned up rather than uploaded raw.
+        fs::write(
+            incomplete.join(source_file_name(SourceKind::SystemAudio)),
+            b"",
+        )
+        .unwrap();
+        fs::write(
+            incomplete.join(source_fmt_file_name(SourceKind::SystemAudio)),
+            serde_json::to_vec(&fmt).unwrap(),
+        )
+        .unwrap();
+
+        fs_impl.finalize(key, None).unwrap();
+
+        let sealed = root.join("15");
+        assert!(!sealed.join(AUDIO_FILE_NAME).exists());
+        assert!(!sealed.join(AUDIO_SOURCES_FILE_NAME).exists());
+        assert!(!sealed.join(source_file_name(SourceKind::Mic)).exists());
+        assert!(!sealed.join(source_fmt_file_name(SourceKind::Mic)).exists());
+        assert!(!sealed
+            .join(source_timeline_file_name(SourceKind::Mic))
+            .exists());
+        assert!(!sealed
+            .join(source_file_name(SourceKind::SystemAudio))
+            .exists());
+        assert!(!sealed
+            .join(source_fmt_file_name(SourceKind::SystemAudio))
+            .exists());
 
         let _ = fs::remove_dir_all(&root);
     }

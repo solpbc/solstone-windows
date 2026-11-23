@@ -82,6 +82,9 @@ pub fn combine_timed_to_flac(
     };
 
     let frames = mic.len().max(sys.len());
+    if frames == 0 {
+        return Ok(None);
+    }
     let mut samples = Vec::with_capacity(frames * OUTPUT_CHANNELS);
     for i in 0..frames {
         samples.push(f32_to_i16(mic.get(i).copied().unwrap_or(0.0)) as i32);
@@ -552,6 +555,22 @@ mod tests {
     #[test]
     fn ac12_no_sources_returns_none() {
         assert_eq!(combine_to_flac(None, None).unwrap(), None);
+    }
+
+    #[test]
+    fn empty_or_sub_frame_pcm_returns_none_without_empty_flac() {
+        assert_eq!(
+            combine_to_flac(Some((&[], i16_format(16_000, 1))), None).unwrap(),
+            None
+        );
+        assert_eq!(
+            combine_to_flac(Some((&[0x7f], i16_format(16_000, 1))), None).unwrap(),
+            None
+        );
+        assert_eq!(
+            combine_to_flac(None, Some((&[1, 2, 3], f32_format(48_000, 1)))).unwrap(),
+            None
+        );
     }
 
     #[test]
