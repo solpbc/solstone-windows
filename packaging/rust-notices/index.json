@@ -1,5 +1,5 @@
 {
-  "cargo_lock_sha256": "a4314fe677d9db37b41729ef9611f12c90534fa186c743fa2b65fdddab9ec5f9",
+  "cargo_lock_sha256": "75c2f4ffcd49793b2832d6f8f8ff7d55cd0a0d817b38a00362f6c9fd26108296",
   "notice_texts": [
     {
       "byte_end_exclusive": 2129,
@@ -4209,7 +4209,7 @@
       "version": "0.2.0"
     },
     {
-      "identity": "form_urlencoded@1.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
+      "identity": "form_urlencoded@1.2.3 (registry+https://github.com/rust-lang/crates.io-index)",
       "license_election": "MIT",
       "license_expression": "MIT OR Apache-2.0",
       "name": "form_urlencoded",
@@ -4228,7 +4228,7 @@
         }
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "1.2.2"
+      "version": "1.2.3"
     },
     {
       "identity": "fraction@0.17.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -9651,7 +9651,7 @@
       "version": "3.3.0"
     },
     {
-      "identity": "url@2.5.8 (registry+https://github.com/rust-lang/crates.io-index)",
+      "identity": "url@2.5.9 (registry+https://github.com/rust-lang/crates.io-index)",
       "license_election": "MIT",
       "license_expression": "MIT OR Apache-2.0",
       "name": "url",
@@ -9670,7 +9670,7 @@
         }
       ],
       "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "version": "2.5.8"
+      "version": "2.5.9"
     },
     {
       "identity": "urlpattern@0.3.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -11180,7 +11180,7 @@
     "filter_platform": "x86_64-pc-windows-msvc",
     "notice_text_count": 297,
     "query": "cargo metadata --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc; follow non-dev edges from solstone-windows-app",
-    "query_utc": "2026-11-22T07:58:32.612457+00:00",
+    "query_utc": "2026-11-23T10:07:12.339921+00:00",
     "root_package": "solstone-windows-app",
     "source": "non-dev dependency closure; conservative inclusion, not exact PE link graph",
     "workspace_package_count": 29
