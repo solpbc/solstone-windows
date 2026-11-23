@@ -2656,7 +2656,7 @@
     },
     {
       "id": "windows.ui.alouderinputforquietmicrophoneschanges",
-      "source": "d3fc64f429f530671cb23787634544dd4bb0239bd4431825256f07063b32204e",
+      "source": "913b3c75763f43abf21f3e33baea848f9e0b3e169e9d55b2297218f644b78545",
       "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
       "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
       "locales": [
@@ -2733,7 +2733,7 @@
     },
     {
       "id": "windows.ui.arg0gb",
-      "source": "7cb7b6b95745da4241c893a8bc920d77ef93e7c89360d6f5d096dcbf798b8982",
+      "source": "82d944b03b4f47a611ece7376a6deb9890fd1adac7a035826d71aac63119ad32",
       "contract": "34462e099a3ab54a30443d93a9623cc69043b5f6fa3c47871231d39f4ad21bdc",
       "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
       "locales": []
@@ -2761,7 +2761,7 @@
     },
     {
       "id": "windows.ui.arg0kbx75b11ba1",
-      "source": "a67eebf972b50bf8e3ffe81358049d1186110567fb0cccaafde723c2d22ff691",
+      "source": "c3d926447bbc6103c7dc64bbbf5a05bf94b1bbb61c1a80ebb3517e0c3f2b2ab4",
       "contract": "34462e099a3ab54a30443d93a9623cc69043b5f6fa3c47871231d39f4ad21bdc",
       "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
       "locales": []
@@ -2775,7 +2775,7 @@
     },
     {
       "id": "windows.ui.arg0mbxff882f00",
-      "source": "9ba2157e277971db9e3260557e578d9e01ac0d7cf31bd1f6e63fc6c943445cc7",
+      "source": "7ebf73a80ce6ac9e016c44e1f05b0ee7d70f7727545b6d2e9c0e20cc64e9d441",
       "contract": "34462e099a3ab54a30443d93a9623cc69043b5f6fa3c47871231d39f4ad21bdc",
       "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
       "locales": []
@@ -2824,7 +2824,7 @@
     },
     {
       "id": "windows.ui.arg0tb",
-      "source": "79e18a80ea42eb109b5f245509c62d1629259ab8894cadf8732f50a6ea95b8ca",
+      "source": "c820d2026f4ec00673cd75b0def30e947e6c969fb195d3f1e0b6c02075edb7e2",
       "contract": "34462e099a3ab54a30443d93a9623cc69043b5f6fa3c47871231d39f4ad21bdc",
       "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
       "locales": []
@@ -3489,7 +3489,7 @@
     },
     {
       "id": "windows.ui.couldntopenyourjournaltryagain",
-      "source": "ebf061df01abfc67df69ee5bbe13ceaefaeff38b3469358f39c6fe6d391f23cc",
+      "source": "6ed34b99e129a972e6f2e10e17d269e77722918bd49f95ee5f33c971e664c858",
       "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
       "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
       "locales": [
@@ -4931,7 +4931,7 @@
     },
     {
       "id": "windows.ui.nousagedataiseversentupdate",
-      "source": "8903802ae518c76dbb4c56af6a3582c4a6a59862699064330a8557c1ff9542af",
+      "source": "ae15a1b56d7c4ade015069e83e306714a5e7e8ddf0a6b8842a415ffabb5f2b36",
       "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
       "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
       "locales": [
@@ -5211,7 +5211,7 @@
     },
     {
       "id": "windows.ui.paused",
-      "source": "c670ead01020f18b7901bb2117cac51449b66a753a576fa3eb21910da217b771",
+      "source": "c589a9a6706b3d77e187534c591ffe36cb407bc9448a4b05fb8b9df33e16e89a",
       "contract": "19e7d110b0675a598f9a9e24dfeb3bbb9e32c316ba52b9871ff2708989a5ef3e",
       "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
       "locales": [
@@ -6128,7 +6128,7 @@
     },
     {
       "id": "windows.ui.thatcomboisinusebyanother",
-      "source": "3171927f56a817573a732ecd622a5e60034b3a246c36151376c7e9355c9b442f",
+      "source": "b2c2620a22e48a80b149b43de1275e5a17d408401d2ad6880daf7d490a9c3ce1",
       "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
       "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
       "locales": [

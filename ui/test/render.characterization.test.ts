@@ -138,7 +138,7 @@ describe("settings renderer characterization", () => {
     app.__test__.renderSettings(dump);
 
     expect(present(ids["settings.status.appState.state"]).textContent).toContain(
-      "paused — 15 min left",
+      "paused, 15 min left",
     );
   });
 

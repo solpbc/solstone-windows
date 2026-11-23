@@ -1,5 +1,5 @@
 {
-  "description": "Windows app. a louder input for quiet microphones \u2014 changes apply right away. a stronger boost can p\u2026",
+  "description": "Windows app. a louder input for quiet microphones. changes apply right away. a stronger boost can p\u2026",
   "context": "The Windows app, speaking to the owner.",
   "surfaces": [
     "windows-app"
@@ -10,7 +10,7 @@
   "arguments": [],
   "format_intent": "text",
   "max_length": 264,
-  "source_revision": "d3fc64f429f530671cb23787634544dd4bb0239bd4431825256f07063b32204e",
+  "source_revision": "913b3c75763f43abf21f3e33baea848f9e0b3e169e9d55b2297218f644b78545",
   "risk": "routine",
   "auto_merge": true
 }

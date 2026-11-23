@@ -1,5 +1,5 @@
 {
-  "description": "Windows app. paused \u2014 \u2026",
+  "description": "Windows app. paused, \u2026",
   "context": "The Windows app, speaking to the owner.",
   "surfaces": [
     "windows-app"
@@ -15,7 +15,7 @@
   ],
   "format_intent": "text",
   "max_length": 48,
-  "source_revision": "c670ead01020f18b7901bb2117cac51449b66a753a576fa3eb21910da217b771",
+  "source_revision": "c589a9a6706b3d77e187534c591ffe36cb407bc9448a4b05fb8b9df33e16e89a",
   "risk": "routine",
   "auto_merge": true
 }

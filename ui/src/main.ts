@@ -1893,7 +1893,7 @@ function uploadLabel(upload: UploadStatus): string {
 }
 
 function formatStorageBytes(bytes: number): string {
-  const units = ["bytes", "kb", "mb", "gb", "tb"];
+  const units = ["bytes", "KB", "MB", "GB", "TB"];
   let value = Math.max(0, bytes);
   let unit = 0;
   while (value >= 1024 && unit < units.length - 1) {
@@ -3221,7 +3221,7 @@ function resetRoot(rootId: string): void {
   root.style.boxSizing = "";
 }
 
-// Pause detail for the status line: "paused — 14 min left" while a bounded pause
+// Pause detail for the status line: "paused, 14 min left" while a bounded pause
 // counts down, plain "paused" otherwise (indefinite, or no detail yet).
 function pauseRemainingLabel(secs: number): string {
   // Rounds a part minute up, like the header's "paused, N min left" beside it.

@@ -1,5 +1,5 @@
 {
-  "description": "Windows app. no usage data is ever sent \u2014 update checks only fetch the version manifest.",
+  "description": "Windows app. no usage data is ever sent. update checks only fetch the version manifest.",
   "context": "The Windows app, speaking to the owner.",
   "surfaces": [
     "windows-app"
@@ -10,7 +10,7 @@
   "arguments": [],
   "format_intent": "text",
   "max_length": 150,
-  "source_revision": "8903802ae518c76dbb4c56af6a3582c4a6a59862699064330a8557c1ff9542af",
+  "source_revision": "ae15a1b56d7c4ade015069e83e306714a5e7e8ddf0a6b8842a415ffabb5f2b36",
   "risk": "routine",
   "auto_merge": true
 }

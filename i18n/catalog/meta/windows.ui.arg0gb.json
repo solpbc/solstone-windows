@@ -1,5 +1,5 @@
 {
-  "description": "{arg0} gb",
+  "description": "{arg0} GB",
   "context": "The Windows app: UI storage facts. Preserve the state distinction and the exact source wording.",
   "surfaces": [
     "windows-app"
@@ -15,7 +15,7 @@
   ],
   "format_intent": "text",
   "max_length": 80,
-  "source_revision": "7cb7b6b95745da4241c893a8bc920d77ef93e7c89360d6f5d096dcbf798b8982",
+  "source_revision": "82d944b03b4f47a611ece7376a6deb9890fd1adac7a035826d71aac63119ad32",
   "risk": "routine",
   "auto_merge": true
 }

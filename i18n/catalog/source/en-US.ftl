@@ -314,7 +314,7 @@ windows.ui.aglobalshortcuttopauseandresume = a global shortcut to pause and resu
 
 windows.ui.allsourceson = all sources on
 
-windows.ui.alouderinputforquietmicrophoneschanges = a louder input for quiet microphones — changes apply right away. a stronger boost can pick up more background noise in a quiet room.
+windows.ui.alouderinputforquietmicrophoneschanges = a louder input for quiet microphones. changes apply right away. a stronger boost can pick up more background noise in a quiet room.
 
 
 
@@ -383,7 +383,7 @@ windows.ui.couldntloadthesolstoneapps = couldn't load the solstone app's status 
 
 windows.ui.couldntopenthestorepagein = couldn't open the store page in { $value }.
 
-windows.ui.couldntopenyourjournaltryagain = couldn't open your journal — try again
+windows.ui.couldntopenyourjournaltryagain = couldn't open your journal. try again.
 
 windows.ui.couldntreachyourjournaloveryour = couldn't reach your journal over your private network. join the same wi-fi as your journal, then try again with a new pairing link from your journal.
 
@@ -546,7 +546,7 @@ windows.ui.notreported = not reported
 
 windows.ui.notyet = not yet
 
-windows.ui.nousagedataiseversentupdate = no usage data is ever sent — update checks only fetch the version manifest.
+windows.ui.nousagedataiseversentupdate = no usage data is ever sent. update checks only fetch the version manifest.
 
 windows.ui.openfolder = open folder
 
@@ -575,7 +575,7 @@ windows.ui.pairwithyourjournalfirst = pair with your journal first
 
 windows.ui.partvaultcantberead = part of this vault can't be read. check the permissions on the folders inside it. the rest of the vault keeps going into your journal.
 
-windows.ui.paused = paused — { $count }
+windows.ui.paused = paused, { $count }
 
 windows.ui.pausedwiththerestofthesolstone = paused with the rest of the solstone app. pausing doesn't hold back what's already taken in.
 
@@ -673,7 +673,7 @@ windows.ui.textcontent4 = clear shortcut
 
 windows.ui.textcontent5 = { $level }×
 
-windows.ui.thatcomboisinusebyanother = that combo is in use by another app — pick another
+windows.ui.thatcomboisinusebyanother = that combo is in use by another app. pick another.
 
 windows.ui.thatdidnotfinish = that did not finish
 
@@ -1376,13 +1376,13 @@ windows.ui.recent = recent
 
 windows.ui.arg0bytes = { $arg0 } bytes
 
-windows.ui.arg0kbx75b11ba1 = { $arg0 } kb
+windows.ui.arg0kbx75b11ba1 = { $arg0 } KB
 
-windows.ui.arg0mbxff882f00 = { $arg0 } mb
+windows.ui.arg0mbxff882f00 = { $arg0 } MB
 
-windows.ui.arg0gb = { $arg0 } gb
+windows.ui.arg0gb = { $arg0 } GB
 
-windows.ui.arg0tb = { $arg0 } tb
+windows.ui.arg0tb = { $arg0 } TB
 
 windows.ui.nonedisplay = none
 

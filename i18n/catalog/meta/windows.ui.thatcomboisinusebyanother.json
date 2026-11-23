@@ -1,5 +1,5 @@
 {
-  "description": "Windows app. that combo is in use by another app \u2014 pick another",
+  "description": "Windows app. that combo is in use by another app. pick another.",
   "context": "The Windows app, speaking to the owner.",
   "surfaces": [
     "windows-app"
@@ -10,7 +10,7 @@
   "arguments": [],
   "format_intent": "text",
   "max_length": 100,
-  "source_revision": "3171927f56a817573a732ecd622a5e60034b3a246c36151376c7e9355c9b442f",
+  "source_revision": "b2c2620a22e48a80b149b43de1275e5a17d408401d2ad6880daf7d490a9c3ce1",
   "risk": "routine",
   "auto_merge": true
 }
