@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.56
+PackageVersion: 2.0.57
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -23,10 +23,15 @@ Tags:
   - solstone
 ReleaseNotes: |-
   Added
-  - once your journal's import page supports it, files you choose there wait on this PC until your journal has them, even if you close the journal window; the same goes for files you drop on the journal window.
-  - on the import tile's page, "more imports" opens your journal's import page in the journal window.
+  - when your journal needs you to look over an import before it starts, the file now waits on this PC under "waiting for your review", and the solstone app stops trying it again and again. once your journal supports it, "review in your journal" opens it in the journal window, and if your journal's waiting copy expires, you can try once more with "send again to review".
+  - under "recent", the import page now lists up to five files that reached your journal in the last day, and each one opens in your journal.
   Changed
-  - the solstone app no longer turns a file away because of its kind. a file you choose or drop waits on this PC for your journal, and your journal says whether it can take it.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.56
+  - the import tile on the home page now shows what your files are doing: "waiting", "sending", "ready to review" or "needs attention", with the file's name or how many there are. it stays quiet when there's nothing to import.
+  - when an import is ready to review, the status pill now says so instead of showing a green "connected", and it never shows green while an import needs you.
+  - "more imports" now shows only while this PC is paired with your journal. "choose files…" still works before then, and your files wait on this PC.
+  Fixed
+  - after you closed the journal window, or your journal was out of reach for a moment, files waiting on this PC could stay waiting until you opened the journal window again or restarted the app. they now go to your journal on their own.
+  - with a screen reader, your place on the import page no longer resets each time the list updates.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.57
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0

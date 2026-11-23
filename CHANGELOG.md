@@ -4,6 +4,24 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.57] - 2026-11-23
+
+### Added
+
+- when your journal needs you to look over an import before it starts, the file now waits on this PC under "waiting for your review", and the solstone app stops trying it again and again. once your journal supports it, "review in your journal" opens it in the journal window, and if your journal's waiting copy expires, you can try once more with "send again to review".
+- under "recent", the import page now lists up to five files that reached your journal in the last day, and each one opens in your journal.
+
+### Changed
+
+- the import tile on the home page now shows what your files are doing: "waiting", "sending", "ready to review" or "needs attention", with the file's name or how many there are. it stays quiet when there's nothing to import.
+- when an import is ready to review, the status pill now says so instead of showing a green "connected", and it never shows green while an import needs you.
+- "more imports" now shows only while this PC is paired with your journal. "choose files…" still works before then, and your files wait on this PC.
+
+### Fixed
+
+- after you closed the journal window, or your journal was out of reach for a moment, files waiting on this PC could stay waiting until you opened the journal window again or restarted the app. they now go to your journal on their own.
+- with a screen reader, your place on the import page no longer resets each time the list updates.
+
 ## [2.0.56] - 2026-11-22
 
 ### Added
