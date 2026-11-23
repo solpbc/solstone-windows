@@ -305,6 +305,53 @@ async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Res
         }
     }
 
+    let mut client = client;
+    let mut sync = current_sync(app);
+    if !sync.journal_version_fresh
+        && sync.pairing.phase == PairingPhase::Paired
+        && client.journal_identity().client_cert_sha256 == sync.pairing.binding
+        && has_pending_delivery_items(service, &journal)
+        && client.check_journal().await.is_ok()
+    {
+        let fresh_now = current_sync(app).journal_version_fresh;
+        if !fresh_now {
+            let state = app.state::<crate::app::AppState>();
+            let guard = state.credential_access.lock().await;
+            if let Some(access) = guard
+                .as_ref()
+                .filter(|access| Arc::ptr_eq(&access.client_slot().load(), &client))
+            {
+                access
+                    .post_connect()
+                    .note_journal_answered(access.post_connect_token(), false);
+            }
+            drop(guard);
+            for _ in 0..20 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if current_sync(app).journal_version_fresh {
+                    break;
+                }
+            }
+        }
+        // Post-connect access/endpoint refresh may have rotated the client Arc on the
+        // same paired binding; reload the live client if it still matches this binding.
+        let Some(reloaded) = crate::import::client(app).await else {
+            return Ok(());
+        };
+        if !reloaded.gate_open()
+            || reloaded.refusal_stop().is_some()
+            || reloaded.journal_identity().client_cert_sha256 != binding
+        {
+            return Ok(());
+        }
+        client = reloaded;
+        sync = current_sync(app);
+    }
+    if sync.pairing.phase != PairingPhase::Paired
+        || client.journal_identity().client_cert_sha256 != sync.pairing.binding
+    {
+        return Ok(());
+    }
     if import_store::version_gate(sync.journal_version.as_deref(), sync.journal_version_fresh)
         != VersionGate::Supported
     {
@@ -480,6 +527,19 @@ async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Res
         publish(app, service);
     }
     Ok(())
+}
+
+fn has_pending_delivery_items(service: &Service, journal: &str) -> bool {
+    let store = service.store.lock().unwrap_or_else(|p| p.into_inner());
+    let Some(store) = store.as_ref() else {
+        return false;
+    };
+    store.items.values().any(|item| {
+        !item.missing_copy
+            && !item.refused_here(journal, "")
+            && item.review_for(journal).is_none()
+            && store.confirming_remove.as_deref() != Some(&item.id)
+    })
 }
 
 async fn same_client(app: &tauri::AppHandle, asked: &Arc<ObserverClient>) -> bool {
@@ -796,5 +856,112 @@ mod tests {
         assert!(document.needs_owner);
         assert!(!document.interrupted);
         assert!(document.rows.is_empty());
+    }
+
+    #[test]
+    fn pending_delivery_probe_ignores_empty_review_refused_missing_and_confirming_remove_items() {
+        let root = tempfile::tempdir().unwrap();
+        let (changes, _) = watch::channel(());
+        let mut service = Service {
+            store: Mutex::new(None),
+            intake_lock: tokio::sync::Mutex::new(()),
+            wake: Notify::new(),
+            changes,
+            identity: Mutex::new(None),
+            auth_blocked: Mutex::new(None),
+            receipts: Mutex::new(VecDeque::new()),
+            counters: None,
+            reconcile_requested: AtomicBool::new(false),
+        };
+        assert!(!has_pending_delivery_items(&service, "one"));
+
+        let store = Store::open(root.path().join("import")).unwrap();
+        service.store = Mutex::new(Some(store));
+        assert!(!has_pending_delivery_items(&service, "one"));
+
+        let source = root.path().join("note.txt");
+        std::fs::write(&source, b"held").unwrap();
+        let mut item = import_store::stage(
+            root.path().join("import").as_path(),
+            &source,
+            import_store::new_id().unwrap(),
+            1,
+        )
+        .unwrap();
+        let id = item.id.clone();
+
+        // Held in review on this journal: silent; foreign journal review still deliverable.
+        item.review = Some(import_store::ReviewState {
+            journal: "one".into(),
+            import_id: "20261122_120000".into(),
+            reason_code: "import_preview_required".into(),
+            kind: "review_required".into(),
+            expired: false,
+        });
+        service
+            .store
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .put(item.clone())
+            .unwrap();
+        assert!(!has_pending_delivery_items(&service, "one"));
+        assert!(has_pending_delivery_items(&service, "two"));
+
+        // Permanent preview-required refusal on this journal: silent.
+        item.review = None;
+        item.refusal = Some(Refusal {
+            journal: "one".into(),
+            version: "2.0.88".into(),
+            sentence: "review required".into(),
+            retryable: false,
+            reason_code: Some("import_preview_required".into()),
+            kind: Some("review_required".into()),
+        });
+        service
+            .store
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .put(item.clone())
+            .unwrap();
+        assert!(!has_pending_delivery_items(&service, "one"));
+
+        // Missing local copy: silent.
+        item.refusal = None;
+        item.missing_copy = true;
+        service
+            .store
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .put(item.clone())
+            .unwrap();
+        assert!(!has_pending_delivery_items(&service, "one"));
+
+        // Ordinary waiting item: deliverable unless confirming removal.
+        item.missing_copy = false;
+        service
+            .store
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .put(item)
+            .unwrap();
+        assert!(has_pending_delivery_items(&service, "one"));
+
+        service
+            .store
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .prepare_remove(&id)
+            .unwrap();
+        assert!(!has_pending_delivery_items(&service, "one"));
     }
 }

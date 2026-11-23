@@ -326,6 +326,80 @@ impl PostConnectController {
         }
     }
 
+    /// Trigger one post-connect pass when the journal answers after a
+    /// disconnect, or while journal version freshness is still unset and no
+    /// pass is already running. Returns `true` when a new pass was started.
+    pub fn note_journal_answered(
+        self: &Arc<Self>,
+        generation: PostConnectSessionToken,
+        version_fresh: bool,
+    ) -> bool {
+        if self.client_slot.is_retired() {
+            return false;
+        }
+        let needs_pass = {
+            let state = self.state.lock().unwrap();
+            state.session_generation == generation.0
+                && state.paired_instance_id.is_some()
+                && (state.last_connected_epoch != Some(state.connection_epoch)
+                    || (!version_fresh
+                        && matches!(state.burst_phase, BurstPhase::Idle | BurstPhase::Quiesced)))
+        };
+        if !needs_pass {
+            return false;
+        }
+        self.retry_pending_durable_clear_if_needed();
+        if self.client_slot.is_retired() {
+            return false;
+        }
+        let start = {
+            let mut state = self.state.lock().unwrap();
+            if state.session_generation != generation.0 {
+                return false;
+            }
+            let disconnected = state.last_connected_epoch != Some(state.connection_epoch);
+            let stale_idle = !version_fresh
+                && matches!(state.burst_phase, BurstPhase::Idle | BurstPhase::Quiesced);
+            if !disconnected && !stale_idle {
+                return false;
+            }
+            let Some(paired_id) = state.paired_instance_id.clone() else {
+                return false;
+            };
+            match state.burst_phase {
+                BurstPhase::Idle | BurstPhase::Quiesced => {
+                    state.connection_epoch = state.connection_epoch.wrapping_add(1);
+                    state.last_connected_epoch = Some(state.connection_epoch);
+                    let token = (
+                        state.session_generation,
+                        state.connection_epoch,
+                        state.pairing_generation,
+                    );
+                    state.burst_phase = BurstPhase::FirstPass;
+                    state.pending_metadata = None;
+                    state.pending_access_trigger = false;
+                    state.in_flight_metadata = Some(token);
+                    state.in_flight_access = Some(token);
+                    Some(PassStart {
+                        token,
+                        paired_id,
+                        journal_version_token: self.journal_version_attempt_token(),
+                    })
+                }
+                BurstPhase::FirstPass | BurstPhase::FollowUp => {
+                    state.last_connected_epoch = Some(state.connection_epoch);
+                    None
+                }
+            }
+        };
+        if let Some(start) = start {
+            self.start_pass(start);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Reset all state on unpair/re-pair.
     pub fn clear(&self) {
         let mut state = self.state.lock().unwrap();
@@ -2651,6 +2725,65 @@ mod tests {
         assert_eq!(
             controller.state.lock().unwrap().burst_phase,
             BurstPhase::FirstPass
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn note_journal_answered_recovers_after_disconnect_or_stale_quiesce_without_duplicates() {
+        let (controller, slot, path, _called) = test_setup(false);
+        let session = controller.begin_session(slot.load().credential());
+
+        // Healthy quiesced epoch with fresh version: note_journal_answered is a no-op.
+        {
+            let mut state = controller.state.lock().unwrap();
+            state.burst_phase = BurstPhase::Quiesced;
+            state.last_connected_epoch = Some(state.connection_epoch);
+        }
+        assert!(!controller.note_journal_answered(session, true));
+        assert_eq!(
+            controller.state.lock().unwrap().burst_phase,
+            BurstPhase::Quiesced
+        );
+
+        // Stale session token is ignored even when version_fresh is false.
+        assert!(!controller.note_journal_answered(PostConnectSessionToken(session.0 + 1), false));
+        assert_eq!(
+            controller.state.lock().unwrap().burst_phase,
+            BurstPhase::Quiesced
+        );
+
+        // Quiesced epoch whose version never became fresh (e.g. cold start while journal offline):
+        // the first journal answer starts one pass, and a concurrent answer does not queue a follow-up.
+        assert!(controller.note_journal_answered(session, false));
+        assert_eq!(
+            controller.state.lock().unwrap().burst_phase,
+            BurstPhase::FirstPass
+        );
+        assert!(!controller.note_journal_answered(session, false));
+        assert!(!controller.state.lock().unwrap().pending_access_trigger);
+
+        // Disconnect clears last_connected_epoch; the next journal answer starts a fresh pass.
+        controller.mark_session_disconnected(session);
+        assert_eq!(
+            controller.state.lock().unwrap().burst_phase,
+            BurstPhase::Quiesced
+        );
+        assert!(controller.note_journal_answered(session, true));
+        assert_eq!(
+            controller.state.lock().unwrap().burst_phase,
+            BurstPhase::FirstPass
+        );
+
+        // A retired credential slot must never start a new post-connect pass, even after disconnect.
+        controller.quiesce().await;
+        slot.retire();
+        controller.mark_session_disconnected(session);
+        assert!(!controller.note_journal_answered(session, false));
+        assert_eq!(
+            controller.state.lock().unwrap().burst_phase,
+            BurstPhase::Quiesced
         );
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());

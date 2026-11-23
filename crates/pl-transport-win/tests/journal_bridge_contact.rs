@@ -63,6 +63,7 @@ async fn start_windows_bridge(
     pl_transport_win::journal_bridge::JournalBridgeHandle,
     Arc<pl_transport_win::JournalVersionController>,
     Arc<Mutex<SyncSnapshot>>,
+    CredentialAccess,
 ) {
     let paired = paired_state();
     let binding = paired
@@ -96,15 +97,15 @@ async fn start_windows_bridge(
         awaiting_hold: None,
     };
     let access = CredentialAccess::bind(&paired, &cfg, sync.clone(), None).expect("access bind");
-    let handle = pl_transport_win::journal_bridge::start(access)
+    let handle = pl_transport_win::journal_bridge::start(access.clone())
         .await
         .expect("bridge start");
-    (handle, jv, sync)
+    (handle, jv, sync, access)
 }
 
 #[tokio::test]
 async fn contacted_flips_on_first_accept_before_http_parse() {
-    let (handle, _, _) = start_windows_bridge("contacted").await;
+    let (handle, _, _, _) = start_windows_bridge("contacted").await;
     // Flag starts false before any connection.
     assert!(!handle.contacted(), "flag must start false");
 
@@ -135,7 +136,7 @@ async fn contacted_flips_on_first_accept_before_http_parse() {
 
 #[tokio::test]
 async fn status_task_ignores_contact_and_active_request_noise() {
-    let (handle, journal_version, sync) = start_windows_bridge("noise").await;
+    let (handle, journal_version, sync, _) = start_windows_bridge("noise").await;
     let token = journal_version.current_token();
     journal_version.publish_journal_metadata(None, Some("test"), token, &sync);
     assert!(sync.lock().unwrap().journal_version_fresh);
@@ -228,16 +229,24 @@ async fn status_task_lag_marks_unknown_then_reconciles_snapshot() {
 }
 
 #[tokio::test]
-async fn bridge_shutdown_stops_subscription_and_marks_sessions_disconnected() {
-    let (handle, journal_version, sync) = start_windows_bridge("shutdown").await;
+async fn bridge_shutdown_stops_subscription_without_clearing_journal_freshness() {
+    let (handle, journal_version, sync, access) = start_windows_bridge("shutdown").await;
     let token = journal_version.current_token();
     journal_version.publish_journal_metadata(None, Some("test"), token, &sync);
+    access.post_connect().trigger();
+    access.post_connect().quiesce().await;
     assert!(sync.lock().unwrap().journal_version_fresh);
 
     handle.shutdown_and_wait().await;
     assert!(
-        !sync.lock().unwrap().journal_version_fresh,
-        "shutdown must retire the status task and mark its journal session disconnected"
+        sync.lock().unwrap().journal_version_fresh,
+        "closing a local journal bridge must retire its watcher without marking the paired journal session disconnected"
+    );
+    assert!(
+        !access
+            .post_connect()
+            .note_journal_answered(access.post_connect_token(), true),
+        "closing a local journal bridge must preserve post-connect connected epoch rather than marking it disconnected"
     );
 }
 

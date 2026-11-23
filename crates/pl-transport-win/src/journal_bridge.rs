@@ -89,8 +89,9 @@ impl JournalBridgeHandle {
     }
 
     pub async fn shutdown_and_wait(mut self) {
-        self.stop_status_task();
+        self.lifecycle.retire();
         if let Some(task) = self.status_task.take() {
+            task.abort();
             let _ = task.await;
         }
         let handle = self
@@ -344,6 +345,9 @@ impl BridgeLifecycle {
     }
 
     fn mark_unknown(&self) {
+        if !self.active.load(Ordering::Acquire) {
+            return;
+        }
         self.carrier_live.store(false, Ordering::Release);
         self.mark_disconnected();
     }
@@ -351,7 +355,6 @@ impl BridgeLifecycle {
     fn retire(&self) {
         if self.active.swap(false, Ordering::AcqRel) {
             self.carrier_live.store(false, Ordering::Release);
-            self.mark_disconnected();
         }
     }
 

@@ -1244,8 +1244,14 @@ impl UploadCoordinator {
     fn note_heard(&self) {
         *self.heard.lock().unwrap_or_else(|error| error.into_inner()) =
             Some(tokio::time::Instant::now());
-        if let Ok(mut snapshot) = self.sync.lock() {
+        let version_fresh = if let Ok(mut snapshot) = self.sync.lock() {
             snapshot.upload.record_answer(now_epoch_millis());
+            snapshot.journal_version_fresh
+        } else {
+            true
+        };
+        if let (Some(pc), Some(token)) = (&self.post_connect, self.post_connect_generation) {
+            pc.note_journal_answered(token, version_fresh);
         }
     }
 
@@ -5340,6 +5346,86 @@ mod tests {
         let res = coordinator.tick().await;
         assert_eq!(res.unwrap(), 0);
         assert_eq!(jv.in_flight_token(), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn note_heard_rearms_post_connect_after_tick_failure() {
+        let dir = std::env::temp_dir().join(format!(
+            "coord-note-heard-post-connect-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let jv = Arc::new(crate::journal_version::JournalVersionController::new(
+            dir.join("journal-version.json"),
+        ));
+        let sync = Arc::new(Mutex::new(SyncSnapshot::default()));
+        let cred = dummy_credential();
+        let jv_token = jv.begin_session(&cred, &sync);
+        jv.publish_version("2.0.88", jv.current_token(), &sync);
+
+        let observer_client = crate::ObserverClient::new(
+            cred.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+        .unwrap();
+        let slot = crate::client::ClientSlot::new(Arc::new(observer_client));
+        let post_connect = Arc::new(PostConnectController::new(
+            slot,
+            Some(dir.join("pairing.json")),
+            Some(jv.clone()),
+            sync.clone(),
+            Arc::new(crate::RawDeviceFacts::default),
+        ));
+        let pc_token = post_connect.begin_session(&cred);
+        post_connect.set_journal_version_token(jv_token);
+        post_connect.trigger();
+        post_connect.quiesce().await;
+        assert!(sync.lock().unwrap().journal_version_fresh);
+
+        let store = OneSegmentStore::new(1_700_000_100, "audio.flac", b"audio".to_vec());
+        let client = FakeClient::new(
+            vec![
+                Err(TransportError::Io(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "reset",
+                ))),
+                scripted_ingest("conflict", None, None, vec![], 1),
+            ],
+            vec![],
+        );
+        let mut coordinator =
+            coordinator_with_client_and_jv(client, Box::new(store), sync.clone(), jv.clone());
+        coordinator.post_connect = Some(post_connect.clone());
+        coordinator.post_connect_generation = Some(pc_token);
+
+        // Healthy steady state: note_heard does not trigger a new post-connect pass.
+        let before_attempt = post_connect.capture_attempt();
+        coordinator.note_heard();
+        assert_eq!(
+            post_connect.capture_attempt().as_ref().map(|a| a.token),
+            before_attempt.as_ref().map(|a| a.token)
+        );
+
+        // Tick failure clears journal_version_fresh and disconnects post_connect.
+        assert!(coordinator.tick().await.is_err());
+        assert!(!sync.lock().unwrap().journal_version_fresh);
+
+        // A subsequent tick where the journal answers calls note_heard and re-arms post_connect.
+        tokio::time::advance(Duration::from_secs(3601)).await;
+        assert_eq!(coordinator.tick().await.unwrap(), 0);
+        let after_attempt = post_connect.capture_attempt();
+        assert_ne!(
+            after_attempt.as_ref().map(|a| a.token),
+            before_attempt.as_ref().map(|a| a.token),
+            "recovery tick answer must trigger a fresh post-connect pass"
+        );
+
+        post_connect.quiesce().await;
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test(start_paused = true)]
