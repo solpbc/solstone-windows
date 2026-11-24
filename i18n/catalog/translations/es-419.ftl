@@ -118,11 +118,11 @@ windows.desktop.shared.copy.replaceconfirmbody = esta PC continúa con su nombre
 
 windows.desktop.shared.copy.replaceconfirmtitle = ¿reemplazar "{ $selecteddevicelabel }"?
 
-windows.desktop.shared.copy.replaceconfirmtitlefallback = ¿reemplazar el dispositivo elegido?
+windows.desktop.shared.copy.replaceconfirmtitlefallback = ¿reemplazar el dispositivo seleccionado?
 
-windows.desktop.shared.copy.replacedevice = reemplazar el dispositivo
+windows.desktop.shared.copy.replacedevice = reemplazar dispositivo
 
-windows.desktop.shared.copy.replaceofferbody = puedes conservar ambos, o elegir un dispositivo para que esta PC lo reemplace.
+windows.desktop.shared.copy.replaceofferbody = puedes conservar ambos, o elegir un dispositivo para que este lo reemplace.
 
 windows.desktop.shared.copy.replaceoffertitle = ¿esto reemplaza uno de tus dispositivos?
 
@@ -134,7 +134,7 @@ windows.desktop.shared.copy.settingslogexporttitle = registros recientes
 
 windows.desktop.shared.copy.settingstabattentiona11y = necesita atención
 
-windows.desktop.shared.copy.settingstabupdatesdonea11y = solstone está al día
+windows.desktop.shared.copy.settingstabupdatesdonea11y = solstone está actualizado
 
 windows.desktop.shared.copy.setupapplabel = la app de solstone
 
@@ -146,7 +146,7 @@ windows.desktop.shared.copy.setupcontinue = continuar
 
 windows.desktop.shared.copy.setupjournalcardheading = tu diario
 
-windows.desktop.shared.copy.setupmicrophoneheadline = comparte tus conversaciones
+windows.desktop.shared.copy.setupmicrophoneheadline = compartir tus conversaciones
 
 windows.desktop.shared.copy.setupopenyourjournal = abrir tu diario
 
@@ -164,7 +164,7 @@ windows.desktop.shared.copy.sourcesbrowserdiscardcommit = descartar páginas
 
 windows.desktop.shared.copy.sourcesbrowserdiscardconfirm = las páginas del navegador que todavía están en espera para enviarse se quitarán de esta PC.
 
-windows.desktop.shared.copy.sourcesbrowserheld = ahora no se están recibiendo páginas nuevas del navegador.
+windows.desktop.shared.copy.sourcesbrowserheld = en este momento no se están recibiendo páginas nuevas del navegador.
 
 windows.desktop.shared.copy.sourcesbrowserpages = páginas del navegador
 
@@ -172,9 +172,9 @@ windows.desktop.shared.copy.storageunavailablebody = esta PC no pudo leer su con
 
 windows.desktop.shared.copy.storageunavailabletitle = conexión guardada no disponible
 
-windows.desktop.shared.copy.targetmissingbody = ese dispositivo ya no está en la lista de tu diario. elige otro dispositivo, o conserva ambos.
+windows.desktop.shared.copy.targetmissingbody = ese dispositivo ya no aparece en tu diario. elige otro dispositivo, o conserva ambos.
 
-windows.desktop.shared.copy.targetmissingtitle = el dispositivo ya no está disponible
+windows.desktop.shared.copy.targetmissingtitle = dispositivo ya no disponible
 
 windows.desktop.shared.copy.technicaldetails = detalles técnicos
 
@@ -214,19 +214,19 @@ windows.desktop.shared.updates.automaticupdates = actualizaciones automáticas
 
 windows.desktop.shared.updates.checkforupdatesautomatically = buscar actualizaciones automáticamente
 
-windows.desktop.shared.updates.checknow = buscar ahora
+windows.desktop.shared.updates.checknow = revisar ahora
 
-windows.desktop.shared.updates.dismiss = ocultar
+windows.desktop.shared.updates.dismiss = descartar
 
 windows.desktop.shared.updates.download = descargar
 
 windows.desktop.shared.updates.downloadupdatesinthebackground = descargar actualizaciones en segundo plano
 
-windows.desktop.shared.updates.everyday = todos los días
+windows.desktop.shared.updates.everyday = cada día
 
-windows.desktop.shared.updates.everymonth = todos los meses
+windows.desktop.shared.updates.everymonth = cada mes
 
-windows.desktop.shared.updates.everyweek = todas las semanas
+windows.desktop.shared.updates.everyweek = cada semana
 
 windows.desktop.shared.updates.howoften = con qué frecuencia
 
@@ -270,7 +270,7 @@ windows.import.recenta11y = { $name }, en tu diario, { $relative }. abrir en tu 
 
 windows.import.recentmeta = en tu diario · { $relative }
 
-windows.import.removereadybody = esto quita la copia en este dispositivo. la copia en espera en tu diario se queda ahí hasta que la descartes o venza.
+windows.import.removereadybody = esto quita la copia de este dispositivo. la copia en espera en tu diario se queda ahí hasta que la descartes o venza.
 
 windows.import.reviewaction = revisar en tu diario
 
@@ -278,9 +278,9 @@ windows.import.reviewactiona11y = revisar { $name } en tu diario
 
 windows.import.reviewdetail = se guardó en tu diario. previsualiza y confirma para empezar.
 
-windows.import.reviewdetailbody = se guardó en tu diario. revísalo en menos de una hora, antes de que tu diario quite la copia en espera.
+windows.import.reviewdetailbody = se guardó en tu diario. revisa en menos de una hora, antes de que tu diario quite la copia en espera.
 
-windows.import.reviewexpired = la copia en espera en tu diario venció. este dispositivo todavía tiene el archivo.
+windows.import.reviewexpired = la copia en espera en tu diario venció. este dispositivo todavía guarda el archivo.
 
 windows.import.rowsending = enviando a tu diario…
 
@@ -322,13 +322,13 @@ windows.logs.copysaved = copia guardada.
 
 windows.logs.couldntreadthelogfilestry = no se pudieron leer los archivos de registro. vuelve a intentarlo.
 
-windows.logs.nologfilesareavailableyettry = todavía no hay archivos de registro. vuelve a intentarlo después de usar la app.
+windows.logs.nologfilesareavailableyettry = todavía no hay archivos de registro disponibles. vuelve a intentarlo después de usar la app.
 
-windows.logs.norecentlogsareavailableyettry = todavía no hay registros recientes. vuelve a intentarlo después de usar la app.
+windows.logs.norecentlogsareavailableyettry = todavía no hay registros recientes disponibles. vuelve a intentarlo después de usar la app.
 
 windows.logs.readthelogsbelowthenchoosewhether = lee los registros de abajo y luego elige si guardar una copia.
 
-windows.logs.textcontent = lee los registros recientes de la app de solstone antes de guardar una copia para un informe de soporte. no se envía nada desde aquí.
+windows.logs.textcontent = lee los registros recientes de la app de solstone antes de guardar una copia para un reporte de soporte. no se envía nada desde aquí.
 
 windows.logs.textcontent2 = leer registros recientes
 
@@ -456,7 +456,7 @@ windows.sharedsources.labelstateage = { $label } · { $state } · { $relative }
 
 windows.sharedsources.many = de otros { $count } dispositivos
 
-windows.sharedsources.one = de otro dispositivo
+windows.sharedsources.one = desde otro dispositivo
 
 windows.sharedsources.stateage = { $state } · { $relative }
 
@@ -524,7 +524,7 @@ windows.tray.updateavailable = actualización disponible
 
 windows.tray.updatecheckfailed = falló la búsqueda de actualizaciones
 
-windows.tray.updateready = actualización lista · se instala al salir y volver a abrir
+windows.tray.updateready = actualización lista · se instala cuando salgas y vuelvas a abrir
 
 windows.ui.accesswasdenied = se denegó el acceso.
 
@@ -657,7 +657,7 @@ windows.ui.choosefiles = elegir archivos…
 
 windows.ui.choosefolder = elegir una carpeta
 
-windows.ui.choosehowfarbacktostartthenbringthemin = elige desde cuándo empezar y luego recíbelas.
+windows.ui.choosehowfarbacktostartthenbringthemin = elige qué tan atrás empezar y luego tráelas.
 
 windows.ui.choosethefolderyourscreenshotssaveto = elige la carpeta donde se guardan tus capturas de pantalla
 
@@ -859,7 +859,7 @@ windows.ui.howoftentocheckforupdates = con qué frecuencia buscar actualizacione
 
 windows.ui.hrlefthrminleftboth = { $count } h { $count2 } min restantes
 
-windows.ui.idle = en reposo
+windows.ui.idle = reposo
 
 windows.ui.ifyouhaventyetaddthe = si todavía no lo has hecho, agrega la extensión de solstone a un navegador en esta PC. lo que compartes va a tu diario.
 
@@ -891,11 +891,11 @@ windows.ui.journaldetails = detalles del diario
 
 windows.ui.journallastreached = último contacto con el diario
 
-windows.ui.journalneedsupdatebeforecantake = tu diario necesita una actualización antes de poder recibir estas notas. esperan en esta computadora.
+windows.ui.journalneedsupdatebeforecantake = tu diario necesita una actualización antes de poder recibir estas notas. están en espera en esta computadora.
 
 windows.ui.journalsync = sincronización del diario
 
-windows.ui.journalupdateneeded = el diario necesita una actualización
+windows.ui.journalupdateneeded = actualización del diario necesaria
 
 windows.ui.journalversion = versión del diario
 
@@ -909,7 +909,7 @@ windows.ui.keepprivatewindowsoutofyourjournal = dejar fuera de tu diario las ven
 
 windows.ui.keptonthispc = conservado en esta PC
 
-windows.ui.keptonthispcnotreachingyour = se conserva en esta PC, sin alcanzar tu diario ahora
+windows.ui.keptonthispcnotreachingyour = se conserva en esta PC, no llega a tu diario ahora
 
 windows.ui.label = sin vincular. vincula para sincronizar tu diario
 
@@ -971,7 +971,7 @@ windows.ui.nocredentialaccess = sin acceso a credenciales
 
 windows.ui.noexclusionsactive = ninguna exclusión activa
 
-windows.ui.noidentitypresented = identidad no presentada
+windows.ui.noidentitypresented = ninguna identidad presentada
 
 windows.ui.noinputdevice = ningún dispositivo de entrada
 
@@ -1009,7 +1009,7 @@ windows.ui.notcheckedforupdatesyet = todavía no se buscaron actualizaciones
 
 windows.ui.notesjournal = { $value } de { $value2 } notas en tu diario
 
-windows.ui.notgoingtoyourjournalrightnoweachonesayswhy = ahora no van a tu diario. cada uno dice por qué.
+windows.ui.notgoingtoyourjournalrightnoweachonesayswhy = por ahora no van a tu diario. cada uno dice por qué.
 
 windows.ui.nothingexcludedyet = todavía no se excluyó nada
 
@@ -1039,9 +1039,9 @@ windows.ui.offline = sin conexión
 
 windows.ui.offlinearg0waiting = sin conexión · { $arg0 } en espera
 
-windows.ui.onlywhatthesolstoneappcantellisascreenshotcomesi = solo entra lo que la app de solstone puede distinguir como captura de pantalla.
+windows.ui.onlywhatthesolstoneappcantellisascreenshotcomesi = solo entra lo que la app de solstone puede reconocer como captura de pantalla.
 
-windows.ui.onthesitesyouallowthesolstoneextensiontakesinthe = en los sitios que permites, la extensión de solstone recibe el texto de la página y el diseño aproximado, y todo va a tu diario.
+windows.ui.onthesitesyouallowthesolstoneextensiontakesinthe = en los sitios que permites, la extensión de solstone recibe el texto y la disposición aproximada de la página, y todo va a tu diario.
 
 windows.ui.onthisdevice = en este dispositivo
 
@@ -1069,7 +1069,7 @@ windows.ui.pairing = vinculación
 
 windows.ui.pairingcancellednothingthispchaskept = vinculación cancelada. pega un enlace nuevo de tu diario cuando puedas.
 
-windows.ui.pairingdidntgothroughgeta = la vinculación no se completó. obtén un enlace de vinculación nuevo de tu diario y vuelve a intentarlo.
+windows.ui.pairingdidntgothroughgeta = la vinculación no se completó. obtén un nuevo enlace de vinculación de tu diario y vuelve a intentarlo.
 
 windows.ui.pairinglinkfromyourjournal = enlace de vinculación de tu diario
 
@@ -1079,7 +1079,7 @@ windows.ui.pairtodelivertoyourjournal = vincular para entregar a tu diario
 
 windows.ui.pairwithyourjournalfirst = vincula con tu diario primero
 
-windows.ui.partvaultcantberead = no se puede leer parte de esta bóveda. revisa los permisos de las carpetas que están adentro. el resto de la bóveda sigue yendo a tu diario.
+windows.ui.partvaultcantberead = no se puede leer parte de esta bóveda. revisa los permisos de las carpetas que tiene dentro. el resto de la bóveda sigue yendo a tu diario.
 
 windows.ui.paused = en pausa, { $count }
 
@@ -1119,7 +1119,7 @@ windows.ui.progresstext = paso { $stepnum } de { $totalsteps }
 
 windows.ui.quitsolstone = salir de solstone
 
-windows.ui.readytosetupword = disponible para configurar
+windows.ui.readytosetupword = listo para configurar
 
 windows.ui.recent = recientes
 
@@ -1151,7 +1151,7 @@ windows.ui.screenpreview = vista previa de la pantalla
 
 windows.ui.screenshots = capturas de pantalla
 
-windows.ui.screenshotsalreadyinyourjournalarentbroughtinaga = las capturas de pantalla que ya están en tu diario no se vuelven a recibir.
+windows.ui.screenshotsalreadyinyourjournalarentbroughtinaga = las capturas de pantalla que ya están en tu diario no se vuelven a traer.
 
 windows.ui.screenshotsyoutakewhileitspauseddontcomein = las capturas de pantalla que tomas mientras está en pausa no entran.
 
@@ -1193,7 +1193,7 @@ windows.ui.sofar = hasta ahora
 
 windows.ui.solstoneappcantreadvault = la app de solstone no puede leer esta bóveda. revisa que su carpeta esté ahí y que la unidad donde está esté conectada. nada cambia en tu diario mientras está fuera de alcance.
 
-windows.ui.solstoneappcouldntsaveits = la app de solstone no pudo guardar su lugar para esta bóveda. revisa que esta computadora tenga espacio libre.
+windows.ui.solstoneappcouldntsaveits = no se pudo guardar la posición de la app de solstone para esta bóveda. revisa que esta computadora tenga espacio libre.
 
 windows.ui.solstoneappdidntfindvault = la app de solstone no encontró una bóveda en esta computadora. elige su carpeta en su lugar.
 
@@ -1349,7 +1349,7 @@ windows.ui.trynowarg0 = intentar ahora, { $arg0 }
 
 windows.ui.tryopeningthelinkagain = intenta abrir el enlace de nuevo.
 
-windows.ui.turningoffstopsbringingchangeswhat = desactivar esto detiene la recepción de los cambios. lo que ya está en tu diario se queda ahí, y lo que espera se queda en esta computadora hasta que lo vuelvas a activar.
+windows.ui.turningoffstopsbringingchangeswhat = desactivar esto detiene la recepción de cambios. lo que ya está en tu diario se queda ahí, y lo que está en espera se queda en esta computadora hasta que lo vuelvas a activar.
 
 windows.ui.turnitonanytime = actívalo cuando quieras.
 
@@ -1407,7 +1407,7 @@ windows.ui.waitingtosync = en espera de sincronizar
 
 windows.ui.waitingword = en espera
 
-windows.ui.whatanswered = lo que respondió
+windows.ui.whatanswered = qué respondió
 
 windows.ui.whatsalreadyinyourjournalstayswhenyoupauseorturn = lo que ya está en tu diario se queda cuando pausas o desactivas esto.
 
@@ -1427,7 +1427,7 @@ windows.ui.windowswhosetitlecontainsawordyou = las ventanas cuyo título contien
 
 windows.ui.withactivity = con actividad
 
-windows.ui.withcomputersound = con sonido de la computadora
+windows.ui.withcomputersound = con el sonido de la computadora
 
 windows.ui.yesterday = ayer
 
