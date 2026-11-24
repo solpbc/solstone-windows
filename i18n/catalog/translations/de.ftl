@@ -47,11 +47,11 @@ windows.desktop.shared.about.opensourcelocalfirst = quelloffen, lokal zuerst.
 
 windows.desktop.shared.about.pendingsettingstab = Journal
 
-windows.desktop.shared.about.setupwelcomebody1 = die solstone-App nimmt entgegen, was du mit ihr teilst, und alles davon geht in dein Journal.
+windows.desktop.shared.about.setupwelcomebody1 = die solstone-App nimmt entgegen, was du mit ihr teilst, und all das geht in dein Journal.
 
 windows.desktop.shared.about.textcontent = kopieren
 
-windows.desktop.shared.about.textcontent2 = kopieren ist nicht gelungen. markiere den Text und kopiere ihn.
+windows.desktop.shared.about.textcontent2 = das Kopieren ist nicht gelungen. wähle den Text aus und kopiere ihn.
 
 windows.desktop.shared.app.aboutsolstone = über solstone
 
@@ -75,11 +75,11 @@ windows.desktop.shared.copy.audiosourcesystem = Systemaudio
 
 windows.desktop.shared.copy.checkagain = erneut prüfen
 
-windows.desktop.shared.copy.choosedevice = ein Gerät wählen
+windows.desktop.shared.copy.choosedevice = Gerät wählen
 
 windows.desktop.shared.copy.decidingtitle = deine Auswahl wird gespeichert
 
-windows.desktop.shared.copy.decisionrefusedbody = dein Journal konnte diese Auswahl nicht übernehmen. deine aktuelle Verbindung funktioniert weiter.
+windows.desktop.shared.copy.decisionrefusedbody = dein Journal konnte diese Auswahl nicht anwenden. deine aktuelle Verbindung funktioniert weiter.
 
 windows.desktop.shared.copy.decisionrefusedtitle = Auswahl braucht Aufmerksamkeit
 
@@ -99,7 +99,7 @@ windows.desktop.shared.copy.journalmarkunverifiedcancelbutton = Kopplung abbrech
 
 windows.desktop.shared.copy.journalmarkunverifiedcontinuebutton = trotzdem fortfahren
 
-windows.desktop.shared.copy.journalmarkunverifiedtitle = überprüfen ist nicht gelungen
+windows.desktop.shared.copy.journalmarkunverifiedtitle = konnte nicht überprüfen
 
 windows.desktop.shared.copy.keepboth = beide behalten
 
@@ -109,7 +109,7 @@ windows.desktop.shared.copy.listunavailabletitle = Geräte nicht verfügbar
 
 windows.desktop.shared.copy.offlinebody = alles, was aufs Senden wartet, bleibt auf diesem PC. versuch es noch einmal, wenn dein Journal erreichbar ist.
 
-windows.desktop.shared.copy.pickerempty = keine weiteren gekoppelten Geräte
+windows.desktop.shared.copy.pickerempty = keine anderen gekoppelten Geräte
 
 windows.desktop.shared.copy.replaceconfirmbody = dieser PC führt seinen Namen und seinen Verlauf fort. das gewählte Gerät wird den Zugriff auf dein Journal verlieren.
 
@@ -119,15 +119,15 @@ windows.desktop.shared.copy.replaceconfirmtitlefallback = das gewählte Gerät e
 
 windows.desktop.shared.copy.replacedevice = Gerät ersetzen
 
-windows.desktop.shared.copy.replaceofferbody = du kannst beide behalten oder ein Gerät wählen, das du mit diesem ersetzt.
+windows.desktop.shared.copy.replaceofferbody = du kannst beide behalten oder ein Gerät wählen, das von diesem ersetzt wird.
 
 windows.desktop.shared.copy.replaceoffertitle = ersetzt das eines deiner Geräte?
 
 windows.desktop.shared.copy.settingsjournalopen = Journal öffnen
 
-windows.desktop.shared.copy.settingslogexportsave = eine Kopie speichern…
+windows.desktop.shared.copy.settingslogexportsave = Kopie speichern…
 
-windows.desktop.shared.copy.settingslogexporttitle = aktuelle Protokolle
+windows.desktop.shared.copy.settingslogexporttitle = letzte Protokolle
 
 windows.desktop.shared.copy.settingstabattentiona11y = braucht Aufmerksamkeit
 
@@ -147,7 +147,7 @@ windows.desktop.shared.copy.setupmicrophoneheadline = deine Gespräche teilen
 
 windows.desktop.shared.copy.setupopenyourjournal = dein Journal öffnen
 
-windows.desktop.shared.copy.setupscreenframecaption = dein Bildschirm, vor einem Moment
+windows.desktop.shared.copy.setupscreenframecaption = dein Bildschirm von eben
 
 windows.desktop.shared.copy.setupwelcomebody2 = dein Journal ist immer privat, nur deins.
 
@@ -187,7 +187,7 @@ windows.desktop.shared.settings.gethelp = Hilfe holen
 
 windows.desktop.shared.settings.help = Hilfe
 
-windows.desktop.shared.settings.reportaproblem = ein Problem melden
+windows.desktop.shared.settings.reportaproblem = Problem melden
 
 windows.desktop.shared.settings.severity = ok
 
@@ -252,15 +252,15 @@ windows.import.allhistory = der gesamte Importverlauf in deinem Journal
 
 windows.import.expiredword = abgelaufen
 
-windows.import.holdoffline = wartet auf die erneute Verbindung deines Journals.
+windows.import.holdoffline = wartet, bis dein Journal wieder verbunden ist.
 
 windows.import.intro = fügt jede Datei hinzu, die du hier wählst oder auf dieses Fenster ablegst. dein Journal findet heraus, was es ist.
 
-windows.import.morehelper = Anleitungen, Optionen und Importverlauf in deinem Journal
+windows.import.morehelper = Anleitungen, Optionen und der Importverlauf in deinem Journal
 
 windows.import.readytoreviewword = bereit zum Prüfen
 
-windows.import.recenta11y = { $name }, in deinem Journal, { $relative }. öffne in deinem Journal.
+windows.import.recenta11y = { $name }, in deinem Journal, { $relative }. in deinem Journal öffnen.
 
 windows.import.recentmeta = in deinem Journal · { $relative }
 
@@ -270,7 +270,7 @@ windows.import.reviewaction = in deinem Journal prüfen
 
 windows.import.reviewactiona11y = { $name } in deinem Journal prüfen
 
-windows.import.reviewdetail = in deinem Journal gespeichert. zeige die Vorschau an und bestätige, um zu starten.
+windows.import.reviewdetail = in deinem Journal gespeichert. Vorschau anzeigen und bestätigen, um zu starten.
 
 windows.import.reviewdetailbody = in deinem Journal gespeichert. prüfe innerhalb einer Stunde, bevor dein Journal die wartende Kopie entfernt.
 
@@ -626,15 +626,15 @@ windows.ui.checkingyourjournal = dein Journal wird geprüft.
 
 windows.ui.chooseafolder = wähle einen Ordner.
 
-windows.ui.chooseafolderxdbec742d = einen Ordner wählen…
+windows.ui.chooseafolderxdbec742d = Ordner wählen…
 
-windows.ui.chooseanapptoexclude = eine App zum Ausschließen wählen
+windows.ui.chooseanapptoexclude = App zum Ausschließen wählen
 
-windows.ui.choosearunningapp = eine laufende App wählen…
+windows.ui.choosearunningapp = laufende App wählen…
 
 windows.ui.choosefiles = Dateien wählen…
 
-windows.ui.choosefolder = einen Ordner wählen
+windows.ui.choosefolder = Ordner wählen
 
 windows.ui.choosehowfarbacktostartthenbringthemin = wähle, wie weit zurück du anfängst, und bringe sie dann herein.
 
@@ -658,7 +658,7 @@ windows.ui.confirmthemarkarg0waiting = die mark bestätigen · { $arg0 } wartet
 
 windows.ui.confirmyourjournalsmarktoopen = die mark deines Journals bestätigen, um es zu öffnen
 
-windows.ui.connectajournal = ein Journal verbinden
+windows.ui.connectajournal = Journal verbinden
 
 windows.ui.connected = verbunden
 
@@ -696,21 +696,21 @@ windows.ui.couldnotsaveyoursetupprogresstry = deinen Ersteinrichtungsfortschritt
 
 windows.ui.couldnotupdatestartatlogin = Start bei der Anmeldung aktualisieren ist nicht gelungen
 
-windows.ui.couldntcheckforupdates = nach Aktualisierungen suchen ist nicht gelungen
+windows.ui.couldntcheckforupdates = nach Aktualisierungen konnte nicht gesucht werden
 
-windows.ui.couldntcheckforupdatessolstonewas = nach Aktualisierungen suchen ist nicht gelungen. solstone { $v } wurde früher gefunden
+windows.ui.couldntcheckforupdatessolstonewas = nach Aktualisierungen konnte nicht gesucht werden. solstone { $v } wurde früher gefunden
 
-windows.ui.couldntcountyourscreenshots = deine Bildschirmfotos zählen ist nicht gelungen.
+windows.ui.couldntcountyourscreenshots = deine Bildschirmfotos konnten nicht gezählt werden.
 
 windows.ui.couldntdownloadsolstone = solstone { $value } herunterladen ist nicht gelungen
 
-windows.ui.couldntdownloadupdate = Aktualisierung herunterladen ist nicht gelungen
+windows.ui.couldntdownloadupdate = die Aktualisierung konnte nicht heruntergeladen werden
 
 windows.ui.couldntfindascreenshotsfolderonthispcchoosethefo = ein Screenshots-Ordner auf diesem PC wurde nicht gefunden. wähle den Ordner, in dem deine Bildschirmfotos gespeichert werden.
 
 windows.ui.couldntfinishdiscardingwhatsleft = wegwerfen ließ sich nicht abschließen. was übrig ist, ist noch auf diesem PC.
 
-windows.ui.couldntinstallupdate = Aktualisierung installieren ist nicht gelungen
+windows.ui.couldntinstallupdate = die Aktualisierung konnte nicht installiert werden
 
 windows.ui.couldntloadthesolstoneapps = der Status der solstone-App ließ sich gerade eben nicht laden.
 
@@ -722,17 +722,17 @@ windows.ui.couldntopenyourjournaltryagain = dein Journal ließ sich nicht öffne
 
 windows.ui.couldntreachyourjournaloveryour = dein Journal war über dein privates Netzwerk nicht erreichbar. tritt demselben WLAN bei wie dein Journal, dann versuch es noch einmal mit einem neuen Kopplungslink von deinem Journal.
 
-windows.ui.couldntreadimportsonthisdevicenothinghasbeenremo = Importe auf diesem Gerät lesen ist nicht gelungen. nichts wurde entfernt. starte die solstone-App neu, um es noch einmal zu versuchen.
+windows.ui.couldntreadimportsonthisdevicenothinghasbeenremo = die Importe auf diesem Gerät konnten nicht gelesen werden. nichts wurde entfernt. starte die solstone-App neu, um es noch einmal zu versuchen.
 
-windows.ui.couldntreadyoursavedsourcechoices = deine gespeicherten Quellenauswahlen lesen ist nicht gelungen. Quellen sind aus. wähle deine Quellen erneut in den Einstellungen.
+windows.ui.couldntreadyoursavedsourcechoices = deine gespeicherten Quellenauswahlen konnten nicht gelesen werden. Quellen sind aus. wähle deine Quellen erneut in den Einstellungen.
 
-windows.ui.couldntregisterthatshortcut = dieses Tastaturkürzel registrieren ist nicht gelungen
+windows.ui.couldntregisterthatshortcut = dieses Tastaturkürzel konnte nicht registriert werden
 
-windows.ui.couldntremovethistryagain = dies entfernen ist nicht gelungen. versuch es noch einmal.
+windows.ui.couldntremovethistryagain = dies konnte nicht entfernt werden. versuch es noch einmal.
 
-windows.ui.couldntturntryagain = dies einschalten ist nicht gelungen. versuch es noch einmal.
+windows.ui.couldntturntryagain = dies konnte nicht eingeschaltet werden. versuch es noch einmal.
 
-windows.ui.couldntverifyjournalsonothing = dein Journal ließ sich nicht überprüfen, also hat sich nichts verbunden. versuch es noch einmal, oder füge einen Kopplungslink ein.
+windows.ui.couldntverifyjournalsonothing = dein Journal konnte nicht überprüft werden, deshalb ist nichts verbunden. versuch es noch einmal, oder füge einen Kopplungslink ein.
 
 windows.ui.dayago = { $count ->
     [one] vor { $count } Tag
@@ -807,7 +807,7 @@ windows.ui.frombeforetoday = von vor heute
 
 windows.ui.gettingready = wird vorbereitet…
 
-windows.ui.gettingreadyconnectingtoyourjournal = wird vorbereitet. Verbindung zu deinem Journal.
+windows.ui.gettingreadyconnectingtoyourjournal = wird vorbereitet. wird mit deinem Journal verbunden.
 
 windows.ui.gettingthisdeviceready = dieser PC wird vorbereitet
 
@@ -840,7 +840,7 @@ windows.ui.idle = im Leerlauf
 
 windows.ui.ifyouhaventyetaddthe = wenn du es noch nicht getan hast, füge die solstone-Erweiterung einem Browser auf diesem PC hinzu. was du teilst, geht in dein Journal.
 
-windows.ui.import = importieren
+windows.ui.import = Import
 
 windows.ui.importswaitonthisdeviceuntilyouconnectajournal = Importe warten auf diesem Gerät, bis du ein Journal verbindest.
 
@@ -985,7 +985,7 @@ windows.ui.notcheckedforupdatesyet = noch nicht nach Aktualisierungen gesucht
 
 windows.ui.notesjournal = { $value } von { $value2 } Notizen in deinem Journal
 
-windows.ui.notgoingtoyourjournalrightnoweachonesayswhy = gehen gerade nicht in dein Journal. jedes sagt, warum.
+windows.ui.notgoingtoyourjournalrightnoweachonesayswhy = geht gerade nicht in dein Journal. jedes sagt, warum.
 
 windows.ui.nothingexcludedyet = noch nichts ausgeschlossen
 
@@ -999,7 +999,7 @@ windows.ui.nothingyetxec5a8da6 = noch nichts.
 
 windows.ui.notonthiscomputer = nicht auf diesem Computer
 
-windows.ui.notreachingyourjournalrightnow = dein Journal ist gerade nicht erreichbar
+windows.ui.notreachingyourjournalrightnow = erreicht dein Journal gerade nicht
 
 windows.ui.notreported = nicht gemeldet
 
@@ -1015,7 +1015,7 @@ windows.ui.offline = offline
 
 windows.ui.offlinearg0waiting = offline · { $arg0 } wartet
 
-windows.ui.onlywhatthesolstoneappcantellisascreenshotcomesi = nur, was die solstone-App als Bildschirmfoto erkennen kann, kommt herein.
+windows.ui.onlywhatthesolstoneappcantellisascreenshotcomesi = es kommt nur herein, was die solstone-App als Bildschirmfoto erkennt.
 
 windows.ui.onthesitesyouallowthesolstoneextensiontakesinthe = auf den Websites, die du erlaubst, nimmt die solstone-Erweiterung den Text und das grobe Layout der Seite entgegen, und alles davon geht in dein Journal.
 
@@ -1061,7 +1061,7 @@ windows.ui.paused = pausiert, { $count }
 
 windows.ui.pausedarg0minleft = pausiert, noch { $arg0 } min
 
-windows.ui.pausedlessthanaminuteleft = pausiert, noch weniger als eine Minute
+windows.ui.pausedlessthanaminuteleft = pausiert, weniger als eine Minute übrig
 
 windows.ui.pauseduntilyouresume = pausiert, bis du fortsetzt
 
@@ -1111,7 +1111,7 @@ windows.ui.restartintake = Annahme neu starten
 
 windows.ui.retrying = { $value } wird erneut versucht
 
-windows.ui.saveacopyofrecentlogs = eine Kopie der letzten Protokolle speichern
+windows.ui.saveacopyofrecentlogs = Kopie der letzten Protokolle speichern
 
 windows.ui.savedonthisdevicearg0 = auf diesem Gerät gespeichert: { $arg0 }
 
@@ -1127,7 +1127,7 @@ windows.ui.screenpreview = Bildschirmvorschau
 
 windows.ui.screenshots = Bildschirmfotos
 
-windows.ui.screenshotsalreadyinyourjournalarentbroughtinaga = Bildschirmfotos, die schon in deinem Journal sind, werden nicht noch einmal hereingeholt.
+windows.ui.screenshotsalreadyinyourjournalarentbroughtinaga = Bildschirmfotos, die schon in deinem Journal sind, werden nicht erneut hereingeholt.
 
 windows.ui.screenshotsyoutakewhileitspauseddontcomein = Bildschirmfotos, die du machst, während es pausiert ist, kommen nicht herein.
 
@@ -1191,7 +1191,7 @@ windows.ui.somethingansweredpcthroughrelayisn = etwas hat diesem PC über das Re
 
 windows.ui.somethingotherthanyourjournalansweredcompare = etwas hat statt deines Journals geantwortet
 
-windows.ui.somethingyouwereaddingdidntfinishsavingadditagai = etwas, das du hinzugefügt hast, wurde nicht fertig gespeichert. füge es erneut hinzu.
+windows.ui.somethingyouwereaddingdidntfinishsavingadditagai = etwas, das du hinzugefügt hast, wurde nicht fertig gespeichert. füge es noch einmal hinzu.
 
 windows.ui.sourcesetupisunfinished = die Ersteinrichtung der Quelle ist nicht fertig
 
@@ -1241,7 +1241,7 @@ windows.ui.thatpairinglinkisntonethe = dieser Kopplungs-Link ist keiner, den die
 
 windows.ui.thearg0folderisntonthispcanymore = der Ordner { $arg0 } ist nicht mehr auf diesem PC.
 
-windows.ui.thecopyisalreadygonesothisonlyclearsitfromhere = die Kopie ist schon weg, das entfernt sie also nur noch von hier.
+windows.ui.thecopyisalreadygonesothisonlyclearsitfromhere = die Kopie ist schon weg, also wird sie nur von hier entfernt.
 
 windows.ui.thecopyonthisdeviceismissing = die Kopie auf diesem Gerät fehlt
 
@@ -1257,7 +1257,7 @@ windows.ui.thelastyear = das letzte Jahr
 
 windows.ui.thepairingwindowclosedgetanew = das Kopplungsfenster wurde geschlossen. hol einen neuen Kopplungs-Link aus deinem Journal und versuch es dann noch einmal.
 
-windows.ui.thereisntenoughroomonthisdevice = es ist nicht genug Platz auf diesem Gerät
+windows.ui.thereisntenoughroomonthisdevice = auf diesem Gerät ist nicht genug Platz
 
 windows.ui.theserulesareactivenowbutcouldn = diese Regeln sind jetzt aktiv, konnten aber nicht gespeichert werden und überstehen einen Neustart daher vielleicht nicht.
 
@@ -1403,7 +1403,7 @@ windows.ui.windowswhosetitlecontainsawordyou = Fenster, deren Titel ein Wort ent
 
 windows.ui.withactivity = mit Bildschirmaktivität
 
-windows.ui.withcomputersound = mit Computer-Ton
+windows.ui.withcomputersound = mit Ton des Computers
 
 windows.ui.yesterday = gestern
 
@@ -1411,7 +1411,7 @@ windows.ui.youcanturneachsourceonor = du kannst jede Quelle in den Quellen ein- 
 
 windows.ui.youchoosewhichsourcesareon = du wählst, welche Quellen an sind.
 
-windows.ui.youllseehowmanyscreenshotstherearebeforeanycomei = du wirst sehen, wie viele Bildschirmfotos es gibt, bevor eines hereinkommt.
+windows.ui.youllseehowmanyscreenshotstherearebeforeanycomei = du siehst, wie viele Bildschirmfotos es gibt, bevor welche hereinkommen.
 
 windows.ui.your = dein
 
@@ -1433,7 +1433,7 @@ windows.ui.yourjournalshowsthissamemarkbeside = dein Journal zeigt dieselbe mark
 
 windows.ui.yourjournalsmarkunavailablerightnow = die mark deines Journals, gerade nicht verfügbar
 
-windows.ui.yourjournalstoppedacceptingthisdeviceimportswait = dein Journal hat aufgehört, dieses Gerät anzunehmen. Importe warten hier, bis du erneut koppelst.
+windows.ui.yourjournalstoppedacceptingthisdeviceimportswait = dein Journal nimmt dieses Gerät nicht mehr an. Importe warten hier, bis du erneut koppelst.
 
 windows.ui.yourshortcut = dein Kurzbefehl
 
