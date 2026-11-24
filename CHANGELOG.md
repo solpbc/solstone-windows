@@ -4,11 +4,15 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.58] - 2026-11-24
+
+### Changed
+
+- in settings, the size under "stored on this PC" now reads in capital units, like "2.4 GB". a few messages that used a dash now read as whole sentences.
 
 ### Fixed
 
-- when an audio recording stops before any sound is saved, the solstone app now discards it instead of creating an empty audio file, so none goes into your journal.
+- when audio stops before any sound is saved, the solstone app now discards that piece instead of creating an empty audio file, so none goes into your journal.
 
 ## [2.0.57] - 2026-11-23
 
