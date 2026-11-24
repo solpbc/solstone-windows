@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
-use fluent_bundle::{FluentArgs, FluentBundle, FluentResource, FluentValue};
-use std::collections::HashSet;
+use fluent_bundle::{FluentArgs, FluentResource, FluentValue};
+use fluent_bundle::concurrent::FluentBundle;
+use std::{collections::HashSet, sync::OnceLock};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value<'a> {
@@ -726,701 +727,700 @@ fn plural_category(family: Option<&str>, count: i64) -> &'static str {
 pub fn render_dotted(locale: &str, dotted_id: &str, args: &[(&str, Value)]) -> Result<String, RenderError> { render_dotted_with_options(locale, dotted_id, args, true) }
 
 pub fn render_dotted_with_options(locale: &str, dotted_id: &str, args: &[(&str, Value)], use_isolating: bool) -> Result<String, RenderError> {
-    let id = match dotted_id {
-        "windows.about.app" => MessageId::m77696e646f77732e61626f75742e617070,
-        "windows.about.dayago" => MessageId::m77696e646f77732e61626f75742e64617961676f,
-        "windows.about.hourago" => MessageId::m77696e646f77732e61626f75742e686f757261676f,
-        "windows.about.journal" => MessageId::m77696e646f77732e61626f75742e6a6f75726e616c,
-        "windows.about.justnow" => MessageId::m77696e646f77732e61626f75742e6a7573746e6f77,
-        "windows.about.lastseen" => MessageId::m77696e646f77732e61626f75742e6c6173747365656e,
-        "windows.about.line0" => MessageId::m77696e646f77732e61626f75742e6c696e6530,
-        "windows.about.line1" => MessageId::m77696e646f77732e61626f75742e6c696e6531,
-        "windows.about.line2" => MessageId::m77696e646f77732e61626f75742e6c696e6532,
-        "windows.about.line3" => MessageId::m77696e646f77732e61626f75742e6c696e6533,
-        "windows.about.line4" => MessageId::m77696e646f77732e61626f75742e6c696e6534,
-        "windows.about.line5" => MessageId::m77696e646f77732e61626f75742e6c696e6535,
-        "windows.about.line6" => MessageId::m77696e646f77732e61626f75742e6c696e6536,
-        "windows.about.line7" => MessageId::m77696e646f77732e61626f75742e6c696e6537,
-        "windows.about.minuteago" => MessageId::m77696e646f77732e61626f75742e6d696e75746561676f,
-        "windows.about.unknown" => MessageId::m77696e646f77732e61626f75742e756e6b6e6f776e,
-        "windows.browser.discarded" => MessageId::m77696e646f77732e62726f777365722e646973636172646564,
-        "windows.desktop.shared.about.journalunknown" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6a6f75726e616c756e6b6e6f776e,
-        "windows.desktop.shared.about.opensourcelocalfirst" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6f70656e736f757263656c6f63616c6669727374,
-        "windows.desktop.shared.about.pendingsettingstab" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e70656e64696e6773657474696e6773746162,
-        "windows.desktop.shared.about.setupwelcomebody1" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e736574757077656c636f6d65626f647931,
-        "windows.desktop.shared.about.textcontent" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e74657874636f6e74656e74,
-        "windows.desktop.shared.about.textcontent2" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e74657874636f6e74656e7432,
-        "windows.desktop.shared.app.aboutsolstone" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e61626f7574736f6c73746f6e65,
-        "windows.desktop.shared.app.emptytext" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e656d70747974657874,
-        "windows.desktop.shared.app.frontendorigin" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e66726f6e74656e646f726967696e,
-        "windows.desktop.shared.app.justnow" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e6a7573746e6f77,
-        "windows.desktop.shared.app.microphonemodeoff" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e6d6963726f70686f6e656d6f64656f6666,
-        "windows.desktop.shared.app.notpaired" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e6e6f74706169726564,
-        "windows.desktop.shared.app.offlinetitle" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e6f66666c696e657469746c65,
-        "windows.desktop.shared.app.settingsdiagnosticson" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e73657474696e6773646961676e6f73746963736f6e,
-        "windows.desktop.shared.app.sourcestitle" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e736f75726365737469746c65,
-        "windows.desktop.shared.copy.audiosourcesystem" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e617564696f736f7572636573797374656d,
-        "windows.desktop.shared.copy.checkagain" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e636865636b616761696e,
-        "windows.desktop.shared.copy.choosedevice" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e63686f6f7365646576696365,
-        "windows.desktop.shared.copy.decidingtitle" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636964696e677469746c65,
-        "windows.desktop.shared.copy.decisionrefusedbody" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e72656675736564626f6479,
-        "windows.desktop.shared.copy.decisionrefusedtitle" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e726566757365647469746c65,
-        "windows.desktop.shared.copy.decisionunknownbody" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e756e6b6e6f776e626f6479,
-        "windows.desktop.shared.copy.decisionunknowntitle" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e756e6b6e6f776e7469746c65,
-        "windows.desktop.shared.copy.deferchoice" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e646566657263686f696365,
-        "windows.desktop.shared.copy.journalmarkconfirmbutton" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b636f6e6669726d627574746f6e,
-        "windows.desktop.shared.copy.journalmarkconfirmquestion" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b636f6e6669726d7175657374696f6e,
-        "windows.desktop.shared.copy.journalmarkmismatchbutton" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b6d69736d61746368627574746f6e,
-        "windows.desktop.shared.copy.journalmarkunverifiedcancelbutton" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b756e766572696669656463616e63656c627574746f6e,
-        "windows.desktop.shared.copy.journalmarkunverifiedcontinuebutton" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b756e7665726966696564636f6e74696e7565627574746f6e,
-        "windows.desktop.shared.copy.journalmarkunverifiedtitle" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b756e76657269666965647469746c65,
-        "windows.desktop.shared.copy.keepboth" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6b656570626f7468,
-        "windows.desktop.shared.copy.listunavailablebody" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6c697374756e617661696c61626c65626f6479,
-        "windows.desktop.shared.copy.listunavailabletitle" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6c697374756e617661696c61626c657469746c65,
-        "windows.desktop.shared.copy.offlinebody" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6f66666c696e65626f6479,
-        "windows.desktop.shared.copy.pickerempty" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7069636b6572656d707479,
-        "windows.desktop.shared.copy.replaceconfirmbody" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d626f6479,
-        "windows.desktop.shared.copy.replaceconfirmtitle" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d7469746c65,
-        "windows.desktop.shared.copy.replaceconfirmtitlefallback" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d7469746c6566616c6c6261636b,
-        "windows.desktop.shared.copy.replacedevice" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365646576696365,
-        "windows.desktop.shared.copy.replaceofferbody" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c6163656f66666572626f6479,
-        "windows.desktop.shared.copy.replaceoffertitle" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c6163656f666665727469746c65,
-        "windows.desktop.shared.copy.settingsjournalopen" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e67736a6f75726e616c6f70656e,
-        "windows.desktop.shared.copy.settingslogexportsave" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e67736c6f676578706f727473617665,
-        "windows.desktop.shared.copy.settingslogexporttitle" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e67736c6f676578706f72747469746c65,
-        "windows.desktop.shared.copy.settingstabattentiona11y" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e6773746162617474656e74696f6e61313179,
-        "windows.desktop.shared.copy.settingstabupdatesdonea11y" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e677374616275706461746573646f6e6561313179,
-        "windows.desktop.shared.copy.setupapplabel" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706170706c6162656c,
-        "windows.desktop.shared.copy.setupback" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706261636b,
-        "windows.desktop.shared.copy.setupconnectedtoyourjournal" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7365747570636f6e6e6563746564746f796f75726a6f75726e616c,
-        "windows.desktop.shared.copy.setupcontinue" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7365747570636f6e74696e7565,
-        "windows.desktop.shared.copy.setupjournalcardheading" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706a6f75726e616c6361726468656164696e67,
-        "windows.desktop.shared.copy.setupmicrophoneheadline" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706d6963726f70686f6e65686561646c696e65,
-        "windows.desktop.shared.copy.setupopenyourjournal" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706f70656e796f75726a6f75726e616c,
-        "windows.desktop.shared.copy.setupscreenframecaption" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736574757073637265656e6672616d6563617074696f6e,
-        "windows.desktop.shared.copy.setupwelcomebody2" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736574757077656c636f6d65626f647932,
-        "windows.desktop.shared.copy.setupwindowtitle" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736574757077696e646f777469746c65,
-        "windows.desktop.shared.copy.sourcesbrowserconnectednow" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f77736572636f6e6e65637465646e6f77,
-        "windows.desktop.shared.copy.sourcesbrowserdiscard" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657264697363617264,
-        "windows.desktop.shared.copy.sourcesbrowserdiscardcommit" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657264697363617264636f6d6d6974,
-        "windows.desktop.shared.copy.sourcesbrowserdiscardconfirm" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657264697363617264636f6e6669726d,
-        "windows.desktop.shared.copy.sourcesbrowserheld" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657268656c64,
-        "windows.desktop.shared.copy.sourcesbrowserpages" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f777365727061676573,
-        "windows.desktop.shared.copy.storageunavailablebody" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73746f72616765756e617661696c61626c65626f6479,
-        "windows.desktop.shared.copy.storageunavailabletitle" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73746f72616765756e617661696c61626c657469746c65,
-        "windows.desktop.shared.copy.targetmissingbody" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7461726765746d697373696e67626f6479,
-        "windows.desktop.shared.copy.targetmissingtitle" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7461726765746d697373696e677469746c65,
-        "windows.desktop.shared.copy.technicaldetails" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e746563686e6963616c64657461696c73,
-        "windows.desktop.shared.copy.text" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e74657874,
-        "windows.desktop.shared.copy.tryagain" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e747279616761696e,
-        "windows.desktop.shared.settings.add" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e616464,
-        "windows.desktop.shared.settings.excludedapps" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e6578636c7564656461707073,
-        "windows.desktop.shared.settings.gethelp" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e67657468656c70,
-        "windows.desktop.shared.settings.help" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e68656c70,
-        "windows.desktop.shared.settings.reportaproblem" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e7265706f72746170726f626c656d,
-        "windows.desktop.shared.settings.severity" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e7365766572697479,
-        "windows.desktop.shared.settings.textcontent" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e74657874636f6e74656e74,
-        "windows.desktop.shared.settings.updates" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e75706461746573,
-        "windows.desktop.shared.settings.windowtitles" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e77696e646f777469746c6573,
-        "windows.desktop.shared.setup.cancel" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657475702e63616e63656c,
-        "windows.desktop.shared.setup.pair" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657475702e70616972,
-        "windows.desktop.shared.setup.startatlogin" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657475702e737461727461746c6f67696e,
-        "windows.desktop.shared.setup.wizardpausefailure" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657475702e77697a61726470617573656661696c757265,
-        "windows.desktop.shared.setup.wizardpausefailure2" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657475702e77697a61726470617573656661696c75726532,
-        "windows.desktop.shared.updates.automaticupdates" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6175746f6d6174696375706461746573,
-        "windows.desktop.shared.updates.checkforupdatesautomatically" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e636865636b666f72757064617465736175746f6d61746963616c6c79,
-        "windows.desktop.shared.updates.checknow" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e636865636b6e6f77,
-        "windows.desktop.shared.updates.dismiss" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6469736d697373,
-        "windows.desktop.shared.updates.download" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e646f776e6c6f6164,
-        "windows.desktop.shared.updates.downloadupdatesinthebackground" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e646f776e6c6f616475706461746573696e7468656261636b67726f756e64,
-        "windows.desktop.shared.updates.everyday" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6576657279646179,
-        "windows.desktop.shared.updates.everymonth" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e65766572796d6f6e7468,
-        "windows.desktop.shared.updates.everyweek" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e65766572797765656b,
-        "windows.desktop.shared.updates.howoften" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e686f776f6674656e,
-        "windows.desktop.shared.updates.nevercheckedforupdates" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6e65766572636865636b6564666f7275706461746573,
-        "windows.desktop.shared.updates.textcontent" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e74657874636f6e74656e74,
-        "windows.desktop.shared.updates.whatsnew" => MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e77686174736e6577,
-        "windows.exclusions.activity" => MessageId::m77696e646f77732e6578636c7573696f6e732e6163746976697479,
-        "windows.exclusions.activityredacted" => MessageId::m77696e646f77732e6578636c7573696f6e732e61637469766974797265646163746564,
-        "windows.health.attentioncount" => MessageId::m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74,
-        "windows.import.allhistory" => MessageId::m77696e646f77732e696d706f72742e616c6c686973746f7279,
-        "windows.import.expiredword" => MessageId::m77696e646f77732e696d706f72742e65787069726564776f7264,
-        "windows.import.holdoffline" => MessageId::m77696e646f77732e696d706f72742e686f6c646f66666c696e65,
-        "windows.import.intro" => MessageId::m77696e646f77732e696d706f72742e696e74726f,
-        "windows.import.morehelper" => MessageId::m77696e646f77732e696d706f72742e6d6f726568656c706572,
-        "windows.import.readytoreviewword" => MessageId::m77696e646f77732e696d706f72742e7265616479746f726576696577776f7264,
-        "windows.import.recenta11y" => MessageId::m77696e646f77732e696d706f72742e726563656e7461313179,
-        "windows.import.recentmeta" => MessageId::m77696e646f77732e696d706f72742e726563656e746d657461,
-        "windows.import.removereadybody" => MessageId::m77696e646f77732e696d706f72742e72656d6f76657265616479626f6479,
-        "windows.import.reviewaction" => MessageId::m77696e646f77732e696d706f72742e726576696577616374696f6e,
-        "windows.import.reviewactiona11y" => MessageId::m77696e646f77732e696d706f72742e726576696577616374696f6e61313179,
-        "windows.import.reviewdetail" => MessageId::m77696e646f77732e696d706f72742e72657669657764657461696c,
-        "windows.import.reviewdetailbody" => MessageId::m77696e646f77732e696d706f72742e72657669657764657461696c626f6479,
-        "windows.import.reviewexpired" => MessageId::m77696e646f77732e696d706f72742e72657669657765787069726564,
-        "windows.import.rowsending" => MessageId::m77696e646f77732e696d706f72742e726f7773656e64696e67,
-        "windows.import.sectionreview" => MessageId::m77696e646f77732e696d706f72742e73656374696f6e726576696577,
-        "windows.import.sendagainaction" => MessageId::m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e,
-        "windows.import.sendagainactiona11y" => MessageId::m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e61313179,
-        "windows.import.statusattentionheadline" => MessageId::m77696e646f77732e696d706f72742e737461747573617474656e74696f6e686561646c696e65,
-        "windows.import.statusattentionsub" => MessageId::m77696e646f77732e696d706f72742e737461747573617474656e74696f6e737562,
-        "windows.import.statusreviewheadline" => MessageId::m77696e646f77732e696d706f72742e737461747573726576696577686561646c696e65,
-        "windows.import.statusreviewsub" => MessageId::m77696e646f77732e696d706f72742e737461747573726576696577737562,
-        "windows.import.tilea11y" => MessageId::m77696e646f77732e696d706f72742e74696c6561313179,
-        "windows.import.tilereadycount" => MessageId::m77696e646f77732e696d706f72742e74696c657265616479636f756e74,
-        "windows.import.tilesendingcount" => MessageId::m77696e646f77732e696d706f72742e74696c6573656e64696e67636f756e74,
-        "windows.import.tilewaitingcount" => MessageId::m77696e646f77732e696d706f72742e74696c6577616974696e67636f756e74,
-        "windows.import.tilewaitingjournal" => MessageId::m77696e646f77732e696d706f72742e74696c6577616974696e676a6f75726e616c,
-        "windows.logs.availablelogsareshownbelowcheckthe" => MessageId::m77696e646f77732e6c6f67732e617661696c61626c656c6f677361726573686f776e62656c6f77636865636b746865,
-        "windows.logs.copysaved" => MessageId::m77696e646f77732e6c6f67732e636f70797361766564,
-        "windows.logs.couldntreadthelogfilestry" => MessageId::m77696e646f77732e6c6f67732e636f756c646e74726561647468656c6f6766696c6573747279,
-        "windows.logs.nologfilesareavailableyettry" => MessageId::m77696e646f77732e6c6f67732e6e6f6c6f6766696c6573617265617661696c61626c65796574747279,
-        "windows.logs.norecentlogsareavailableyettry" => MessageId::m77696e646f77732e6c6f67732e6e6f726563656e746c6f6773617265617661696c61626c65796574747279,
-        "windows.logs.readthelogsbelowthenchoosewhether" => MessageId::m77696e646f77732e6c6f67732e726561647468656c6f677362656c6f777468656e63686f6f736577686574686572,
-        "windows.logs.textcontent" => MessageId::m77696e646f77732e6c6f67732e74657874636f6e74656e74,
-        "windows.logs.textcontent2" => MessageId::m77696e646f77732e6c6f67732e74657874636f6e74656e7432,
-        "windows.logs.textcontent3" => MessageId::m77696e646f77732e6c6f67732e74657874636f6e74656e7433,
-        "windows.logs.textcontent4" => MessageId::m77696e646f77732e6c6f67732e74657874636f6e74656e7434,
-        "windows.logs.textcontent5" => MessageId::m77696e646f77732e6c6f67732e74657874636f6e74656e7435,
-        "windows.notice.everythingsavedonthispcisgoing" => MessageId::m77696e646f77732e6e6f746963652e65766572797468696e6773617665646f6e7468697370636973676f696e67,
-        "windows.notice.everythingyouturnedonisgoinginto" => MessageId::m77696e646f77732e6e6f746963652e65766572797468696e67796f757475726e65646f6e6973676f696e67696e746f,
-        "windows.notice.intakeisrunningagain" => MessageId::m77696e646f77732e6e6f746963652e696e74616b65697372756e6e696e67616761696e,
-        "windows.notice.intakeranintoaproblem" => MessageId::m77696e646f77732e6e6f746963652e696e74616b6572616e696e746f6170726f626c656d,
-        "windows.notice.itsgoingintoyourjournalagain" => MessageId::m77696e646f77732e6e6f746963652e697473676f696e67696e746f796f75726a6f75726e616c616761696e,
-        "windows.notice.solstoneisstilloneverythingissaved" => MessageId::m77696e646f77732e6e6f746963652e736f6c73746f6e6569737374696c6c6f6e65766572797468696e6769737361766564,
-        "windows.notice.theisback" => MessageId::m77696e646f77732e6e6f746963652e74686569736261636b,
-        "windows.notice.theneedsyourpermission" => MessageId::m77696e646f77732e6e6f746963652e7468656e65656473796f75727065726d697373696f6e,
-        "windows.notice.thesolstoneiconinthetaskbarsays" => MessageId::m77696e646f77732e6e6f746963652e746865736f6c73746f6e6569636f6e696e7468657461736b62617273617973,
-        "windows.notice.windowsprivacysettingsareblockingitturn" => MessageId::m77696e646f77732e6e6f746963652e77696e646f77737072697661637973657474696e6773617265626c6f636b696e6769747475726e,
-        "windows.notice.yourjournalisbackinreach" => MessageId::m77696e646f77732e6e6f746963652e796f75726a6f75726e616c69736261636b696e7265616368,
-        "windows.notice.yourjournalisoutofreach" => MessageId::m77696e646f77732e6e6f746963652e796f75726a6f75726e616c69736f75746f667265616368,
-        "windows.obsidian.chooseobsidianvault" => MessageId::m77696e646f77732e6f6273696469616e2e63686f6f73656f6273696469616e7661756c74,
-        "windows.obsidian.vault" => MessageId::m77696e646f77732e6f6273696469616e2e7661756c74,
-        "windows.obsidian.warning" => MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e67,
-        "windows.obsidian.warningdate" => MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e6764617465,
-        "windows.obsidian.warningdevice" => MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e67646576696365,
-        "windows.obsidian.warningdevicedate" => MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e6764657669636564617465,
-        "windows.pill.held" => MessageId::m77696e646f77732e70696c6c2e68656c64,
-        "windows.pill.heldwaiting" => MessageId::m77696e646f77732e70696c6c2e68656c6477616974696e67,
-        "windows.pill.offline" => MessageId::m77696e646f77732e70696c6c2e6f66666c696e65,
-        "windows.pill.offlinewaiting" => MessageId::m77696e646f77732e70696c6c2e6f66666c696e6577616974696e67,
-        "windows.pill.readytoreview" => MessageId::m77696e646f77732e70696c6c2e7265616479746f726576696577,
-        "windows.pill.refused" => MessageId::m77696e646f77732e70696c6c2e72656675736564,
-        "windows.pill.refusedwaiting" => MessageId::m77696e646f77732e70696c6c2e7265667573656477616974696e67,
-        "windows.pill.syncpaused" => MessageId::m77696e646f77732e70696c6c2e73796e63706175736564,
-        "windows.pill.syncpausedwaiting" => MessageId::m77696e646f77732e70696c6c2e73796e6370617573656477616974696e67,
-        "windows.quantity.hours" => MessageId::m77696e646f77732e7175616e746974792e686f757273,
-        "windows.quantity.items" => MessageId::m77696e646f77732e7175616e746974792e6974656d73,
-        "windows.quantity.minutes" => MessageId::m77696e646f77732e7175616e746974792e6d696e75746573,
-        "windows.quantity.notes" => MessageId::m77696e646f77732e7175616e746974792e6e6f746573,
-        "windows.quantity.pages" => MessageId::m77696e646f77732e7175616e746974792e7061676573,
-        "windows.quantity.screenshots" => MessageId::m77696e646f77732e7175616e746974792e73637265656e73686f7473,
-        "windows.screenshots.bringcount" => MessageId::m77696e646f77732e73637265656e73686f74732e6272696e67636f756e74,
-        "windows.screenshots.cantcount" => MessageId::m77696e646f77732e73637265656e73686f74732e63616e74636f756e74,
-        "windows.screenshots.unreadablecount" => MessageId::m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74,
-        "windows.sharedsources.also" => MessageId::m77696e646f77732e736861726564736f75726365732e616c736f,
-        "windows.sharedsources.labelage" => MessageId::m77696e646f77732e736861726564736f75726365732e6c6162656c616765,
-        "windows.sharedsources.labelstate" => MessageId::m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465,
-        "windows.sharedsources.labelstateage" => MessageId::m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765,
-        "windows.sharedsources.many" => MessageId::m77696e646f77732e736861726564736f75726365732e6d616e79,
-        "windows.sharedsources.one" => MessageId::m77696e646f77732e736861726564736f75726365732e6f6e65,
-        "windows.sharedsources.stateage" => MessageId::m77696e646f77732e736861726564736f75726365732e7374617465616765,
-        "windows.time.checkedday" => MessageId::m77696e646f77732e74696d652e636865636b6564646179,
-        "windows.time.checkedhour" => MessageId::m77696e646f77732e74696d652e636865636b6564686f7572,
-        "windows.time.checkedminute" => MessageId::m77696e646f77732e74696d652e636865636b65646d696e757465,
-        "windows.time.nextsave" => MessageId::m77696e646f77732e74696d652e6e65787473617665,
-        "windows.time.takenhours" => MessageId::m77696e646f77732e74696d652e74616b656e686f757273,
-        "windows.tray.checkforupdates" => MessageId::m77696e646f77732e747261792e636865636b666f7275706461746573,
-        "windows.tray.hrmin" => MessageId::m77696e646f77732e747261792e68726d696e,
-        "windows.tray.lessthanaminute" => MessageId::m77696e646f77732e747261792e6c6573737468616e616d696e757465,
-        "windows.tray.needsarestart" => MessageId::m77696e646f77732e747261792e6e656564736172657374617274,
-        "windows.tray.onbut" => MessageId::m77696e646f77732e747261792e6f6e627574,
-        "windows.tray.onconnectedtoyourjournal" => MessageId::m77696e646f77732e747261792e6f6e636f6e6e6563746564746f796f75726a6f75726e616c,
-        "windows.tray.onnotconnectedtoajournal" => MessageId::m77696e646f77732e747261792e6f6e6e6f74636f6e6e6563746564746f616a6f75726e616c,
-        "windows.tray.onsavedonthispc" => MessageId::m77696e646f77732e747261792e6f6e73617665646f6e746869737063,
-        "windows.tray.pausedleft" => MessageId::m77696e646f77732e747261792e7061757365646c656674,
-        "windows.tray.solstonewaitingforyoutoconfirmyour" => MessageId::m77696e646f77732e747261792e736f6c73746f6e6577616974696e67666f72796f75746f636f6e6669726d796f7572,
-        "windows.tray.starting" => MessageId::m77696e646f77732e747261792e7374617274696e67,
-        "windows.tray.storagefaultforowner" => MessageId::m77696e646f77732e747261792e73746f726167656661756c74666f726f776e6572,
-        "windows.tray.text" => MessageId::m77696e646f77732e747261792e74657874,
-        "windows.tray.theneedspermissioninwindowssettings" => MessageId::m77696e646f77732e747261792e7468656e656564737065726d697373696f6e696e77696e646f777373657474696e6773,
-        "windows.tray.thestoppedgoingintoyourjournal" => MessageId::m77696e646f77732e747261792e74686573746f70706564676f696e67696e746f796f75726a6f75726e616c,
-        "windows.tray.unknownjournalseenat" => MessageId::m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e6174,
-        "windows.tray.unknownjournalseenthroughtherelay" => MessageId::m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e7468726f75676874686572656c6179,
-        "windows.tray.updateavailable" => MessageId::m77696e646f77732e747261792e757064617465617661696c61626c65,
-        "windows.tray.updatecheckfailed" => MessageId::m77696e646f77732e747261792e757064617465636865636b6661696c6564,
-        "windows.tray.updateready" => MessageId::m77696e646f77732e747261792e7570646174657265616479,
-        "windows.ui.accesswasdenied" => MessageId::m77696e646f77732e75692e61636365737377617364656e696564,
-        "windows.ui.accesswasdeniedcheckwindowspermissionsfor" => MessageId::m77696e646f77732e75692e61636365737377617364656e696564636865636b77696e646f77737065726d697373696f6e73666f72,
-        "windows.ui.activex474d1b75" => MessageId::m77696e646f77732e75692e616374697665783437346431623735,
-        "windows.ui.activex68f50a9b" => MessageId::m77696e646f77732e75692e616374697665783638663530613962,
-        "windows.ui.activex96879611" => MessageId::m77696e646f77732e75692e616374697665783936383739363131,
-        "windows.ui.activity" => MessageId::m77696e646f77732e75692e6163746976697479,
-        "windows.ui.activityisstillon" => MessageId::m77696e646f77732e75692e616374697669747969737374696c6c6f6e,
-        "windows.ui.addappnameswindowtitlesandpage" => MessageId::m77696e646f77732e75692e6164646170706e616d657377696e646f777469746c6573616e6470616765,
-        "windows.ui.addmore" => MessageId::m77696e646f77732e75692e6164646d6f7265,
-        "windows.ui.addspdfsaudioimagesandtextyouchoosehereordropont" => MessageId::m77696e646f77732e75692e6164647370646673617564696f696d61676573616e6474657874796f7563686f6f7365686572656f7264726f706f6e74,
-        "windows.ui.addthesolstoneextension" => MessageId::m77696e646f77732e75692e616464746865736f6c73746f6e65657874656e73696f6e,
-        "windows.ui.addto" => MessageId::m77696e646f77732e75692e616464746f,
-        "windows.ui.aglobalshortcuttopauseandresume" => MessageId::m77696e646f77732e75692e61676c6f62616c73686f7274637574746f7061757365616e64726573756d65,
-        "windows.ui.allcaughtup" => MessageId::m77696e646f77732e75692e616c6c6361756768747570,
-        "windows.ui.allofit" => MessageId::m77696e646f77732e75692e616c6c6f666974,
-        "windows.ui.allsourceson" => MessageId::m77696e646f77732e75692e616c6c736f75726365736f6e,
-        "windows.ui.alouderinputforquietmicrophoneschanges" => MessageId::m77696e646f77732e75692e616c6f75646572696e707574666f7271756965746d6963726f70686f6e65736368616e676573,
-        "windows.ui.alreadyonhome" => MessageId::m77696e646f77732e75692e616c72656164796f6e686f6d65,
-        "windows.ui.anewlinkfromyourjournalcanbepastedhere" => MessageId::m77696e646f77732e75692e616e65776c696e6b66726f6d796f75726a6f75726e616c63616e626570617374656468657265,
-        "windows.ui.anotherpairinglinkcouldnotbeadded" => MessageId::m77696e646f77732e75692e616e6f7468657270616972696e676c696e6b636f756c646e6f7462656164646564,
-        "windows.ui.april" => MessageId::m77696e646f77732e75692e617072696c,
-        "windows.ui.arg0" => MessageId::m77696e646f77732e75692e61726730,
-        "windows.ui.arg0arg1" => MessageId::m77696e646f77732e75692e6172673061726731,
-        "windows.ui.arg0arg1arg2" => MessageId::m77696e646f77732e75692e617267306172673161726732,
-        "windows.ui.arg0bytes" => MessageId::m77696e646f77732e75692e617267306279746573,
-        "windows.ui.arg0gb" => MessageId::m77696e646f77732e75692e617267306762,
-        "windows.ui.arg0hr" => MessageId::m77696e646f77732e75692e617267306872,
-        "windows.ui.arg0hrleft" => MessageId::m77696e646f77732e75692e6172673068726c656674,
-        "windows.ui.arg0kb" => MessageId::m77696e646f77732e75692e617267306b62,
-        "windows.ui.arg0kbx75b11ba1" => MessageId::m77696e646f77732e75692e617267306b62783735623131626131,
-        "windows.ui.arg0mb" => MessageId::m77696e646f77732e75692e617267306d62,
-        "windows.ui.arg0mbxff882f00" => MessageId::m77696e646f77732e75692e617267306d62786666383832663030,
-        "windows.ui.arg0min" => MessageId::m77696e646f77732e75692e617267306d696e,
-        "windows.ui.arg0minago" => MessageId::m77696e646f77732e75692e617267306d696e61676f,
-        "windows.ui.arg0minleft" => MessageId::m77696e646f77732e75692e617267306d696e6c656674,
-        "windows.ui.arg0needsattention" => MessageId::m77696e646f77732e75692e617267306e65656473617474656e74696f6e,
-        "windows.ui.arg0ofarg1inyourjournal" => MessageId::m77696e646f77732e75692e617267306f6661726731696e796f75726a6f75726e616c,
-        "windows.ui.arg0ofarg1screenshotsinyourjournal" => MessageId::m77696e646f77732e75692e617267306f666172673173637265656e73686f7473696e796f75726a6f75726e616c,
-        "windows.ui.arg0tb" => MessageId::m77696e646f77732e75692e617267307462,
-        "windows.ui.arg0x211b8ba1" => MessageId::m77696e646f77732e75692e61726730783231316238626131,
-        "windows.ui.ascreenshotalreadyinyourjournalstaysthereifyoude" => MessageId::m77696e646f77732e75692e6173637265656e73686f74616c7265616479696e796f75726a6f75726e616c737461797374686572656966796f756465,
-        "windows.ui.ascreenshotthatsonlycopiedtotheclipboardisntsave" => MessageId::m77696e646f77732e75692e6173637265656e73686f7474686174736f6e6c79636f70696564746f746865636c6970626f61726469736e7473617665,
-        "windows.ui.asegmentisa5minutelocal" => MessageId::m77696e646f77732e75692e617365676d656e74697361356d696e7574656c6f63616c,
-        "windows.ui.attentionneeded" => MessageId::m77696e646f77732e75692e617474656e74696f6e6e6565646564,
-        "windows.ui.audio" => MessageId::m77696e646f77732e75692e617564696f,
-        "windows.ui.august" => MessageId::m77696e646f77732e75692e617567757374,
-        "windows.ui.automaticchecksareoff" => MessageId::m77696e646f77732e75692e6175746f6d61746963636865636b736172656f6666,
-        "windows.ui.automaticchecksareon" => MessageId::m77696e646f77732e75692e6175746f6d61746963636865636b736172656f6e,
-        "windows.ui.awindowthatclosesormovescan" => MessageId::m77696e646f77732e75692e6177696e646f7774686174636c6f7365736f726d6f76657363616e,
-        "windows.ui.backgrounddatauserestricted" => MessageId::m77696e646f77732e75692e6261636b67726f756e646461746175736572657374726963746564,
-        "windows.ui.browsers" => MessageId::m77696e646f77732e75692e62726f7773657273,
-        "windows.ui.browserstateunavailable" => MessageId::m77696e646f77732e75692e62726f777365727374617465756e617661696c61626c65,
-        "windows.ui.change" => MessageId::m77696e646f77732e75692e6368616e6765,
-        "windows.ui.checkedjustnow" => MessageId::m77696e646f77732e75692e636865636b65646a7573746e6f77,
-        "windows.ui.checkforupdates" => MessageId::m77696e646f77732e75692e636865636b666f7275706461746573,
-        "windows.ui.checking" => MessageId::m77696e646f77732e75692e636865636b696e67,
-        "windows.ui.checkingforupdates" => MessageId::m77696e646f77732e75692e636865636b696e67666f7275706461746573,
-        "windows.ui.checkingword" => MessageId::m77696e646f77732e75692e636865636b696e67776f7264,
-        "windows.ui.checkingyourjournal" => MessageId::m77696e646f77732e75692e636865636b696e67796f75726a6f75726e616c,
-        "windows.ui.chooseafolder" => MessageId::m77696e646f77732e75692e63686f6f736561666f6c646572,
-        "windows.ui.chooseafolderxdbec742d" => MessageId::m77696e646f77732e75692e63686f6f736561666f6c646572786462656337343264,
-        "windows.ui.chooseanapptoexclude" => MessageId::m77696e646f77732e75692e63686f6f7365616e617070746f6578636c756465,
-        "windows.ui.choosearunningapp" => MessageId::m77696e646f77732e75692e63686f6f73656172756e6e696e67617070,
-        "windows.ui.choosefiles" => MessageId::m77696e646f77732e75692e63686f6f736566696c6573,
-        "windows.ui.choosefolder" => MessageId::m77696e646f77732e75692e63686f6f7365666f6c646572,
-        "windows.ui.choosehowfarbacktostartthenbringthemin" => MessageId::m77696e646f77732e75692e63686f6f7365686f776661726261636b746f73746172747468656e6272696e677468656d696e,
-        "windows.ui.choosethefolderyourscreenshotssaveto" => MessageId::m77696e646f77732e75692e63686f6f7365746865666f6c646572796f757273637265656e73686f747373617665746f,
-        "windows.ui.choosewhatstaysoutofyourjournal" => MessageId::m77696e646f77732e75692e63686f6f73657768617473746179736f75746f66796f75726a6f75726e616c,
-        "windows.ui.claimednotverified" => MessageId::m77696e646f77732e75692e636c61696d65646e6f747665726966696564,
-        "windows.ui.clickthenpressyourshortcut" => MessageId::m77696e646f77732e75692e636c69636b7468656e7072657373796f757273686f7274637574,
-        "windows.ui.closenavigation" => MessageId::m77696e646f77732e75692e636c6f73656e617669676174696f6e,
-        "windows.ui.computersound" => MessageId::m77696e646f77732e75692e636f6d7075746572736f756e64,
-        "windows.ui.computersoundlevel" => MessageId::m77696e646f77732e75692e636f6d7075746572736f756e646c6576656c,
-        "windows.ui.confirmthemark" => MessageId::m77696e646f77732e75692e636f6e6669726d7468656d61726b,
-        "windows.ui.confirmthemarkarg0waiting" => MessageId::m77696e646f77732e75692e636f6e6669726d7468656d61726b6172673077616974696e67,
-        "windows.ui.confirmyourjournalsmarktoopen" => MessageId::m77696e646f77732e75692e636f6e6669726d796f75726a6f75726e616c736d61726b746f6f70656e,
-        "windows.ui.connectajournal" => MessageId::m77696e646f77732e75692e636f6e6e656374616a6f75726e616c,
-        "windows.ui.connected" => MessageId::m77696e646f77732e75692e636f6e6e6563746564,
-        "windows.ui.connectedto" => MessageId::m77696e646f77732e75692e636f6e6e6563746564746f,
-        "windows.ui.connecting" => MessageId::m77696e646f77732e75692e636f6e6e656374696e67,
-        "windows.ui.connectingx3d6df245" => MessageId::m77696e646f77732e75692e636f6e6e656374696e67783364366466323435,
-        "windows.ui.connection" => MessageId::m77696e646f77732e75692e636f6e6e656374696f6e,
-        "windows.ui.connecttoyourjournal" => MessageId::m77696e646f77732e75692e636f6e6e656374746f796f75726a6f75726e616c,
-        "windows.ui.connectyourjournal" => MessageId::m77696e646f77732e75692e636f6e6e656374796f75726a6f75726e616c,
-        "windows.ui.continuethisconnection" => MessageId::m77696e646f77732e75692e636f6e74696e756574686973636f6e6e656374696f6e,
-        "windows.ui.copied" => MessageId::m77696e646f77732e75692e636f70696564,
-        "windows.ui.copythefulllinkfromyourchatandopenitagain" => MessageId::m77696e646f77732e75692e636f707974686566756c6c6c696e6b66726f6d796f757263686174616e646f70656e6974616761696e,
-        "windows.ui.couldnotpausetryagain" => MessageId::m77696e646f77732e75692e636f756c646e6f747061757365747279616761696e,
-        "windows.ui.couldnotresumetryagain" => MessageId::m77696e646f77732e75692e636f756c646e6f74726573756d65747279616761696e,
-        "windows.ui.couldnotsavethischoiceitmay" => MessageId::m77696e646f77732e75692e636f756c646e6f74736176657468697363686f69636569746d6179,
-        "windows.ui.couldnotsavethisdismissaltryagain" => MessageId::m77696e646f77732e75692e636f756c646e6f7473617665746869736469736d697373616c747279616761696e,
-        "windows.ui.couldnotsaveturningthisoffitisoffnowbutmayturnon" => MessageId::m77696e646f77732e75692e636f756c646e6f74736176657475726e696e67746869736f6666697469736f66666e6f776275746d61797475726e6f6e,
-        "windows.ui.couldnotsaveturningthisonitstaysofftryagain" => MessageId::m77696e646f77732e75692e636f756c646e6f74736176657475726e696e67746869736f6e697473746179736f6666747279616761696e,
-        "windows.ui.couldnotsaveyoursetupprogresstry" => MessageId::m77696e646f77732e75692e636f756c646e6f7473617665796f7572736574757070726f6772657373747279,
-        "windows.ui.couldnotupdatestartatlogin" => MessageId::m77696e646f77732e75692e636f756c646e6f74757064617465737461727461746c6f67696e,
-        "windows.ui.couldntcheckforupdates" => MessageId::m77696e646f77732e75692e636f756c646e74636865636b666f7275706461746573,
-        "windows.ui.couldntcheckforupdatessolstonewas" => MessageId::m77696e646f77732e75692e636f756c646e74636865636b666f7275706461746573736f6c73746f6e65776173,
-        "windows.ui.couldntcountyourscreenshots" => MessageId::m77696e646f77732e75692e636f756c646e74636f756e74796f757273637265656e73686f7473,
-        "windows.ui.couldntdownloadsolstone" => MessageId::m77696e646f77732e75692e636f756c646e74646f776e6c6f6164736f6c73746f6e65,
-        "windows.ui.couldntdownloadupdate" => MessageId::m77696e646f77732e75692e636f756c646e74646f776e6c6f6164757064617465,
-        "windows.ui.couldntfindascreenshotsfolderonthispcchoosethefo" => MessageId::m77696e646f77732e75692e636f756c646e7466696e646173637265656e73686f7473666f6c6465726f6e74686973706363686f6f7365746865666f,
-        "windows.ui.couldntfinishdiscardingwhatsleft" => MessageId::m77696e646f77732e75692e636f756c646e7466696e69736864697363617264696e6777686174736c656674,
-        "windows.ui.couldntinstallupdate" => MessageId::m77696e646f77732e75692e636f756c646e74696e7374616c6c757064617465,
-        "windows.ui.couldntloadthesolstoneapps" => MessageId::m77696e646f77732e75692e636f756c646e746c6f6164746865736f6c73746f6e6561707073,
-        "windows.ui.couldntopenthestorepagein" => MessageId::m77696e646f77732e75692e636f756c646e746f70656e74686573746f726570616765696e,
-        "windows.ui.couldntopenyourjournal" => MessageId::m77696e646f77732e75692e636f756c646e746f70656e796f75726a6f75726e616c,
-        "windows.ui.couldntopenyourjournaltryagain" => MessageId::m77696e646f77732e75692e636f756c646e746f70656e796f75726a6f75726e616c747279616761696e,
-        "windows.ui.couldntreachyourjournaloveryour" => MessageId::m77696e646f77732e75692e636f756c646e747265616368796f75726a6f75726e616c6f766572796f7572,
-        "windows.ui.couldntreadimportsonthisdevicenothinghasbeenremo" => MessageId::m77696e646f77732e75692e636f756c646e7472656164696d706f7274736f6e746869736465766963656e6f7468696e676861736265656e72656d6f,
-        "windows.ui.couldntreadyoursavedsourcechoices" => MessageId::m77696e646f77732e75692e636f756c646e7472656164796f75727361766564736f7572636563686f69636573,
-        "windows.ui.couldntregisterthatshortcut" => MessageId::m77696e646f77732e75692e636f756c646e7472656769737465727468617473686f7274637574,
-        "windows.ui.couldntremovethistryagain" => MessageId::m77696e646f77732e75692e636f756c646e7472656d6f766574686973747279616761696e,
-        "windows.ui.couldntturntryagain" => MessageId::m77696e646f77732e75692e636f756c646e747475726e747279616761696e,
-        "windows.ui.couldntverifyjournalsonothing" => MessageId::m77696e646f77732e75692e636f756c646e747665726966796a6f75726e616c736f6e6f7468696e67,
-        "windows.ui.dayago" => MessageId::m77696e646f77732e75692e64617961676f,
-        "windows.ui.december" => MessageId::m77696e646f77732e75692e646563656d626572,
-        "windows.ui.delivered" => MessageId::m77696e646f77732e75692e64656c697665726564,
-        "windows.ui.deliveredpending" => MessageId::m77696e646f77732e75692e64656c69766572656470656e64696e67,
-        "windows.ui.desktopactivity" => MessageId::m77696e646f77732e75692e6465736b746f706163746976697479,
-        "windows.ui.devicechoice" => MessageId::m77696e646f77732e75692e64657669636563686f696365,
-        "windows.ui.devicepriority" => MessageId::m77696e646f77732e75692e6465766963657072696f72697479,
-        "windows.ui.disable" => MessageId::m77696e646f77732e75692e64697361626c65,
-        "windows.ui.dontstartatlogin" => MessageId::m77696e646f77732e75692e646f6e74737461727461746c6f67696e,
-        "windows.ui.downloaddeferredconnectionstatusunknown" => MessageId::m77696e646f77732e75692e646f776e6c6f61646465666572726564636f6e6e656374696f6e737461747573756e6b6e6f776e,
-        "windows.ui.downloaddeferredmeteredconnection" => MessageId::m77696e646f77732e75692e646f776e6c6f616464656665727265646d657465726564636f6e6e656374696f6e,
-        "windows.ui.downloaddeferredwhileroaming" => MessageId::m77696e646f77732e75692e646f776e6c6f616464656665727265647768696c65726f616d696e67,
-        "windows.ui.downloadingsolstone" => MessageId::m77696e646f77732e75692e646f776e6c6f6164696e67736f6c73746f6e65,
-        "windows.ui.downloadthelatestfromsolstoneappdownloadwindows" => MessageId::m77696e646f77732e75692e646f776e6c6f61647468656c617465737466726f6d736f6c73746f6e65617070646f776e6c6f616477696e646f7773,
-        "windows.ui.edgeandfirefoxsettoenglish" => MessageId::m77696e646f77732e75692e65646765616e6466697265666f78736574746f656e676c697368,
-        "windows.ui.enable" => MessageId::m77696e646f77732e75692e656e61626c65,
-        "windows.ui.enablethepauseresumeshortcut" => MessageId::m77696e646f77732e75692e656e61626c657468657061757365726573756d6573686f7274637574,
-        "windows.ui.errorword" => MessageId::m77696e646f77732e75692e6572726f72776f7264,
-        "windows.ui.esctocancel" => MessageId::m77696e646f77732e75692e657363746f63616e63656c,
-        "windows.ui.everypicturesavedinarg0comesinnotonlyyourscreens" => MessageId::m77696e646f77732e75692e6576657279706963747572657361766564696e61726730636f6d6573696e6e6f746f6e6c79796f757273637265656e73,
-        "windows.ui.everythingisinyourjournal" => MessageId::m77696e646f77732e75692e65766572797468696e676973696e796f75726a6f75726e616c,
-        "windows.ui.exclude" => MessageId::m77696e646f77732e75692e6578636c756465,
-        "windows.ui.exclusionactivity" => MessageId::m77696e646f77732e75692e6578636c7573696f6e6163746976697479,
-        "windows.ui.failedtoacquiresetuplock" => MessageId::m77696e646f77732e75692e6661696c6564746f6163717569726573657475706c6f636b,
-        "windows.ui.february" => MessageId::m77696e646f77732e75692e6665627275617279,
-        "windows.ui.file" => MessageId::m77696e646f77732e75692e66696c65,
-        "windows.ui.files" => MessageId::m77696e646f77732e75692e66696c6573,
-        "windows.ui.finishconnecting" => MessageId::m77696e646f77732e75692e66696e697368636f6e6e656374696e67,
-        "windows.ui.finishconnectingtoyourjournal" => MessageId::m77696e646f77732e75692e66696e697368636f6e6e656374696e67746f796f75726a6f75726e616c,
-        "windows.ui.finishthecurrentconnectionthentryagain" => MessageId::m77696e646f77732e75692e66696e69736874686563757272656e74636f6e6e656374696f6e7468656e747279616761696e,
-        "windows.ui.folder" => MessageId::m77696e646f77732e75692e666f6c646572,
-        "windows.ui.foundjournalpc" => MessageId::m77696e646f77732e75692e666f756e646a6f75726e616c7063,
-        "windows.ui.from" => MessageId::m77696e646f77732e75692e66726f6d,
-        "windows.ui.frombeforetoday" => MessageId::m77696e646f77732e75692e66726f6d6265666f7265746f646179,
-        "windows.ui.gettingready" => MessageId::m77696e646f77732e75692e67657474696e677265616479,
-        "windows.ui.gettingreadyconnectingtoyourjournal" => MessageId::m77696e646f77732e75692e67657474696e677265616479636f6e6e656374696e67746f796f75726a6f75726e616c,
-        "windows.ui.gettingthisdeviceready" => MessageId::m77696e646f77732e75692e67657474696e67746869736465766963657265616479,
-        "windows.ui.globalshortcut" => MessageId::m77696e646f77732e75692e676c6f62616c73686f7274637574,
-        "windows.ui.goesalongwithit" => MessageId::m77696e646f77732e75692e676f6573616c6f6e67776974686974,
-        "windows.ui.goodafternoon" => MessageId::m77696e646f77732e75692e676f6f6461667465726e6f6f6e,
-        "windows.ui.goodevening" => MessageId::m77696e646f77732e75692e676f6f646576656e696e67,
-        "windows.ui.goodmorning" => MessageId::m77696e646f77732e75692e676f6f646d6f726e696e67,
-        "windows.ui.holdoneormoreofctrlalt" => MessageId::m77696e646f77732e75692e686f6c646f6e656f726d6f72656f666374726c616c74,
-        "windows.ui.home" => MessageId::m77696e646f77732e75692e686f6d65,
-        "windows.ui.homex4e7a5cec" => MessageId::m77696e646f77732e75692e686f6d65783465376135636563,
-        "windows.ui.hourago" => MessageId::m77696e646f77732e75692e686f757261676f,
-        "windows.ui.howoftentocheckforupdates" => MessageId::m77696e646f77732e75692e686f776f6674656e746f636865636b666f7275706461746573,
-        "windows.ui.hrlefthrminleftboth" => MessageId::m77696e646f77732e75692e68726c65667468726d696e6c656674626f7468,
-        "windows.ui.idle" => MessageId::m77696e646f77732e75692e69646c65,
-        "windows.ui.ifyouhaventyetaddthe" => MessageId::m77696e646f77732e75692e6966796f75686176656e74796574616464746865,
-        "windows.ui.import" => MessageId::m77696e646f77732e75692e696d706f7274,
-        "windows.ui.importswaitonthisdeviceuntilyouconnectajournal" => MessageId::m77696e646f77732e75692e696d706f727473776169746f6e74686973646576696365756e74696c796f75636f6e6e656374616a6f75726e616c,
-        "windows.ui.importswaituntilyouconfirmyourjournalsmark" => MessageId::m77696e646f77732e75692e696d706f72747377616974756e74696c796f75636f6e6669726d796f75726a6f75726e616c736d61726b,
-        "windows.ui.importswaituntilyourjournalisupdated" => MessageId::m77696e646f77732e75692e696d706f72747377616974756e74696c796f75726a6f75726e616c697375706461746564,
-        "windows.ui.inputgain" => MessageId::m77696e646f77732e75692e696e7075746761696e,
-        "windows.ui.installing" => MessageId::m77696e646f77732e75692e696e7374616c6c696e67,
-        "windows.ui.installingsolstone" => MessageId::m77696e646f77732e75692e696e7374616c6c696e67736f6c73746f6e65,
-        "windows.ui.inyourjournal" => MessageId::m77696e646f77732e75692e696e796f75726a6f75726e616c,
-        "windows.ui.inyourjournalchoosepairadeviceandpastethelinkher" => MessageId::m77696e646f77732e75692e696e796f75726a6f75726e616c63686f6f73657061697261646576696365616e6470617374657468656c696e6b686572,
-        "windows.ui.itinstallsthenexttimethesolstoneappstartsincludi" => MessageId::m77696e646f77732e75692e6974696e7374616c6c737468656e65787474696d65746865736f6c73746f6e65617070737461727473696e636c756469,
-        "windows.ui.itslargerthanyourjournaltakes" => MessageId::m77696e646f77732e75692e6974736c61726765727468616e796f75726a6f75726e616c74616b6573,
-        "windows.ui.january" => MessageId::m77696e646f77732e75692e6a616e75617279,
-        "windows.ui.journaldetails" => MessageId::m77696e646f77732e75692e6a6f75726e616c64657461696c73,
-        "windows.ui.journallastreached" => MessageId::m77696e646f77732e75692e6a6f75726e616c6c61737472656163686564,
-        "windows.ui.journalneedsupdatebeforecantake" => MessageId::m77696e646f77732e75692e6a6f75726e616c6e656564737570646174656265666f726563616e74616b65,
-        "windows.ui.journalsync" => MessageId::m77696e646f77732e75692e6a6f75726e616c73796e63,
-        "windows.ui.journalupdateneeded" => MessageId::m77696e646f77732e75692e6a6f75726e616c7570646174656e6565646564,
-        "windows.ui.journalversion" => MessageId::m77696e646f77732e75692e6a6f75726e616c76657273696f6e,
-        "windows.ui.july" => MessageId::m77696e646f77732e75692e6a756c79,
-        "windows.ui.june" => MessageId::m77696e646f77732e75692e6a756e65,
-        "windows.ui.keeponwhilepausedorscreenis" => MessageId::m77696e646f77732e75692e6b6565706f6e7768696c657061757365646f7273637265656e6973,
-        "windows.ui.keepprivatewindowsoutofyourjournal" => MessageId::m77696e646f77732e75692e6b6565707072697661746577696e646f77736f75746f66796f75726a6f75726e616c,
-        "windows.ui.keptonthispc" => MessageId::m77696e646f77732e75692e6b6570746f6e746869737063,
-        "windows.ui.keptonthispcnotreachingyour" => MessageId::m77696e646f77732e75692e6b6570746f6e7468697370636e6f747265616368696e67796f7572,
-        "windows.ui.label" => MessageId::m77696e646f77732e75692e6c6162656c,
-        "windows.ui.lastchecked" => MessageId::m77696e646f77732e75692e6c617374636865636b6564,
-        "windows.ui.lastreached" => MessageId::m77696e646f77732e75692e6c61737472656163686564,
-        "windows.ui.lasttakenin" => MessageId::m77696e646f77732e75692e6c61737474616b656e696e,
-        "windows.ui.leftout" => MessageId::m77696e646f77732e75692e6c6566746f7574,
-        "windows.ui.lessthanaminuteleft" => MessageId::m77696e646f77732e75692e6c6573737468616e616d696e7574656c656674,
-        "windows.ui.madebysolpbc" => MessageId::m77696e646f77732e75692e6d6164656279736f6c706263,
-        "windows.ui.march" => MessageId::m77696e646f77732e75692e6d61726368,
-        "windows.ui.mark" => MessageId::m77696e646f77732e75692e6d61726b,
-        "windows.ui.markunavailable" => MessageId::m77696e646f77732e75692e6d61726b756e617661696c61626c65,
-        "windows.ui.markunavailablex5acbd11e" => MessageId::m77696e646f77732e75692e6d61726b756e617661696c61626c65783561636264313165,
-        "windows.ui.may" => MessageId::m77696e646f77732e75692e6d6179,
-        "windows.ui.microphone" => MessageId::m77696e646f77732e75692e6d6963726f70686f6e65,
-        "windows.ui.microphonelevel" => MessageId::m77696e646f77732e75692e6d6963726f70686f6e656c6576656c,
-        "windows.ui.microphones" => MessageId::m77696e646f77732e75692e6d6963726f70686f6e6573,
-        "windows.ui.minuteago" => MessageId::m77696e646f77732e75692e6d696e75746561676f,
-        "windows.ui.moreaboutthis" => MessageId::m77696e646f77732e75692e6d6f726561626f757474686973,
-        "windows.ui.moreimports" => MessageId::m77696e646f77732e75692e6d6f7265696d706f727473,
-        "windows.ui.movedown" => MessageId::m77696e646f77732e75692e6d6f7665646f776e,
-        "windows.ui.moveup" => MessageId::m77696e646f77732e75692e6d6f76657570,
-        "windows.ui.n1passwordbitwardenandtheotherpasswordmanager" => MessageId::m77696e646f77732e75692e6e3170617373776f726462697477617264656e616e647468656f7468657270617373776f72646d616e61676572,
-        "windows.ui.needsattentionword" => MessageId::m77696e646f77732e75692e6e65656473617474656e74696f6e776f7264,
-        "windows.ui.needspermission" => MessageId::m77696e646f77732e75692e6e656564737065726d697373696f6e,
-        "windows.ui.next" => MessageId::m77696e646f77732e75692e6e657874,
-        "windows.ui.nextsave" => MessageId::m77696e646f77732e75692e6e65787473617665,
-        "windows.ui.nobrowserconnectednow" => MessageId::m77696e646f77732e75692e6e6f62726f77736572636f6e6e65637465646e6f77,
-        "windows.ui.nocredentialaccess" => MessageId::m77696e646f77732e75692e6e6f63726564656e7469616c616363657373,
-        "windows.ui.noexclusionsactive" => MessageId::m77696e646f77732e75692e6e6f6578636c7573696f6e73616374697665,
-        "windows.ui.noidentitypresented" => MessageId::m77696e646f77732e75692e6e6f6964656e7469747970726573656e746564,
-        "windows.ui.noinputdevice" => MessageId::m77696e646f77732e75692e6e6f696e707574646576696365,
-        "windows.ui.nokeywordsyet" => MessageId::m77696e646f77732e75692e6e6f6b6579776f726473796574,
-        "windows.ui.nolocaljournaltoconnectto" => MessageId::m77696e646f77732e75692e6e6f6c6f63616c6a6f75726e616c746f636f6e6e656374746f,
-        "windows.ui.nomicrophonefound" => MessageId::m77696e646f77732e75692e6e6f6d6963726f70686f6e65666f756e64,
-        "windows.ui.nomicrophoneinputdevices" => MessageId::m77696e646f77732e75692e6e6f6d6963726f70686f6e65696e70757464657669636573,
-        "windows.ui.nomicrophoneisavailableconnectorenableoneinwindo" => MessageId::m77696e646f77732e75692e6e6f6d6963726f70686f6e656973617661696c61626c65636f6e6e6563746f72656e61626c656f6e65696e77696e646f,
-        "windows.ui.nonedisplay" => MessageId::m77696e646f77732e75692e6e6f6e65646973706c6179,
-        "windows.ui.nootherappsrunning" => MessageId::m77696e646f77732e75692e6e6f6f746865726170707372756e6e696e67,
-        "windows.ui.noroommorerightnownew" => MessageId::m77696e646f77732e75692e6e6f726f6f6d6d6f726572696768746e6f776e6577,
-        "windows.ui.noshortcutset" => MessageId::m77696e646f77732e75692e6e6f73686f7274637574736574,
-        "windows.ui.nosoundoutputfound" => MessageId::m77696e646f77732e75692e6e6f736f756e646f7574707574666f756e64,
-        "windows.ui.nosoundoutputisavailableconnectorenableoneinwind" => MessageId::m77696e646f77732e75692e6e6f736f756e646f75747075746973617661696c61626c65636f6e6e6563746f72656e61626c656f6e65696e77696e64,
-        "windows.ui.not" => MessageId::m77696e646f77732e75692e6e6f74,
-        "windows.ui.notanswered" => MessageId::m77696e646f77732e75692e6e6f74616e737765726564,
-        "windows.ui.notavailable" => MessageId::m77696e646f77732e75692e6e6f74617661696c61626c65,
-        "windows.ui.notavailablerightnow" => MessageId::m77696e646f77732e75692e6e6f74617661696c61626c6572696768746e6f77,
-        "windows.ui.notcheckedforupdatesyet" => MessageId::m77696e646f77732e75692e6e6f74636865636b6564666f7275706461746573796574,
-        "windows.ui.notesjournal" => MessageId::m77696e646f77732e75692e6e6f7465736a6f75726e616c,
-        "windows.ui.notgoingtoyourjournalrightnoweachonesayswhy" => MessageId::m77696e646f77732e75692e6e6f74676f696e67746f796f75726a6f75726e616c72696768746e6f77656163686f6e6573617973776879,
-        "windows.ui.nothingexcludedyet" => MessageId::m77696e646f77732e75692e6e6f7468696e676578636c75646564796574,
-        "windows.ui.nothingfrombeforetoday" => MessageId::m77696e646f77732e75692e6e6f7468696e6766726f6d6265666f7265746f646179,
-        "windows.ui.nothingwassavedonthisdevice" => MessageId::m77696e646f77732e75692e6e6f7468696e6777617373617665646f6e74686973646576696365,
-        "windows.ui.nothingyet" => MessageId::m77696e646f77732e75692e6e6f7468696e67796574,
-        "windows.ui.nothingyetxec5a8da6" => MessageId::m77696e646f77732e75692e6e6f7468696e67796574786563356138646136,
-        "windows.ui.notonthiscomputer" => MessageId::m77696e646f77732e75692e6e6f746f6e74686973636f6d7075746572,
-        "windows.ui.notreachingyourjournalrightnow" => MessageId::m77696e646f77732e75692e6e6f747265616368696e67796f75726a6f75726e616c72696768746e6f77,
-        "windows.ui.notreported" => MessageId::m77696e646f77732e75692e6e6f747265706f72746564,
-        "windows.ui.notyet" => MessageId::m77696e646f77732e75692e6e6f74796574,
-        "windows.ui.nousagedataiseversentupdate" => MessageId::m77696e646f77732e75692e6e6f75736167656461746169736576657273656e74757064617465,
-        "windows.ui.november" => MessageId::m77696e646f77732e75692e6e6f76656d626572,
-        "windows.ui.october" => MessageId::m77696e646f77732e75692e6f63746f626572,
-        "windows.ui.offline" => MessageId::m77696e646f77732e75692e6f66666c696e65,
-        "windows.ui.offlinearg0waiting" => MessageId::m77696e646f77732e75692e6f66666c696e656172673077616974696e67,
-        "windows.ui.onlywhatthesolstoneappcantellisascreenshotcomesi" => MessageId::m77696e646f77732e75692e6f6e6c7977686174746865736f6c73746f6e6561707063616e74656c6c69736173637265656e73686f74636f6d657369,
-        "windows.ui.onthesitesyouallowthesolstoneextensiontakesinthe" => MessageId::m77696e646f77732e75692e6f6e7468657369746573796f75616c6c6f77746865736f6c73746f6e65657874656e73696f6e74616b6573696e746865,
-        "windows.ui.onthisdevice" => MessageId::m77696e646f77732e75692e6f6e74686973646576696365,
-        "windows.ui.openfolder" => MessageId::m77696e646f77732e75692e6f70656e666f6c646572,
-        "windows.ui.opennavigation" => MessageId::m77696e646f77732e75692e6f70656e6e617669676174696f6e,
-        "windows.ui.opensettings" => MessageId::m77696e646f77732e75692e6f70656e73657474696e6773,
-        "windows.ui.opensoundsettings" => MessageId::m77696e646f77732e75692e6f70656e736f756e6473657474696e6773,
-        "windows.ui.openwindowssettings" => MessageId::m77696e646f77732e75692e6f70656e77696e646f777373657474696e6773,
-        "windows.ui.otherfilesinarg0staywheretheyare" => MessageId::m77696e646f77732e75692e6f7468657266696c6573696e6172673073746179776865726574686579617265,
-        "windows.ui.pageaddresses" => MessageId::m77696e646f77732e75692e70616765616464726573736573,
-        "windows.ui.pageaddressesedgeandchrome" => MessageId::m77696e646f77732e75692e7061676561646472657373657365646765616e646368726f6d65,
-        "windows.ui.pairagain" => MessageId::m77696e646f77732e75692e70616972616761696e,
-        "windows.ui.pairedwith" => MessageId::m77696e646f77732e75692e70616972656477697468,
-        "windows.ui.pairing" => MessageId::m77696e646f77732e75692e70616972696e67,
-        "windows.ui.pairingcancellednothingthispchaskept" => MessageId::m77696e646f77732e75692e70616972696e6763616e63656c6c65646e6f7468696e677468697370636861736b657074,
-        "windows.ui.pairingdidntgothroughgeta" => MessageId::m77696e646f77732e75692e70616972696e676469646e74676f7468726f75676867657461,
-        "windows.ui.pairinglinkfromyourjournal" => MessageId::m77696e646f77732e75692e70616972696e676c696e6b66726f6d796f75726a6f75726e616c,
-        "windows.ui.pairthispctoyourjournalto" => MessageId::m77696e646f77732e75692e70616972746869737063746f796f75726a6f75726e616c746f,
-        "windows.ui.pairtodelivertoyourjournal" => MessageId::m77696e646f77732e75692e70616972746f64656c69766572746f796f75726a6f75726e616c,
-        "windows.ui.pairwithyourjournalfirst" => MessageId::m77696e646f77732e75692e7061697277697468796f75726a6f75726e616c6669727374,
-        "windows.ui.partvaultcantberead" => MessageId::m77696e646f77732e75692e706172747661756c7463616e74626572656164,
-        "windows.ui.paused" => MessageId::m77696e646f77732e75692e706175736564,
-        "windows.ui.pausedarg0minleft" => MessageId::m77696e646f77732e75692e706175736564617267306d696e6c656674,
-        "windows.ui.pausedlessthanaminuteleft" => MessageId::m77696e646f77732e75692e7061757365646c6573737468616e616d696e7574656c656674,
-        "windows.ui.pauseduntilyouresume" => MessageId::m77696e646f77732e75692e706175736564756e74696c796f75726573756d65,
-        "windows.ui.pausedwiththerestofthesolstone" => MessageId::m77696e646f77732e75692e70617573656477697468746865726573746f66746865736f6c73746f6e65,
-        "windows.ui.pausedword" => MessageId::m77696e646f77732e75692e706175736564776f7264,
-        "windows.ui.pausedxa7a9dc5b" => MessageId::m77696e646f77732e75692e706175736564786137613964633562,
-        "windows.ui.pauseresume" => MessageId::m77696e646f77732e75692e7061757365726573756d65,
-        "windows.ui.pausesallsources" => MessageId::m77696e646f77732e75692e706175736573616c6c736f7572636573,
-        "windows.ui.pending" => MessageId::m77696e646f77732e75692e70656e64696e67,
-        "windows.ui.placeholder" => MessageId::m77696e646f77732e75692e706c616365686f6c646572,
-        "windows.ui.placeholder2" => MessageId::m77696e646f77732e75692e706c616365686f6c64657232,
-        "windows.ui.presented" => MessageId::m77696e646f77732e75692e70726573656e746564,
-        "windows.ui.pressyourshortcut" => MessageId::m77696e646f77732e75692e7072657373796f757273686f7274637574,
-        "windows.ui.previewpaused" => MessageId::m77696e646f77732e75692e70726576696577706175736564,
-        "windows.ui.privacy" => MessageId::m77696e646f77732e75692e70726976616379,
-        "windows.ui.privatewindows" => MessageId::m77696e646f77732e75692e7072697661746577696e646f7773,
-        "windows.ui.progresstext" => MessageId::m77696e646f77732e75692e70726f677265737374657874,
-        "windows.ui.quitsolstone" => MessageId::m77696e646f77732e75692e71756974736f6c73746f6e65,
-        "windows.ui.readytosetupword" => MessageId::m77696e646f77732e75692e7265616479746f7365747570776f7264,
-        "windows.ui.recent" => MessageId::m77696e646f77732e75692e726563656e74,
-        "windows.ui.relaunchtoinstall" => MessageId::m77696e646f77732e75692e72656c61756e6368746f696e7374616c6c,
-        "windows.ui.remove" => MessageId::m77696e646f77732e75692e72656d6f7665,
-        "windows.ui.removearg0" => MessageId::m77696e646f77732e75692e72656d6f766561726730,
-        "windows.ui.removex7e5608ab" => MessageId::m77696e646f77732e75692e72656d6f7665783765353630386162,
-        "windows.ui.restartintake" => MessageId::m77696e646f77732e75692e72657374617274696e74616b65,
-        "windows.ui.retrying" => MessageId::m77696e646f77732e75692e7265747279696e67,
-        "windows.ui.saveacopyofrecentlogs" => MessageId::m77696e646f77732e75692e7361766561636f70796f66726563656e746c6f6773,
-        "windows.ui.savedonthisdevicearg0" => MessageId::m77696e646f77732e75692e73617665646f6e7468697364657669636561726730,
-        "windows.ui.savingonthisdevicearg0ofarg1" => MessageId::m77696e646f77732e75692e736176696e676f6e74686973646576696365617267306f6661726731,
-        "windows.ui.screen" => MessageId::m77696e646f77732e75692e73637265656e,
-        "windows.ui.screenalsoaddstheappsyouuse" => MessageId::m77696e646f77732e75692e73637265656e616c736f6164647374686561707073796f75757365,
-        "windows.ui.screenarg0computersoundarg1micarg2desktopactivit" => MessageId::m77696e646f77732e75692e73637265656e61726730636f6d7075746572736f756e64617267316d6963617267326465736b746f7061637469766974,
-        "windows.ui.screenpreview" => MessageId::m77696e646f77732e75692e73637265656e70726576696577,
-        "windows.ui.screenshots" => MessageId::m77696e646f77732e75692e73637265656e73686f7473,
-        "windows.ui.screenshotsalreadyinyourjournalarentbroughtinaga" => MessageId::m77696e646f77732e75692e73637265656e73686f7473616c7265616479696e796f75726a6f75726e616c6172656e7462726f75676874696e616761,
-        "windows.ui.screenshotsyoutakewhileitspauseddontcomein" => MessageId::m77696e646f77732e75692e73637265656e73686f7473796f7574616b657768696c65697473706175736564646f6e74636f6d65696e,
-        "windows.ui.segmentsthathavenotreachedyourjournal" => MessageId::m77696e646f77732e75692e7365676d656e747374686174686176656e6f7472656163686564796f75726a6f75726e616c,
-        "windows.ui.selecteddevice" => MessageId::m77696e646f77732e75692e73656c6563746564646576696365,
-        "windows.ui.sendingtoyourjournal" => MessageId::m77696e646f77732e75692e73656e64696e67746f796f75726a6f75726e616c,
-        "windows.ui.sendingword" => MessageId::m77696e646f77732e75692e73656e64696e67776f7264,
-        "windows.ui.september" => MessageId::m77696e646f77732e75692e73657074656d626572,
-        "windows.ui.set" => MessageId::m77696e646f77732e75692e736574,
-        "windows.ui.settingupword" => MessageId::m77696e646f77732e75692e73657474696e677570776f7264,
-        "windows.ui.setupconnectionchanged" => MessageId::m77696e646f77732e75692e7365747570636f6e6e656374696f6e6368616e676564,
-        "windows.ui.setupisbusytryagainina" => MessageId::m77696e646f77732e75692e7365747570697362757379747279616761696e696e61,
-        "windows.ui.setupprogresscouldnotbesaved" => MessageId::m77696e646f77732e75692e736574757070726f6772657373636f756c646e6f7462657361766564,
-        "windows.ui.setupsequenceisunavailableinthisbuild" => MessageId::m77696e646f77732e75692e736574757073657175656e63656973756e617661696c61626c65696e746869736275696c64,
-        "windows.ui.setupunavailable" => MessageId::m77696e646f77732e75692e7365747570756e617661696c61626c65,
-        "windows.ui.sharesoundfromthiscomputer" => MessageId::m77696e646f77732e75692e7368617265736f756e6466726f6d74686973636f6d7075746572,
-        "windows.ui.shareyourscreen" => MessageId::m77696e646f77732e75692e7368617265796f757273637265656e,
-        "windows.ui.shortcut" => MessageId::m77696e646f77732e75692e73686f7274637574,
-        "windows.ui.shortcutsetbutturnedoff" => MessageId::m77696e646f77732e75692e73686f72746375747365746275747475726e65646f6666,
-        "windows.ui.skip" => MessageId::m77696e646f77732e75692e736b6970,
-        "windows.ui.sofar" => MessageId::m77696e646f77732e75692e736f666172,
-        "windows.ui.solstoneappcantreadvault" => MessageId::m77696e646f77732e75692e736f6c73746f6e6561707063616e74726561647661756c74,
-        "windows.ui.solstoneappcouldntsaveits" => MessageId::m77696e646f77732e75692e736f6c73746f6e65617070636f756c646e7473617665697473,
-        "windows.ui.solstoneappdidntfindvault" => MessageId::m77696e646f77732e75692e736f6c73746f6e656170706469646e7466696e647661756c74,
-        "windows.ui.solstoneapptakesnotesonevault" => MessageId::m77696e646f77732e75692e736f6c73746f6e6561707074616b65736e6f7465736f6e657661756c74,
-        "windows.ui.solstonearg0installsthenexttimethesolstoneappsta" => MessageId::m77696e646f77732e75692e736f6c73746f6e6561726730696e7374616c6c737468656e65787474696d65746865736f6c73746f6e65617070737461,
-        "windows.ui.solstoneisavailable" => MessageId::m77696e646f77732e75692e736f6c73746f6e656973617661696c61626c65,
-        "windows.ui.solstoneisreadytoinstall" => MessageId::m77696e646f77732e75692e736f6c73746f6e6569737265616479746f696e7374616c6c,
-        "windows.ui.solstonereadyinstall" => MessageId::m77696e646f77732e75692e736f6c73746f6e657265616479696e7374616c6c,
-        "windows.ui.somenotescouldntgointo" => MessageId::m77696e646f77732e75692e736f6d656e6f746573636f756c646e74676f696e746f,
-        "windows.ui.somethingansweredpcatisnt" => MessageId::m77696e646f77732e75692e736f6d657468696e67616e7377657265647063617469736e74,
-        "windows.ui.somethingansweredpcthroughrelayisn" => MessageId::m77696e646f77732e75692e736f6d657468696e67616e73776572656470637468726f75676872656c617969736e,
-        "windows.ui.somethingotherthanyourjournalansweredcompare" => MessageId::m77696e646f77732e75692e736f6d657468696e676f746865727468616e796f75726a6f75726e616c616e737765726564636f6d70617265,
-        "windows.ui.somethingyouwereaddingdidntfinishsavingadditagai" => MessageId::m77696e646f77732e75692e736f6d657468696e67796f7577657265616464696e676469646e7466696e697368736176696e67616464697461676169,
-        "windows.ui.sourcesetupisunfinished" => MessageId::m77696e646f77732e75692e736f7572636573657475706973756e66696e6973686564,
-        "windows.ui.startfromtoday" => MessageId::m77696e646f77732e75692e737461727466726f6d746f646179,
-        "windows.ui.state" => MessageId::m77696e646f77732e75692e7374617465,
-        "windows.ui.status" => MessageId::m77696e646f77732e75692e737461747573,
-        "windows.ui.storage" => MessageId::m77696e646f77732e75692e73746f72616765,
-        "windows.ui.storagelocation" => MessageId::m77696e646f77732e75692e73746f726167656c6f636174696f6e,
-        "windows.ui.storeappsallappsfromthemicrosoft" => MessageId::m77696e646f77732e75692e73746f726561707073616c6c6170707366726f6d7468656d6963726f736f6674,
-        "windows.ui.storedlocally" => MessageId::m77696e646f77732e75692e73746f7265646c6f63616c6c79,
-        "windows.ui.storedonthispc" => MessageId::m77696e646f77732e75692e73746f7265646f6e746869737063,
-        "windows.ui.sync" => MessageId::m77696e646f77732e75692e73796e63,
-        "windows.ui.text" => MessageId::m77696e646f77732e75692e74657874,
-        "windows.ui.text3" => MessageId::m77696e646f77732e75692e7465787433,
-        "windows.ui.text6" => MessageId::m77696e646f77732e75692e7465787436,
-        "windows.ui.textcontent" => MessageId::m77696e646f77732e75692e74657874636f6e74656e74,
-        "windows.ui.textcontent2" => MessageId::m77696e646f77732e75692e74657874636f6e74656e7432,
-        "windows.ui.textcontent4" => MessageId::m77696e646f77732e75692e74657874636f6e74656e7434,
-        "windows.ui.textcontent5" => MessageId::m77696e646f77732e75692e74657874636f6e74656e7435,
-        "windows.ui.textfilestxt" => MessageId::m77696e646f77732e75692e7465787466696c6573747874,
-        "windows.ui.thatcomboisinusebyanother" => MessageId::m77696e646f77732e75692e74686174636f6d626f6973696e7573656279616e6f74686572,
-        "windows.ui.thatdidnotfinish" => MessageId::m77696e646f77732e75692e746861746469646e6f7466696e697368,
-        "windows.ui.thatfolderisntobsidianvault" => MessageId::m77696e646f77732e75692e74686174666f6c64657269736e746f6273696469616e7661756c74,
-        "windows.ui.thatfoldersnamecant" => MessageId::m77696e646f77732e75692e74686174666f6c646572736e616d6563616e74,
-        "windows.ui.thatpairinglinkisntonethe" => MessageId::m77696e646f77732e75692e7468617470616972696e676c696e6b69736e746f6e65746865,
-        "windows.ui.thearg0folderisntonthispcanymore" => MessageId::m77696e646f77732e75692e74686561726730666f6c64657269736e746f6e746869737063616e796d6f7265,
-        "windows.ui.thecopyisalreadygonesothisonlyclearsitfromhere" => MessageId::m77696e646f77732e75692e746865636f70796973616c7265616479676f6e65736f746869736f6e6c79636c65617273697466726f6d68657265,
-        "windows.ui.thecopyonthisdeviceismissing" => MessageId::m77696e646f77732e75692e746865636f70796f6e7468697364657669636569736d697373696e67,
-        "windows.ui.thedownloaddidnotfinish" => MessageId::m77696e646f77732e75692e746865646f776e6c6f61646469646e6f7466696e697368,
-        "windows.ui.thelast30days" => MessageId::m77696e646f77732e75692e7468656c617374333064617973,
-        "windows.ui.thelast6months" => MessageId::m77696e646f77732e75692e7468656c617374366d6f6e746873,
-        "windows.ui.thelastcheckforupdatesfailed" => MessageId::m77696e646f77732e75692e7468656c617374636865636b666f72757064617465736661696c6564,
-        "windows.ui.thelastyear" => MessageId::m77696e646f77732e75692e7468656c61737479656172,
-        "windows.ui.thepairingwindowclosedgetanew" => MessageId::m77696e646f77732e75692e74686570616972696e6777696e646f77636c6f736564676574616e6577,
-        "windows.ui.thereisntenoughroomonthisdevice" => MessageId::m77696e646f77732e75692e746865726569736e74656e6f756768726f6f6d6f6e74686973646576696365,
-        "windows.ui.theserulesareactivenowbutcouldn" => MessageId::m77696e646f77732e75692e746865736572756c65736172656163746976656e6f77627574636f756c646e,
-        "windows.ui.thesolstoneappusesonemicrophoneat" => MessageId::m77696e646f77732e75692e746865736f6c73746f6e65617070757365736f6e656d6963726f70686f6e656174,
-        "windows.ui.thetopenabledmicrophoneisuseduse" => MessageId::m77696e646f77732e75692e746865746f70656e61626c65646d6963726f70686f6e65697375736564757365,
-        "windows.ui.theupdatecouldntbeinstalled" => MessageId::m77696e646f77732e75692e746865757064617465636f756c646e746265696e7374616c6c6564,
-        "windows.ui.thisbuildcantupdateitself" => MessageId::m77696e646f77732e75692e746869736275696c6463616e74757064617465697473656c66,
-        "windows.ui.thisconnectioncouldnotbesavedtry" => MessageId::m77696e646f77732e75692e74686973636f6e6e656374696f6e636f756c646e6f7462657361766564747279,
-        "windows.ui.thisconnectioncouldnotfinishtryagain" => MessageId::m77696e646f77732e75692e74686973636f6e6e656374696f6e636f756c646e6f7466696e697368747279616761696e,
-        "windows.ui.thisconnectioncouldnotfinishtryagain2" => MessageId::m77696e646f77732e75692e74686973636f6e6e656374696f6e636f756c646e6f7466696e697368747279616761696e32,
-        "windows.ui.thiscouldntbereadadditagain" => MessageId::m77696e646f77732e75692e74686973636f756c646e746265726561646164646974616761696e,
-        "windows.ui.thisdevicecantconvertthisphoto" => MessageId::m77696e646f77732e75692e7468697364657669636563616e74636f6e766572747468697370686f746f,
-        "windows.ui.thisdevicecouldntopenitssaved" => MessageId::m77696e646f77732e75692e74686973646576696365636f756c646e746f70656e6974737361766564,
-        "windows.ui.thisdeviceisnotpairedwithyourjournalimportswaith" => MessageId::m77696e646f77732e75692e7468697364657669636569736e6f7470616972656477697468796f75726a6f75726e616c696d706f7274737761697468,
-        "windows.ui.thisdeviceisntonanetwork" => MessageId::m77696e646f77732e75692e7468697364657669636569736e746f6e616e6574776f726b,
-        "windows.ui.thisjournallinkisntvalid" => MessageId::m77696e646f77732e75692e746869736a6f75726e616c6c696e6b69736e7476616c6964,
-        "windows.ui.thislinkcouldnotbedismissedtry" => MessageId::m77696e646f77732e75692e746869736c696e6b636f756c646e6f7462656469736d6973736564747279,
-        "windows.ui.thislinkcouldnotbeusedtry" => MessageId::m77696e646f77732e75692e746869736c696e6b636f756c646e6f74626575736564747279,
-        "windows.ui.thislistappliestoactivitytoo" => MessageId::m77696e646f77732e75692e746869736c6973746170706c696573746f6163746976697479746f6f,
-        "windows.ui.thisonlytakesamoment" => MessageId::m77696e646f77732e75692e746869736f6e6c7974616b6573616d6f6d656e74,
-        "windows.ui.thispc" => MessageId::m77696e646f77732e75692e746869737063,
-        "windows.ui.thispccantconnecttoyour" => MessageId::m77696e646f77732e75692e74686973706363616e74636f6e6e656374746f796f7572,
-        "windows.ui.thispccouldntworkoutyour" => MessageId::m77696e646f77732e75692e746869737063636f756c646e74776f726b6f7574796f7572,
-        "windows.ui.thisreadsthewindowtitleandmatches" => MessageId::m77696e646f77732e75692e74686973726561647374686577696e646f777469746c65616e646d617463686573,
-        "windows.ui.thisremovesthecopyonthisdevicesoitwontreachyourj" => MessageId::m77696e646f77732e75692e7468697372656d6f766573746865636f70796f6e74686973646576696365736f6974776f6e747265616368796f75726a,
-        "windows.ui.thisremovesthecopyonthisdeviceyourjournalmaystil" => MessageId::m77696e646f77732e75692e7468697372656d6f766573746865636f70796f6e74686973646576696365796f75726a6f75726e616c6d61797374696c,
-        "windows.ui.thissetuplinkcouldnotbeused" => MessageId::m77696e646f77732e75692e7468697373657475706c696e6b636f756c646e6f74626575736564,
-        "windows.ui.thisstepcouldnotfinishtryagain" => MessageId::m77696e646f77732e75692e7468697373746570636f756c646e6f7466696e697368747279616761696e,
-        "windows.ui.thisstepcouldntfinishtryagain" => MessageId::m77696e646f77732e75692e7468697373746570636f756c646e7466696e697368747279616761696e,
-        "windows.ui.titlekeywords" => MessageId::m77696e646f77732e75692e7469746c656b6579776f726473,
-        "windows.ui.titlekeywordtoexclude" => MessageId::m77696e646f77732e75692e7469746c656b6579776f7264746f6578636c756465,
-        "windows.ui.toolargebring" => MessageId::m77696e646f77732e75692e746f6f6c617267656272696e67,
-        "windows.ui.trynow" => MessageId::m77696e646f77732e75692e7472796e6f77,
-        "windows.ui.trynowarg0" => MessageId::m77696e646f77732e75692e7472796e6f7761726730,
-        "windows.ui.tryopeningthelinkagain" => MessageId::m77696e646f77732e75692e7472796f70656e696e677468656c696e6b616761696e,
-        "windows.ui.turningoffstopsbringingchangeswhat" => MessageId::m77696e646f77732e75692e7475726e696e676f666673746f70736272696e67696e676368616e67657377686174,
-        "windows.ui.turnitonanytime" => MessageId::m77696e646f77732e75692e7475726e69746f6e616e7974696d65,
-        "windows.ui.turnoff" => MessageId::m77696e646f77732e75692e7475726e6f6666,
-        "windows.ui.turnon" => MessageId::m77696e646f77732e75692e7475726e6f6e,
-        "windows.ui.unavailable" => MessageId::m77696e646f77732e75692e756e617661696c61626c65,
-        "windows.ui.unavailableword" => MessageId::m77696e646f77732e75692e756e617661696c61626c65776f7264,
-        "windows.ui.unknown" => MessageId::m77696e646f77732e75692e756e6b6e6f776e,
-        "windows.ui.unknownjournals" => MessageId::m77696e646f77732e75692e756e6b6e6f776e6a6f75726e616c73,
-        "windows.ui.untiliresume" => MessageId::m77696e646f77732e75692e756e74696c69726573756d65,
-        "windows.ui.usethislink" => MessageId::m77696e646f77732e75692e757365746869736c696e6b,
-        "windows.ui.usevault" => MessageId::m77696e646f77732e75692e7573657661756c74,
-        "windows.ui.value15minutes" => MessageId::m77696e646f77732e75692e76616c756531356d696e75746573,
-        "windows.ui.value1hour" => MessageId::m77696e646f77732e75692e76616c756531686f7572,
-        "windows.ui.value30minutes" => MessageId::m77696e646f77732e75692e76616c756533306d696e75746573,
-        "windows.ui.vaults" => MessageId::m77696e646f77732e75692e7661756c7473,
-        "windows.ui.vaultscomputer" => MessageId::m77696e646f77732e75692e7661756c7473636f6d7075746572,
-        "windows.ui.vaultwithnamealreadyjournal" => MessageId::m77696e646f77732e75692e7661756c74776974686e616d65616c72656164796a6f75726e616c,
-        "windows.ui.viewdetails" => MessageId::m77696e646f77732e75692e7669657764657461696c73,
-        "windows.ui.waiting" => MessageId::m77696e646f77732e75692e77616974696e67,
-        "windows.ui.waitingforajournalupdateyourscreenshotswaitonthi" => MessageId::m77696e646f77732e75692e77616974696e67666f72616a6f75726e616c757064617465796f757273637265656e73686f7473776169746f6e746869,
-        "windows.ui.waitingforyouranswer" => MessageId::m77696e646f77732e75692e77616974696e67666f72796f7572616e73776572,
-        "windows.ui.waitingforyoutoconfirmyourjournalsmark" => MessageId::m77696e646f77732e75692e77616974696e67666f72796f75746f636f6e6669726d796f75726a6f75726e616c736d61726b,
-        "windows.ui.waitingjournalupdate" => MessageId::m77696e646f77732e75692e77616974696e676a6f75726e616c757064617465,
-        "windows.ui.waitingreachjournal" => MessageId::m77696e646f77732e75692e77616974696e6772656163686a6f75726e616c,
-        "windows.ui.waitingsync" => MessageId::m77696e646f77732e75692e77616974696e6773796e63,
-        "windows.ui.waitingtogotoyourjournal" => MessageId::m77696e646f77732e75692e77616974696e67746f676f746f796f75726a6f75726e616c,
-        "windows.ui.waitingtogotoyourjournalx5d789db5" => MessageId::m77696e646f77732e75692e77616974696e67746f676f746f796f75726a6f75726e616c783564373839646235,
-        "windows.ui.waitingtosync" => MessageId::m77696e646f77732e75692e77616974696e67746f73796e63,
-        "windows.ui.waitingword" => MessageId::m77696e646f77732e75692e77616974696e67776f7264,
-        "windows.ui.whatanswered" => MessageId::m77696e646f77732e75692e77686174616e737765726564,
-        "windows.ui.whatsalreadyinyourjournalstayswhenyoupauseorturn" => MessageId::m77696e646f77732e75692e7768617473616c7265616479696e796f75726a6f75726e616c73746179737768656e796f7570617573656f727475726e,
-        "windows.ui.whatyousharestaysonthispc" => MessageId::m77696e646f77732e75692e77686174796f75736861726573746179736f6e746869737063,
-        "windows.ui.whatyouturnongoesintoyour" => MessageId::m77696e646f77732e75692e77686174796f757475726e6f6e676f6573696e746f796f7572,
-        "windows.ui.whilethisisonthesolstoneapptakesinsoundandallofi" => MessageId::m77696e646f77732e75692e7768696c657468697369736f6e746865736f6c73746f6e6561707074616b6573696e736f756e64616e64616c6c6f6669,
-        "windows.ui.whilethisisonthesolstoneapptakesinthescreenshots" => MessageId::m77696e646f77732e75692e7768696c657468697369736f6e746865736f6c73746f6e6561707074616b6573696e74686573637265656e73686f7473,
-        "windows.ui.whilethisisonthesolstoneapptakesinwhatsonyourscr" => MessageId::m77696e646f77732e75692e7768696c657468697369736f6e746865736f6c73746f6e6561707074616b6573696e77686174736f6e796f7572736372,
-        "windows.ui.windowsfromtheseappsneverreachyour" => MessageId::m77696e646f77732e75692e77696e646f777366726f6d7468657365617070736e657665727265616368796f7572,
-        "windows.ui.windowswhosetitlecontainsawordyou" => MessageId::m77696e646f77732e75692e77696e646f777377686f73657469746c65636f6e7461696e7361776f7264796f75,
-        "windows.ui.withactivity" => MessageId::m77696e646f77732e75692e776974686163746976697479,
-        "windows.ui.withcomputersound" => MessageId::m77696e646f77732e75692e77697468636f6d7075746572736f756e64,
-        "windows.ui.yesterday" => MessageId::m77696e646f77732e75692e796573746572646179,
-        "windows.ui.youcanturneachsourceonor" => MessageId::m77696e646f77732e75692e796f7563616e7475726e65616368736f757263656f6e6f72,
-        "windows.ui.youchoosewhichsourcesareon" => MessageId::m77696e646f77732e75692e796f7563686f6f73657768696368736f75726365736172656f6e,
-        "windows.ui.youllseehowmanyscreenshotstherearebeforeanycomei" => MessageId::m77696e646f77732e75692e796f756c6c736565686f776d616e7973637265656e73686f747374686572656172656265666f7265616e79636f6d6569,
-        "windows.ui.your" => MessageId::m77696e646f77732e75692e796f7572,
-        "windows.ui.yourjournal" => MessageId::m77696e646f77732e75692e796f75726a6f75726e616c,
-        "windows.ui.yourjournalcanttakethiskindoffile" => MessageId::m77696e646f77732e75692e796f75726a6f75726e616c63616e7474616b65746869736b696e646f6666696c65,
-        "windows.ui.yourjournalcouldntacceptthis" => MessageId::m77696e646f77732e75692e796f75726a6f75726e616c636f756c646e7461636365707474686973,
-        "windows.ui.yourjournaldoesntsupportthismove" => MessageId::m77696e646f77732e75692e796f75726a6f75726e616c646f65736e74737570706f7274746869736d6f7665,
-        "windows.ui.yourjournalneedsanewlink" => MessageId::m77696e646f77732e75692e796f75726a6f75726e616c6e65656473616e65776c696e6b,
-        "windows.ui.yourjournalnotsetupyet" => MessageId::m77696e646f77732e75692e796f75726a6f75726e616c6e6f747365747570796574,
-        "windows.ui.yourjournalopenedbutsetupprogresscould" => MessageId::m77696e646f77732e75692e796f75726a6f75726e616c6f70656e6564627574736574757070726f6772657373636f756c64,
-        "windows.ui.yourjournalshowsthissamemarkbeside" => MessageId::m77696e646f77732e75692e796f75726a6f75726e616c73686f77737468697373616d656d61726b626573696465,
-        "windows.ui.yourjournalsmarkunavailablerightnow" => MessageId::m77696e646f77732e75692e796f75726a6f75726e616c736d61726b756e617661696c61626c6572696768746e6f77,
-        "windows.ui.yourjournalstoppedacceptingthisdeviceimportswait" => MessageId::m77696e646f77732e75692e796f75726a6f75726e616c73746f70706564616363657074696e6774686973646576696365696d706f72747377616974,
-        "windows.ui.yourshortcut" => MessageId::m77696e646f77732e75692e796f757273686f7274637574,
-        "windows.ui.yousaidthismarkdoesntmatch" => MessageId::m77696e646f77732e75692e796f7573616964746869736d61726b646f65736e746d61746368,
-        _ => return Err(RenderError::UnknownMessage),
-    };
+    static IDS: &[(&str, MessageId)] = &[
+        ("windows.about.app", MessageId::m77696e646f77732e61626f75742e617070),
+        ("windows.about.dayago", MessageId::m77696e646f77732e61626f75742e64617961676f),
+        ("windows.about.hourago", MessageId::m77696e646f77732e61626f75742e686f757261676f),
+        ("windows.about.journal", MessageId::m77696e646f77732e61626f75742e6a6f75726e616c),
+        ("windows.about.justnow", MessageId::m77696e646f77732e61626f75742e6a7573746e6f77),
+        ("windows.about.lastseen", MessageId::m77696e646f77732e61626f75742e6c6173747365656e),
+        ("windows.about.line0", MessageId::m77696e646f77732e61626f75742e6c696e6530),
+        ("windows.about.line1", MessageId::m77696e646f77732e61626f75742e6c696e6531),
+        ("windows.about.line2", MessageId::m77696e646f77732e61626f75742e6c696e6532),
+        ("windows.about.line3", MessageId::m77696e646f77732e61626f75742e6c696e6533),
+        ("windows.about.line4", MessageId::m77696e646f77732e61626f75742e6c696e6534),
+        ("windows.about.line5", MessageId::m77696e646f77732e61626f75742e6c696e6535),
+        ("windows.about.line6", MessageId::m77696e646f77732e61626f75742e6c696e6536),
+        ("windows.about.line7", MessageId::m77696e646f77732e61626f75742e6c696e6537),
+        ("windows.about.minuteago", MessageId::m77696e646f77732e61626f75742e6d696e75746561676f),
+        ("windows.about.unknown", MessageId::m77696e646f77732e61626f75742e756e6b6e6f776e),
+        ("windows.browser.discarded", MessageId::m77696e646f77732e62726f777365722e646973636172646564),
+        ("windows.desktop.shared.about.journalunknown", MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6a6f75726e616c756e6b6e6f776e),
+        ("windows.desktop.shared.about.opensourcelocalfirst", MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6f70656e736f757263656c6f63616c6669727374),
+        ("windows.desktop.shared.about.pendingsettingstab", MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e70656e64696e6773657474696e6773746162),
+        ("windows.desktop.shared.about.setupwelcomebody1", MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e736574757077656c636f6d65626f647931),
+        ("windows.desktop.shared.about.textcontent", MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e74657874636f6e74656e74),
+        ("windows.desktop.shared.about.textcontent2", MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e74657874636f6e74656e7432),
+        ("windows.desktop.shared.app.aboutsolstone", MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e61626f7574736f6c73746f6e65),
+        ("windows.desktop.shared.app.emptytext", MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e656d70747974657874),
+        ("windows.desktop.shared.app.frontendorigin", MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e66726f6e74656e646f726967696e),
+        ("windows.desktop.shared.app.justnow", MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e6a7573746e6f77),
+        ("windows.desktop.shared.app.microphonemodeoff", MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e6d6963726f70686f6e656d6f64656f6666),
+        ("windows.desktop.shared.app.notpaired", MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e6e6f74706169726564),
+        ("windows.desktop.shared.app.offlinetitle", MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e6f66666c696e657469746c65),
+        ("windows.desktop.shared.app.settingsdiagnosticson", MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e73657474696e6773646961676e6f73746963736f6e),
+        ("windows.desktop.shared.app.sourcestitle", MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e736f75726365737469746c65),
+        ("windows.desktop.shared.copy.audiosourcesystem", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e617564696f736f7572636573797374656d),
+        ("windows.desktop.shared.copy.checkagain", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e636865636b616761696e),
+        ("windows.desktop.shared.copy.choosedevice", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e63686f6f7365646576696365),
+        ("windows.desktop.shared.copy.decidingtitle", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636964696e677469746c65),
+        ("windows.desktop.shared.copy.decisionrefusedbody", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e72656675736564626f6479),
+        ("windows.desktop.shared.copy.decisionrefusedtitle", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e726566757365647469746c65),
+        ("windows.desktop.shared.copy.decisionunknownbody", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e756e6b6e6f776e626f6479),
+        ("windows.desktop.shared.copy.decisionunknowntitle", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e756e6b6e6f776e7469746c65),
+        ("windows.desktop.shared.copy.deferchoice", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e646566657263686f696365),
+        ("windows.desktop.shared.copy.journalmarkconfirmbutton", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b636f6e6669726d627574746f6e),
+        ("windows.desktop.shared.copy.journalmarkconfirmquestion", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b636f6e6669726d7175657374696f6e),
+        ("windows.desktop.shared.copy.journalmarkmismatchbutton", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b6d69736d61746368627574746f6e),
+        ("windows.desktop.shared.copy.journalmarkunverifiedcancelbutton", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b756e766572696669656463616e63656c627574746f6e),
+        ("windows.desktop.shared.copy.journalmarkunverifiedcontinuebutton", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b756e7665726966696564636f6e74696e7565627574746f6e),
+        ("windows.desktop.shared.copy.journalmarkunverifiedtitle", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b756e76657269666965647469746c65),
+        ("windows.desktop.shared.copy.keepboth", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6b656570626f7468),
+        ("windows.desktop.shared.copy.listunavailablebody", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6c697374756e617661696c61626c65626f6479),
+        ("windows.desktop.shared.copy.listunavailabletitle", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6c697374756e617661696c61626c657469746c65),
+        ("windows.desktop.shared.copy.offlinebody", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6f66666c696e65626f6479),
+        ("windows.desktop.shared.copy.pickerempty", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7069636b6572656d707479),
+        ("windows.desktop.shared.copy.replaceconfirmbody", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d626f6479),
+        ("windows.desktop.shared.copy.replaceconfirmtitle", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d7469746c65),
+        ("windows.desktop.shared.copy.replaceconfirmtitlefallback", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d7469746c6566616c6c6261636b),
+        ("windows.desktop.shared.copy.replacedevice", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365646576696365),
+        ("windows.desktop.shared.copy.replaceofferbody", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c6163656f66666572626f6479),
+        ("windows.desktop.shared.copy.replaceoffertitle", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c6163656f666665727469746c65),
+        ("windows.desktop.shared.copy.settingsjournalopen", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e67736a6f75726e616c6f70656e),
+        ("windows.desktop.shared.copy.settingslogexportsave", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e67736c6f676578706f727473617665),
+        ("windows.desktop.shared.copy.settingslogexporttitle", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e67736c6f676578706f72747469746c65),
+        ("windows.desktop.shared.copy.settingstabattentiona11y", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e6773746162617474656e74696f6e61313179),
+        ("windows.desktop.shared.copy.settingstabupdatesdonea11y", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e677374616275706461746573646f6e6561313179),
+        ("windows.desktop.shared.copy.setupapplabel", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706170706c6162656c),
+        ("windows.desktop.shared.copy.setupback", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706261636b),
+        ("windows.desktop.shared.copy.setupconnectedtoyourjournal", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7365747570636f6e6e6563746564746f796f75726a6f75726e616c),
+        ("windows.desktop.shared.copy.setupcontinue", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7365747570636f6e74696e7565),
+        ("windows.desktop.shared.copy.setupjournalcardheading", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706a6f75726e616c6361726468656164696e67),
+        ("windows.desktop.shared.copy.setupmicrophoneheadline", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706d6963726f70686f6e65686561646c696e65),
+        ("windows.desktop.shared.copy.setupopenyourjournal", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706f70656e796f75726a6f75726e616c),
+        ("windows.desktop.shared.copy.setupscreenframecaption", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736574757073637265656e6672616d6563617074696f6e),
+        ("windows.desktop.shared.copy.setupwelcomebody2", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736574757077656c636f6d65626f647932),
+        ("windows.desktop.shared.copy.setupwindowtitle", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736574757077696e646f777469746c65),
+        ("windows.desktop.shared.copy.sourcesbrowserconnectednow", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f77736572636f6e6e65637465646e6f77),
+        ("windows.desktop.shared.copy.sourcesbrowserdiscard", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657264697363617264),
+        ("windows.desktop.shared.copy.sourcesbrowserdiscardcommit", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657264697363617264636f6d6d6974),
+        ("windows.desktop.shared.copy.sourcesbrowserdiscardconfirm", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657264697363617264636f6e6669726d),
+        ("windows.desktop.shared.copy.sourcesbrowserheld", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657268656c64),
+        ("windows.desktop.shared.copy.sourcesbrowserpages", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f777365727061676573),
+        ("windows.desktop.shared.copy.storageunavailablebody", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73746f72616765756e617661696c61626c65626f6479),
+        ("windows.desktop.shared.copy.storageunavailabletitle", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73746f72616765756e617661696c61626c657469746c65),
+        ("windows.desktop.shared.copy.targetmissingbody", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7461726765746d697373696e67626f6479),
+        ("windows.desktop.shared.copy.targetmissingtitle", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7461726765746d697373696e677469746c65),
+        ("windows.desktop.shared.copy.technicaldetails", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e746563686e6963616c64657461696c73),
+        ("windows.desktop.shared.copy.text", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e74657874),
+        ("windows.desktop.shared.copy.tryagain", MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e747279616761696e),
+        ("windows.desktop.shared.settings.add", MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e616464),
+        ("windows.desktop.shared.settings.excludedapps", MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e6578636c7564656461707073),
+        ("windows.desktop.shared.settings.gethelp", MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e67657468656c70),
+        ("windows.desktop.shared.settings.help", MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e68656c70),
+        ("windows.desktop.shared.settings.reportaproblem", MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e7265706f72746170726f626c656d),
+        ("windows.desktop.shared.settings.severity", MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e7365766572697479),
+        ("windows.desktop.shared.settings.textcontent", MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e74657874636f6e74656e74),
+        ("windows.desktop.shared.settings.updates", MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e75706461746573),
+        ("windows.desktop.shared.settings.windowtitles", MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e77696e646f777469746c6573),
+        ("windows.desktop.shared.setup.cancel", MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657475702e63616e63656c),
+        ("windows.desktop.shared.setup.pair", MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657475702e70616972),
+        ("windows.desktop.shared.setup.startatlogin", MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657475702e737461727461746c6f67696e),
+        ("windows.desktop.shared.setup.wizardpausefailure", MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657475702e77697a61726470617573656661696c757265),
+        ("windows.desktop.shared.setup.wizardpausefailure2", MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657475702e77697a61726470617573656661696c75726532),
+        ("windows.desktop.shared.updates.automaticupdates", MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6175746f6d6174696375706461746573),
+        ("windows.desktop.shared.updates.checkforupdatesautomatically", MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e636865636b666f72757064617465736175746f6d61746963616c6c79),
+        ("windows.desktop.shared.updates.checknow", MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e636865636b6e6f77),
+        ("windows.desktop.shared.updates.dismiss", MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6469736d697373),
+        ("windows.desktop.shared.updates.download", MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e646f776e6c6f6164),
+        ("windows.desktop.shared.updates.downloadupdatesinthebackground", MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e646f776e6c6f616475706461746573696e7468656261636b67726f756e64),
+        ("windows.desktop.shared.updates.everyday", MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6576657279646179),
+        ("windows.desktop.shared.updates.everymonth", MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e65766572796d6f6e7468),
+        ("windows.desktop.shared.updates.everyweek", MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e65766572797765656b),
+        ("windows.desktop.shared.updates.howoften", MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e686f776f6674656e),
+        ("windows.desktop.shared.updates.nevercheckedforupdates", MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6e65766572636865636b6564666f7275706461746573),
+        ("windows.desktop.shared.updates.textcontent", MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e74657874636f6e74656e74),
+        ("windows.desktop.shared.updates.whatsnew", MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e77686174736e6577),
+        ("windows.exclusions.activity", MessageId::m77696e646f77732e6578636c7573696f6e732e6163746976697479),
+        ("windows.exclusions.activityredacted", MessageId::m77696e646f77732e6578636c7573696f6e732e61637469766974797265646163746564),
+        ("windows.health.attentioncount", MessageId::m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74),
+        ("windows.import.allhistory", MessageId::m77696e646f77732e696d706f72742e616c6c686973746f7279),
+        ("windows.import.expiredword", MessageId::m77696e646f77732e696d706f72742e65787069726564776f7264),
+        ("windows.import.holdoffline", MessageId::m77696e646f77732e696d706f72742e686f6c646f66666c696e65),
+        ("windows.import.intro", MessageId::m77696e646f77732e696d706f72742e696e74726f),
+        ("windows.import.morehelper", MessageId::m77696e646f77732e696d706f72742e6d6f726568656c706572),
+        ("windows.import.readytoreviewword", MessageId::m77696e646f77732e696d706f72742e7265616479746f726576696577776f7264),
+        ("windows.import.recenta11y", MessageId::m77696e646f77732e696d706f72742e726563656e7461313179),
+        ("windows.import.recentmeta", MessageId::m77696e646f77732e696d706f72742e726563656e746d657461),
+        ("windows.import.removereadybody", MessageId::m77696e646f77732e696d706f72742e72656d6f76657265616479626f6479),
+        ("windows.import.reviewaction", MessageId::m77696e646f77732e696d706f72742e726576696577616374696f6e),
+        ("windows.import.reviewactiona11y", MessageId::m77696e646f77732e696d706f72742e726576696577616374696f6e61313179),
+        ("windows.import.reviewdetail", MessageId::m77696e646f77732e696d706f72742e72657669657764657461696c),
+        ("windows.import.reviewdetailbody", MessageId::m77696e646f77732e696d706f72742e72657669657764657461696c626f6479),
+        ("windows.import.reviewexpired", MessageId::m77696e646f77732e696d706f72742e72657669657765787069726564),
+        ("windows.import.rowsending", MessageId::m77696e646f77732e696d706f72742e726f7773656e64696e67),
+        ("windows.import.sectionreview", MessageId::m77696e646f77732e696d706f72742e73656374696f6e726576696577),
+        ("windows.import.sendagainaction", MessageId::m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e),
+        ("windows.import.sendagainactiona11y", MessageId::m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e61313179),
+        ("windows.import.statusattentionheadline", MessageId::m77696e646f77732e696d706f72742e737461747573617474656e74696f6e686561646c696e65),
+        ("windows.import.statusattentionsub", MessageId::m77696e646f77732e696d706f72742e737461747573617474656e74696f6e737562),
+        ("windows.import.statusreviewheadline", MessageId::m77696e646f77732e696d706f72742e737461747573726576696577686561646c696e65),
+        ("windows.import.statusreviewsub", MessageId::m77696e646f77732e696d706f72742e737461747573726576696577737562),
+        ("windows.import.tilea11y", MessageId::m77696e646f77732e696d706f72742e74696c6561313179),
+        ("windows.import.tilereadycount", MessageId::m77696e646f77732e696d706f72742e74696c657265616479636f756e74),
+        ("windows.import.tilesendingcount", MessageId::m77696e646f77732e696d706f72742e74696c6573656e64696e67636f756e74),
+        ("windows.import.tilewaitingcount", MessageId::m77696e646f77732e696d706f72742e74696c6577616974696e67636f756e74),
+        ("windows.import.tilewaitingjournal", MessageId::m77696e646f77732e696d706f72742e74696c6577616974696e676a6f75726e616c),
+        ("windows.logs.availablelogsareshownbelowcheckthe", MessageId::m77696e646f77732e6c6f67732e617661696c61626c656c6f677361726573686f776e62656c6f77636865636b746865),
+        ("windows.logs.copysaved", MessageId::m77696e646f77732e6c6f67732e636f70797361766564),
+        ("windows.logs.couldntreadthelogfilestry", MessageId::m77696e646f77732e6c6f67732e636f756c646e74726561647468656c6f6766696c6573747279),
+        ("windows.logs.nologfilesareavailableyettry", MessageId::m77696e646f77732e6c6f67732e6e6f6c6f6766696c6573617265617661696c61626c65796574747279),
+        ("windows.logs.norecentlogsareavailableyettry", MessageId::m77696e646f77732e6c6f67732e6e6f726563656e746c6f6773617265617661696c61626c65796574747279),
+        ("windows.logs.readthelogsbelowthenchoosewhether", MessageId::m77696e646f77732e6c6f67732e726561647468656c6f677362656c6f777468656e63686f6f736577686574686572),
+        ("windows.logs.textcontent", MessageId::m77696e646f77732e6c6f67732e74657874636f6e74656e74),
+        ("windows.logs.textcontent2", MessageId::m77696e646f77732e6c6f67732e74657874636f6e74656e7432),
+        ("windows.logs.textcontent3", MessageId::m77696e646f77732e6c6f67732e74657874636f6e74656e7433),
+        ("windows.logs.textcontent4", MessageId::m77696e646f77732e6c6f67732e74657874636f6e74656e7434),
+        ("windows.logs.textcontent5", MessageId::m77696e646f77732e6c6f67732e74657874636f6e74656e7435),
+        ("windows.notice.everythingsavedonthispcisgoing", MessageId::m77696e646f77732e6e6f746963652e65766572797468696e6773617665646f6e7468697370636973676f696e67),
+        ("windows.notice.everythingyouturnedonisgoinginto", MessageId::m77696e646f77732e6e6f746963652e65766572797468696e67796f757475726e65646f6e6973676f696e67696e746f),
+        ("windows.notice.intakeisrunningagain", MessageId::m77696e646f77732e6e6f746963652e696e74616b65697372756e6e696e67616761696e),
+        ("windows.notice.intakeranintoaproblem", MessageId::m77696e646f77732e6e6f746963652e696e74616b6572616e696e746f6170726f626c656d),
+        ("windows.notice.itsgoingintoyourjournalagain", MessageId::m77696e646f77732e6e6f746963652e697473676f696e67696e746f796f75726a6f75726e616c616761696e),
+        ("windows.notice.solstoneisstilloneverythingissaved", MessageId::m77696e646f77732e6e6f746963652e736f6c73746f6e6569737374696c6c6f6e65766572797468696e6769737361766564),
+        ("windows.notice.theisback", MessageId::m77696e646f77732e6e6f746963652e74686569736261636b),
+        ("windows.notice.theneedsyourpermission", MessageId::m77696e646f77732e6e6f746963652e7468656e65656473796f75727065726d697373696f6e),
+        ("windows.notice.thesolstoneiconinthetaskbarsays", MessageId::m77696e646f77732e6e6f746963652e746865736f6c73746f6e6569636f6e696e7468657461736b62617273617973),
+        ("windows.notice.windowsprivacysettingsareblockingitturn", MessageId::m77696e646f77732e6e6f746963652e77696e646f77737072697661637973657474696e6773617265626c6f636b696e6769747475726e),
+        ("windows.notice.yourjournalisbackinreach", MessageId::m77696e646f77732e6e6f746963652e796f75726a6f75726e616c69736261636b696e7265616368),
+        ("windows.notice.yourjournalisoutofreach", MessageId::m77696e646f77732e6e6f746963652e796f75726a6f75726e616c69736f75746f667265616368),
+        ("windows.obsidian.chooseobsidianvault", MessageId::m77696e646f77732e6f6273696469616e2e63686f6f73656f6273696469616e7661756c74),
+        ("windows.obsidian.vault", MessageId::m77696e646f77732e6f6273696469616e2e7661756c74),
+        ("windows.obsidian.warning", MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e67),
+        ("windows.obsidian.warningdate", MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e6764617465),
+        ("windows.obsidian.warningdevice", MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e67646576696365),
+        ("windows.obsidian.warningdevicedate", MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e6764657669636564617465),
+        ("windows.pill.held", MessageId::m77696e646f77732e70696c6c2e68656c64),
+        ("windows.pill.heldwaiting", MessageId::m77696e646f77732e70696c6c2e68656c6477616974696e67),
+        ("windows.pill.offline", MessageId::m77696e646f77732e70696c6c2e6f66666c696e65),
+        ("windows.pill.offlinewaiting", MessageId::m77696e646f77732e70696c6c2e6f66666c696e6577616974696e67),
+        ("windows.pill.readytoreview", MessageId::m77696e646f77732e70696c6c2e7265616479746f726576696577),
+        ("windows.pill.refused", MessageId::m77696e646f77732e70696c6c2e72656675736564),
+        ("windows.pill.refusedwaiting", MessageId::m77696e646f77732e70696c6c2e7265667573656477616974696e67),
+        ("windows.pill.syncpaused", MessageId::m77696e646f77732e70696c6c2e73796e63706175736564),
+        ("windows.pill.syncpausedwaiting", MessageId::m77696e646f77732e70696c6c2e73796e6370617573656477616974696e67),
+        ("windows.quantity.hours", MessageId::m77696e646f77732e7175616e746974792e686f757273),
+        ("windows.quantity.items", MessageId::m77696e646f77732e7175616e746974792e6974656d73),
+        ("windows.quantity.minutes", MessageId::m77696e646f77732e7175616e746974792e6d696e75746573),
+        ("windows.quantity.notes", MessageId::m77696e646f77732e7175616e746974792e6e6f746573),
+        ("windows.quantity.pages", MessageId::m77696e646f77732e7175616e746974792e7061676573),
+        ("windows.quantity.screenshots", MessageId::m77696e646f77732e7175616e746974792e73637265656e73686f7473),
+        ("windows.screenshots.bringcount", MessageId::m77696e646f77732e73637265656e73686f74732e6272696e67636f756e74),
+        ("windows.screenshots.cantcount", MessageId::m77696e646f77732e73637265656e73686f74732e63616e74636f756e74),
+        ("windows.screenshots.unreadablecount", MessageId::m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74),
+        ("windows.sharedsources.also", MessageId::m77696e646f77732e736861726564736f75726365732e616c736f),
+        ("windows.sharedsources.labelage", MessageId::m77696e646f77732e736861726564736f75726365732e6c6162656c616765),
+        ("windows.sharedsources.labelstate", MessageId::m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465),
+        ("windows.sharedsources.labelstateage", MessageId::m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765),
+        ("windows.sharedsources.many", MessageId::m77696e646f77732e736861726564736f75726365732e6d616e79),
+        ("windows.sharedsources.one", MessageId::m77696e646f77732e736861726564736f75726365732e6f6e65),
+        ("windows.sharedsources.stateage", MessageId::m77696e646f77732e736861726564736f75726365732e7374617465616765),
+        ("windows.time.checkedday", MessageId::m77696e646f77732e74696d652e636865636b6564646179),
+        ("windows.time.checkedhour", MessageId::m77696e646f77732e74696d652e636865636b6564686f7572),
+        ("windows.time.checkedminute", MessageId::m77696e646f77732e74696d652e636865636b65646d696e757465),
+        ("windows.time.nextsave", MessageId::m77696e646f77732e74696d652e6e65787473617665),
+        ("windows.time.takenhours", MessageId::m77696e646f77732e74696d652e74616b656e686f757273),
+        ("windows.tray.checkforupdates", MessageId::m77696e646f77732e747261792e636865636b666f7275706461746573),
+        ("windows.tray.hrmin", MessageId::m77696e646f77732e747261792e68726d696e),
+        ("windows.tray.lessthanaminute", MessageId::m77696e646f77732e747261792e6c6573737468616e616d696e757465),
+        ("windows.tray.needsarestart", MessageId::m77696e646f77732e747261792e6e656564736172657374617274),
+        ("windows.tray.onbut", MessageId::m77696e646f77732e747261792e6f6e627574),
+        ("windows.tray.onconnectedtoyourjournal", MessageId::m77696e646f77732e747261792e6f6e636f6e6e6563746564746f796f75726a6f75726e616c),
+        ("windows.tray.onnotconnectedtoajournal", MessageId::m77696e646f77732e747261792e6f6e6e6f74636f6e6e6563746564746f616a6f75726e616c),
+        ("windows.tray.onsavedonthispc", MessageId::m77696e646f77732e747261792e6f6e73617665646f6e746869737063),
+        ("windows.tray.pausedleft", MessageId::m77696e646f77732e747261792e7061757365646c656674),
+        ("windows.tray.solstonewaitingforyoutoconfirmyour", MessageId::m77696e646f77732e747261792e736f6c73746f6e6577616974696e67666f72796f75746f636f6e6669726d796f7572),
+        ("windows.tray.starting", MessageId::m77696e646f77732e747261792e7374617274696e67),
+        ("windows.tray.storagefaultforowner", MessageId::m77696e646f77732e747261792e73746f726167656661756c74666f726f776e6572),
+        ("windows.tray.text", MessageId::m77696e646f77732e747261792e74657874),
+        ("windows.tray.theneedspermissioninwindowssettings", MessageId::m77696e646f77732e747261792e7468656e656564737065726d697373696f6e696e77696e646f777373657474696e6773),
+        ("windows.tray.thestoppedgoingintoyourjournal", MessageId::m77696e646f77732e747261792e74686573746f70706564676f696e67696e746f796f75726a6f75726e616c),
+        ("windows.tray.unknownjournalseenat", MessageId::m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e6174),
+        ("windows.tray.unknownjournalseenthroughtherelay", MessageId::m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e7468726f75676874686572656c6179),
+        ("windows.tray.updateavailable", MessageId::m77696e646f77732e747261792e757064617465617661696c61626c65),
+        ("windows.tray.updatecheckfailed", MessageId::m77696e646f77732e747261792e757064617465636865636b6661696c6564),
+        ("windows.tray.updateready", MessageId::m77696e646f77732e747261792e7570646174657265616479),
+        ("windows.ui.accesswasdenied", MessageId::m77696e646f77732e75692e61636365737377617364656e696564),
+        ("windows.ui.accesswasdeniedcheckwindowspermissionsfor", MessageId::m77696e646f77732e75692e61636365737377617364656e696564636865636b77696e646f77737065726d697373696f6e73666f72),
+        ("windows.ui.activex474d1b75", MessageId::m77696e646f77732e75692e616374697665783437346431623735),
+        ("windows.ui.activex68f50a9b", MessageId::m77696e646f77732e75692e616374697665783638663530613962),
+        ("windows.ui.activex96879611", MessageId::m77696e646f77732e75692e616374697665783936383739363131),
+        ("windows.ui.activity", MessageId::m77696e646f77732e75692e6163746976697479),
+        ("windows.ui.activityisstillon", MessageId::m77696e646f77732e75692e616374697669747969737374696c6c6f6e),
+        ("windows.ui.addappnameswindowtitlesandpage", MessageId::m77696e646f77732e75692e6164646170706e616d657377696e646f777469746c6573616e6470616765),
+        ("windows.ui.addmore", MessageId::m77696e646f77732e75692e6164646d6f7265),
+        ("windows.ui.addspdfsaudioimagesandtextyouchoosehereordropont", MessageId::m77696e646f77732e75692e6164647370646673617564696f696d61676573616e6474657874796f7563686f6f7365686572656f7264726f706f6e74),
+        ("windows.ui.addthesolstoneextension", MessageId::m77696e646f77732e75692e616464746865736f6c73746f6e65657874656e73696f6e),
+        ("windows.ui.addto", MessageId::m77696e646f77732e75692e616464746f),
+        ("windows.ui.aglobalshortcuttopauseandresume", MessageId::m77696e646f77732e75692e61676c6f62616c73686f7274637574746f7061757365616e64726573756d65),
+        ("windows.ui.allcaughtup", MessageId::m77696e646f77732e75692e616c6c6361756768747570),
+        ("windows.ui.allofit", MessageId::m77696e646f77732e75692e616c6c6f666974),
+        ("windows.ui.allsourceson", MessageId::m77696e646f77732e75692e616c6c736f75726365736f6e),
+        ("windows.ui.alouderinputforquietmicrophoneschanges", MessageId::m77696e646f77732e75692e616c6f75646572696e707574666f7271756965746d6963726f70686f6e65736368616e676573),
+        ("windows.ui.alreadyonhome", MessageId::m77696e646f77732e75692e616c72656164796f6e686f6d65),
+        ("windows.ui.anewlinkfromyourjournalcanbepastedhere", MessageId::m77696e646f77732e75692e616e65776c696e6b66726f6d796f75726a6f75726e616c63616e626570617374656468657265),
+        ("windows.ui.anotherpairinglinkcouldnotbeadded", MessageId::m77696e646f77732e75692e616e6f7468657270616972696e676c696e6b636f756c646e6f7462656164646564),
+        ("windows.ui.april", MessageId::m77696e646f77732e75692e617072696c),
+        ("windows.ui.arg0", MessageId::m77696e646f77732e75692e61726730),
+        ("windows.ui.arg0arg1", MessageId::m77696e646f77732e75692e6172673061726731),
+        ("windows.ui.arg0arg1arg2", MessageId::m77696e646f77732e75692e617267306172673161726732),
+        ("windows.ui.arg0bytes", MessageId::m77696e646f77732e75692e617267306279746573),
+        ("windows.ui.arg0gb", MessageId::m77696e646f77732e75692e617267306762),
+        ("windows.ui.arg0hr", MessageId::m77696e646f77732e75692e617267306872),
+        ("windows.ui.arg0hrleft", MessageId::m77696e646f77732e75692e6172673068726c656674),
+        ("windows.ui.arg0kb", MessageId::m77696e646f77732e75692e617267306b62),
+        ("windows.ui.arg0kbx75b11ba1", MessageId::m77696e646f77732e75692e617267306b62783735623131626131),
+        ("windows.ui.arg0mb", MessageId::m77696e646f77732e75692e617267306d62),
+        ("windows.ui.arg0mbxff882f00", MessageId::m77696e646f77732e75692e617267306d62786666383832663030),
+        ("windows.ui.arg0min", MessageId::m77696e646f77732e75692e617267306d696e),
+        ("windows.ui.arg0minago", MessageId::m77696e646f77732e75692e617267306d696e61676f),
+        ("windows.ui.arg0minleft", MessageId::m77696e646f77732e75692e617267306d696e6c656674),
+        ("windows.ui.arg0needsattention", MessageId::m77696e646f77732e75692e617267306e65656473617474656e74696f6e),
+        ("windows.ui.arg0ofarg1inyourjournal", MessageId::m77696e646f77732e75692e617267306f6661726731696e796f75726a6f75726e616c),
+        ("windows.ui.arg0ofarg1screenshotsinyourjournal", MessageId::m77696e646f77732e75692e617267306f666172673173637265656e73686f7473696e796f75726a6f75726e616c),
+        ("windows.ui.arg0tb", MessageId::m77696e646f77732e75692e617267307462),
+        ("windows.ui.arg0x211b8ba1", MessageId::m77696e646f77732e75692e61726730783231316238626131),
+        ("windows.ui.ascreenshotalreadyinyourjournalstaysthereifyoude", MessageId::m77696e646f77732e75692e6173637265656e73686f74616c7265616479696e796f75726a6f75726e616c737461797374686572656966796f756465),
+        ("windows.ui.ascreenshotthatsonlycopiedtotheclipboardisntsave", MessageId::m77696e646f77732e75692e6173637265656e73686f7474686174736f6e6c79636f70696564746f746865636c6970626f61726469736e7473617665),
+        ("windows.ui.asegmentisa5minutelocal", MessageId::m77696e646f77732e75692e617365676d656e74697361356d696e7574656c6f63616c),
+        ("windows.ui.attentionneeded", MessageId::m77696e646f77732e75692e617474656e74696f6e6e6565646564),
+        ("windows.ui.audio", MessageId::m77696e646f77732e75692e617564696f),
+        ("windows.ui.august", MessageId::m77696e646f77732e75692e617567757374),
+        ("windows.ui.automaticchecksareoff", MessageId::m77696e646f77732e75692e6175746f6d61746963636865636b736172656f6666),
+        ("windows.ui.automaticchecksareon", MessageId::m77696e646f77732e75692e6175746f6d61746963636865636b736172656f6e),
+        ("windows.ui.awindowthatclosesormovescan", MessageId::m77696e646f77732e75692e6177696e646f7774686174636c6f7365736f726d6f76657363616e),
+        ("windows.ui.backgrounddatauserestricted", MessageId::m77696e646f77732e75692e6261636b67726f756e646461746175736572657374726963746564),
+        ("windows.ui.browsers", MessageId::m77696e646f77732e75692e62726f7773657273),
+        ("windows.ui.browserstateunavailable", MessageId::m77696e646f77732e75692e62726f777365727374617465756e617661696c61626c65),
+        ("windows.ui.change", MessageId::m77696e646f77732e75692e6368616e6765),
+        ("windows.ui.checkedjustnow", MessageId::m77696e646f77732e75692e636865636b65646a7573746e6f77),
+        ("windows.ui.checkforupdates", MessageId::m77696e646f77732e75692e636865636b666f7275706461746573),
+        ("windows.ui.checking", MessageId::m77696e646f77732e75692e636865636b696e67),
+        ("windows.ui.checkingforupdates", MessageId::m77696e646f77732e75692e636865636b696e67666f7275706461746573),
+        ("windows.ui.checkingword", MessageId::m77696e646f77732e75692e636865636b696e67776f7264),
+        ("windows.ui.checkingyourjournal", MessageId::m77696e646f77732e75692e636865636b696e67796f75726a6f75726e616c),
+        ("windows.ui.chooseafolder", MessageId::m77696e646f77732e75692e63686f6f736561666f6c646572),
+        ("windows.ui.chooseafolderxdbec742d", MessageId::m77696e646f77732e75692e63686f6f736561666f6c646572786462656337343264),
+        ("windows.ui.chooseanapptoexclude", MessageId::m77696e646f77732e75692e63686f6f7365616e617070746f6578636c756465),
+        ("windows.ui.choosearunningapp", MessageId::m77696e646f77732e75692e63686f6f73656172756e6e696e67617070),
+        ("windows.ui.choosefiles", MessageId::m77696e646f77732e75692e63686f6f736566696c6573),
+        ("windows.ui.choosefolder", MessageId::m77696e646f77732e75692e63686f6f7365666f6c646572),
+        ("windows.ui.choosehowfarbacktostartthenbringthemin", MessageId::m77696e646f77732e75692e63686f6f7365686f776661726261636b746f73746172747468656e6272696e677468656d696e),
+        ("windows.ui.choosethefolderyourscreenshotssaveto", MessageId::m77696e646f77732e75692e63686f6f7365746865666f6c646572796f757273637265656e73686f747373617665746f),
+        ("windows.ui.choosewhatstaysoutofyourjournal", MessageId::m77696e646f77732e75692e63686f6f73657768617473746179736f75746f66796f75726a6f75726e616c),
+        ("windows.ui.claimednotverified", MessageId::m77696e646f77732e75692e636c61696d65646e6f747665726966696564),
+        ("windows.ui.clickthenpressyourshortcut", MessageId::m77696e646f77732e75692e636c69636b7468656e7072657373796f757273686f7274637574),
+        ("windows.ui.closenavigation", MessageId::m77696e646f77732e75692e636c6f73656e617669676174696f6e),
+        ("windows.ui.computersound", MessageId::m77696e646f77732e75692e636f6d7075746572736f756e64),
+        ("windows.ui.computersoundlevel", MessageId::m77696e646f77732e75692e636f6d7075746572736f756e646c6576656c),
+        ("windows.ui.confirmthemark", MessageId::m77696e646f77732e75692e636f6e6669726d7468656d61726b),
+        ("windows.ui.confirmthemarkarg0waiting", MessageId::m77696e646f77732e75692e636f6e6669726d7468656d61726b6172673077616974696e67),
+        ("windows.ui.confirmyourjournalsmarktoopen", MessageId::m77696e646f77732e75692e636f6e6669726d796f75726a6f75726e616c736d61726b746f6f70656e),
+        ("windows.ui.connectajournal", MessageId::m77696e646f77732e75692e636f6e6e656374616a6f75726e616c),
+        ("windows.ui.connected", MessageId::m77696e646f77732e75692e636f6e6e6563746564),
+        ("windows.ui.connectedto", MessageId::m77696e646f77732e75692e636f6e6e6563746564746f),
+        ("windows.ui.connecting", MessageId::m77696e646f77732e75692e636f6e6e656374696e67),
+        ("windows.ui.connectingx3d6df245", MessageId::m77696e646f77732e75692e636f6e6e656374696e67783364366466323435),
+        ("windows.ui.connection", MessageId::m77696e646f77732e75692e636f6e6e656374696f6e),
+        ("windows.ui.connecttoyourjournal", MessageId::m77696e646f77732e75692e636f6e6e656374746f796f75726a6f75726e616c),
+        ("windows.ui.connectyourjournal", MessageId::m77696e646f77732e75692e636f6e6e656374796f75726a6f75726e616c),
+        ("windows.ui.continuethisconnection", MessageId::m77696e646f77732e75692e636f6e74696e756574686973636f6e6e656374696f6e),
+        ("windows.ui.copied", MessageId::m77696e646f77732e75692e636f70696564),
+        ("windows.ui.copythefulllinkfromyourchatandopenitagain", MessageId::m77696e646f77732e75692e636f707974686566756c6c6c696e6b66726f6d796f757263686174616e646f70656e6974616761696e),
+        ("windows.ui.couldnotpausetryagain", MessageId::m77696e646f77732e75692e636f756c646e6f747061757365747279616761696e),
+        ("windows.ui.couldnotresumetryagain", MessageId::m77696e646f77732e75692e636f756c646e6f74726573756d65747279616761696e),
+        ("windows.ui.couldnotsavethischoiceitmay", MessageId::m77696e646f77732e75692e636f756c646e6f74736176657468697363686f69636569746d6179),
+        ("windows.ui.couldnotsavethisdismissaltryagain", MessageId::m77696e646f77732e75692e636f756c646e6f7473617665746869736469736d697373616c747279616761696e),
+        ("windows.ui.couldnotsaveturningthisoffitisoffnowbutmayturnon", MessageId::m77696e646f77732e75692e636f756c646e6f74736176657475726e696e67746869736f6666697469736f66666e6f776275746d61797475726e6f6e),
+        ("windows.ui.couldnotsaveturningthisonitstaysofftryagain", MessageId::m77696e646f77732e75692e636f756c646e6f74736176657475726e696e67746869736f6e697473746179736f6666747279616761696e),
+        ("windows.ui.couldnotsaveyoursetupprogresstry", MessageId::m77696e646f77732e75692e636f756c646e6f7473617665796f7572736574757070726f6772657373747279),
+        ("windows.ui.couldnotupdatestartatlogin", MessageId::m77696e646f77732e75692e636f756c646e6f74757064617465737461727461746c6f67696e),
+        ("windows.ui.couldntcheckforupdates", MessageId::m77696e646f77732e75692e636f756c646e74636865636b666f7275706461746573),
+        ("windows.ui.couldntcheckforupdatessolstonewas", MessageId::m77696e646f77732e75692e636f756c646e74636865636b666f7275706461746573736f6c73746f6e65776173),
+        ("windows.ui.couldntcountyourscreenshots", MessageId::m77696e646f77732e75692e636f756c646e74636f756e74796f757273637265656e73686f7473),
+        ("windows.ui.couldntdownloadsolstone", MessageId::m77696e646f77732e75692e636f756c646e74646f776e6c6f6164736f6c73746f6e65),
+        ("windows.ui.couldntdownloadupdate", MessageId::m77696e646f77732e75692e636f756c646e74646f776e6c6f6164757064617465),
+        ("windows.ui.couldntfindascreenshotsfolderonthispcchoosethefo", MessageId::m77696e646f77732e75692e636f756c646e7466696e646173637265656e73686f7473666f6c6465726f6e74686973706363686f6f7365746865666f),
+        ("windows.ui.couldntfinishdiscardingwhatsleft", MessageId::m77696e646f77732e75692e636f756c646e7466696e69736864697363617264696e6777686174736c656674),
+        ("windows.ui.couldntinstallupdate", MessageId::m77696e646f77732e75692e636f756c646e74696e7374616c6c757064617465),
+        ("windows.ui.couldntloadthesolstoneapps", MessageId::m77696e646f77732e75692e636f756c646e746c6f6164746865736f6c73746f6e6561707073),
+        ("windows.ui.couldntopenthestorepagein", MessageId::m77696e646f77732e75692e636f756c646e746f70656e74686573746f726570616765696e),
+        ("windows.ui.couldntopenyourjournal", MessageId::m77696e646f77732e75692e636f756c646e746f70656e796f75726a6f75726e616c),
+        ("windows.ui.couldntopenyourjournaltryagain", MessageId::m77696e646f77732e75692e636f756c646e746f70656e796f75726a6f75726e616c747279616761696e),
+        ("windows.ui.couldntreachyourjournaloveryour", MessageId::m77696e646f77732e75692e636f756c646e747265616368796f75726a6f75726e616c6f766572796f7572),
+        ("windows.ui.couldntreadimportsonthisdevicenothinghasbeenremo", MessageId::m77696e646f77732e75692e636f756c646e7472656164696d706f7274736f6e746869736465766963656e6f7468696e676861736265656e72656d6f),
+        ("windows.ui.couldntreadyoursavedsourcechoices", MessageId::m77696e646f77732e75692e636f756c646e7472656164796f75727361766564736f7572636563686f69636573),
+        ("windows.ui.couldntregisterthatshortcut", MessageId::m77696e646f77732e75692e636f756c646e7472656769737465727468617473686f7274637574),
+        ("windows.ui.couldntremovethistryagain", MessageId::m77696e646f77732e75692e636f756c646e7472656d6f766574686973747279616761696e),
+        ("windows.ui.couldntturntryagain", MessageId::m77696e646f77732e75692e636f756c646e747475726e747279616761696e),
+        ("windows.ui.couldntverifyjournalsonothing", MessageId::m77696e646f77732e75692e636f756c646e747665726966796a6f75726e616c736f6e6f7468696e67),
+        ("windows.ui.dayago", MessageId::m77696e646f77732e75692e64617961676f),
+        ("windows.ui.december", MessageId::m77696e646f77732e75692e646563656d626572),
+        ("windows.ui.delivered", MessageId::m77696e646f77732e75692e64656c697665726564),
+        ("windows.ui.deliveredpending", MessageId::m77696e646f77732e75692e64656c69766572656470656e64696e67),
+        ("windows.ui.desktopactivity", MessageId::m77696e646f77732e75692e6465736b746f706163746976697479),
+        ("windows.ui.devicechoice", MessageId::m77696e646f77732e75692e64657669636563686f696365),
+        ("windows.ui.devicepriority", MessageId::m77696e646f77732e75692e6465766963657072696f72697479),
+        ("windows.ui.disable", MessageId::m77696e646f77732e75692e64697361626c65),
+        ("windows.ui.dontstartatlogin", MessageId::m77696e646f77732e75692e646f6e74737461727461746c6f67696e),
+        ("windows.ui.downloaddeferredconnectionstatusunknown", MessageId::m77696e646f77732e75692e646f776e6c6f61646465666572726564636f6e6e656374696f6e737461747573756e6b6e6f776e),
+        ("windows.ui.downloaddeferredmeteredconnection", MessageId::m77696e646f77732e75692e646f776e6c6f616464656665727265646d657465726564636f6e6e656374696f6e),
+        ("windows.ui.downloaddeferredwhileroaming", MessageId::m77696e646f77732e75692e646f776e6c6f616464656665727265647768696c65726f616d696e67),
+        ("windows.ui.downloadingsolstone", MessageId::m77696e646f77732e75692e646f776e6c6f6164696e67736f6c73746f6e65),
+        ("windows.ui.downloadthelatestfromsolstoneappdownloadwindows", MessageId::m77696e646f77732e75692e646f776e6c6f61647468656c617465737466726f6d736f6c73746f6e65617070646f776e6c6f616477696e646f7773),
+        ("windows.ui.edgeandfirefoxsettoenglish", MessageId::m77696e646f77732e75692e65646765616e6466697265666f78736574746f656e676c697368),
+        ("windows.ui.enable", MessageId::m77696e646f77732e75692e656e61626c65),
+        ("windows.ui.enablethepauseresumeshortcut", MessageId::m77696e646f77732e75692e656e61626c657468657061757365726573756d6573686f7274637574),
+        ("windows.ui.errorword", MessageId::m77696e646f77732e75692e6572726f72776f7264),
+        ("windows.ui.esctocancel", MessageId::m77696e646f77732e75692e657363746f63616e63656c),
+        ("windows.ui.everypicturesavedinarg0comesinnotonlyyourscreens", MessageId::m77696e646f77732e75692e6576657279706963747572657361766564696e61726730636f6d6573696e6e6f746f6e6c79796f757273637265656e73),
+        ("windows.ui.everythingisinyourjournal", MessageId::m77696e646f77732e75692e65766572797468696e676973696e796f75726a6f75726e616c),
+        ("windows.ui.exclude", MessageId::m77696e646f77732e75692e6578636c756465),
+        ("windows.ui.exclusionactivity", MessageId::m77696e646f77732e75692e6578636c7573696f6e6163746976697479),
+        ("windows.ui.failedtoacquiresetuplock", MessageId::m77696e646f77732e75692e6661696c6564746f6163717569726573657475706c6f636b),
+        ("windows.ui.february", MessageId::m77696e646f77732e75692e6665627275617279),
+        ("windows.ui.file", MessageId::m77696e646f77732e75692e66696c65),
+        ("windows.ui.files", MessageId::m77696e646f77732e75692e66696c6573),
+        ("windows.ui.finishconnecting", MessageId::m77696e646f77732e75692e66696e697368636f6e6e656374696e67),
+        ("windows.ui.finishconnectingtoyourjournal", MessageId::m77696e646f77732e75692e66696e697368636f6e6e656374696e67746f796f75726a6f75726e616c),
+        ("windows.ui.finishthecurrentconnectionthentryagain", MessageId::m77696e646f77732e75692e66696e69736874686563757272656e74636f6e6e656374696f6e7468656e747279616761696e),
+        ("windows.ui.folder", MessageId::m77696e646f77732e75692e666f6c646572),
+        ("windows.ui.foundjournalpc", MessageId::m77696e646f77732e75692e666f756e646a6f75726e616c7063),
+        ("windows.ui.from", MessageId::m77696e646f77732e75692e66726f6d),
+        ("windows.ui.frombeforetoday", MessageId::m77696e646f77732e75692e66726f6d6265666f7265746f646179),
+        ("windows.ui.gettingready", MessageId::m77696e646f77732e75692e67657474696e677265616479),
+        ("windows.ui.gettingreadyconnectingtoyourjournal", MessageId::m77696e646f77732e75692e67657474696e677265616479636f6e6e656374696e67746f796f75726a6f75726e616c),
+        ("windows.ui.gettingthisdeviceready", MessageId::m77696e646f77732e75692e67657474696e67746869736465766963657265616479),
+        ("windows.ui.globalshortcut", MessageId::m77696e646f77732e75692e676c6f62616c73686f7274637574),
+        ("windows.ui.goesalongwithit", MessageId::m77696e646f77732e75692e676f6573616c6f6e67776974686974),
+        ("windows.ui.goodafternoon", MessageId::m77696e646f77732e75692e676f6f6461667465726e6f6f6e),
+        ("windows.ui.goodevening", MessageId::m77696e646f77732e75692e676f6f646576656e696e67),
+        ("windows.ui.goodmorning", MessageId::m77696e646f77732e75692e676f6f646d6f726e696e67),
+        ("windows.ui.holdoneormoreofctrlalt", MessageId::m77696e646f77732e75692e686f6c646f6e656f726d6f72656f666374726c616c74),
+        ("windows.ui.home", MessageId::m77696e646f77732e75692e686f6d65),
+        ("windows.ui.homex4e7a5cec", MessageId::m77696e646f77732e75692e686f6d65783465376135636563),
+        ("windows.ui.hourago", MessageId::m77696e646f77732e75692e686f757261676f),
+        ("windows.ui.howoftentocheckforupdates", MessageId::m77696e646f77732e75692e686f776f6674656e746f636865636b666f7275706461746573),
+        ("windows.ui.hrlefthrminleftboth", MessageId::m77696e646f77732e75692e68726c65667468726d696e6c656674626f7468),
+        ("windows.ui.idle", MessageId::m77696e646f77732e75692e69646c65),
+        ("windows.ui.ifyouhaventyetaddthe", MessageId::m77696e646f77732e75692e6966796f75686176656e74796574616464746865),
+        ("windows.ui.import", MessageId::m77696e646f77732e75692e696d706f7274),
+        ("windows.ui.importswaitonthisdeviceuntilyouconnectajournal", MessageId::m77696e646f77732e75692e696d706f727473776169746f6e74686973646576696365756e74696c796f75636f6e6e656374616a6f75726e616c),
+        ("windows.ui.importswaituntilyouconfirmyourjournalsmark", MessageId::m77696e646f77732e75692e696d706f72747377616974756e74696c796f75636f6e6669726d796f75726a6f75726e616c736d61726b),
+        ("windows.ui.importswaituntilyourjournalisupdated", MessageId::m77696e646f77732e75692e696d706f72747377616974756e74696c796f75726a6f75726e616c697375706461746564),
+        ("windows.ui.inputgain", MessageId::m77696e646f77732e75692e696e7075746761696e),
+        ("windows.ui.installing", MessageId::m77696e646f77732e75692e696e7374616c6c696e67),
+        ("windows.ui.installingsolstone", MessageId::m77696e646f77732e75692e696e7374616c6c696e67736f6c73746f6e65),
+        ("windows.ui.inyourjournal", MessageId::m77696e646f77732e75692e696e796f75726a6f75726e616c),
+        ("windows.ui.inyourjournalchoosepairadeviceandpastethelinkher", MessageId::m77696e646f77732e75692e696e796f75726a6f75726e616c63686f6f73657061697261646576696365616e6470617374657468656c696e6b686572),
+        ("windows.ui.itinstallsthenexttimethesolstoneappstartsincludi", MessageId::m77696e646f77732e75692e6974696e7374616c6c737468656e65787474696d65746865736f6c73746f6e65617070737461727473696e636c756469),
+        ("windows.ui.itslargerthanyourjournaltakes", MessageId::m77696e646f77732e75692e6974736c61726765727468616e796f75726a6f75726e616c74616b6573),
+        ("windows.ui.january", MessageId::m77696e646f77732e75692e6a616e75617279),
+        ("windows.ui.journaldetails", MessageId::m77696e646f77732e75692e6a6f75726e616c64657461696c73),
+        ("windows.ui.journallastreached", MessageId::m77696e646f77732e75692e6a6f75726e616c6c61737472656163686564),
+        ("windows.ui.journalneedsupdatebeforecantake", MessageId::m77696e646f77732e75692e6a6f75726e616c6e656564737570646174656265666f726563616e74616b65),
+        ("windows.ui.journalsync", MessageId::m77696e646f77732e75692e6a6f75726e616c73796e63),
+        ("windows.ui.journalupdateneeded", MessageId::m77696e646f77732e75692e6a6f75726e616c7570646174656e6565646564),
+        ("windows.ui.journalversion", MessageId::m77696e646f77732e75692e6a6f75726e616c76657273696f6e),
+        ("windows.ui.july", MessageId::m77696e646f77732e75692e6a756c79),
+        ("windows.ui.june", MessageId::m77696e646f77732e75692e6a756e65),
+        ("windows.ui.keeponwhilepausedorscreenis", MessageId::m77696e646f77732e75692e6b6565706f6e7768696c657061757365646f7273637265656e6973),
+        ("windows.ui.keepprivatewindowsoutofyourjournal", MessageId::m77696e646f77732e75692e6b6565707072697661746577696e646f77736f75746f66796f75726a6f75726e616c),
+        ("windows.ui.keptonthispc", MessageId::m77696e646f77732e75692e6b6570746f6e746869737063),
+        ("windows.ui.keptonthispcnotreachingyour", MessageId::m77696e646f77732e75692e6b6570746f6e7468697370636e6f747265616368696e67796f7572),
+        ("windows.ui.label", MessageId::m77696e646f77732e75692e6c6162656c),
+        ("windows.ui.lastchecked", MessageId::m77696e646f77732e75692e6c617374636865636b6564),
+        ("windows.ui.lastreached", MessageId::m77696e646f77732e75692e6c61737472656163686564),
+        ("windows.ui.lasttakenin", MessageId::m77696e646f77732e75692e6c61737474616b656e696e),
+        ("windows.ui.leftout", MessageId::m77696e646f77732e75692e6c6566746f7574),
+        ("windows.ui.lessthanaminuteleft", MessageId::m77696e646f77732e75692e6c6573737468616e616d696e7574656c656674),
+        ("windows.ui.madebysolpbc", MessageId::m77696e646f77732e75692e6d6164656279736f6c706263),
+        ("windows.ui.march", MessageId::m77696e646f77732e75692e6d61726368),
+        ("windows.ui.mark", MessageId::m77696e646f77732e75692e6d61726b),
+        ("windows.ui.markunavailable", MessageId::m77696e646f77732e75692e6d61726b756e617661696c61626c65),
+        ("windows.ui.markunavailablex5acbd11e", MessageId::m77696e646f77732e75692e6d61726b756e617661696c61626c65783561636264313165),
+        ("windows.ui.may", MessageId::m77696e646f77732e75692e6d6179),
+        ("windows.ui.microphone", MessageId::m77696e646f77732e75692e6d6963726f70686f6e65),
+        ("windows.ui.microphonelevel", MessageId::m77696e646f77732e75692e6d6963726f70686f6e656c6576656c),
+        ("windows.ui.microphones", MessageId::m77696e646f77732e75692e6d6963726f70686f6e6573),
+        ("windows.ui.minuteago", MessageId::m77696e646f77732e75692e6d696e75746561676f),
+        ("windows.ui.moreaboutthis", MessageId::m77696e646f77732e75692e6d6f726561626f757474686973),
+        ("windows.ui.moreimports", MessageId::m77696e646f77732e75692e6d6f7265696d706f727473),
+        ("windows.ui.movedown", MessageId::m77696e646f77732e75692e6d6f7665646f776e),
+        ("windows.ui.moveup", MessageId::m77696e646f77732e75692e6d6f76657570),
+        ("windows.ui.n1passwordbitwardenandtheotherpasswordmanager", MessageId::m77696e646f77732e75692e6e3170617373776f726462697477617264656e616e647468656f7468657270617373776f72646d616e61676572),
+        ("windows.ui.needsattentionword", MessageId::m77696e646f77732e75692e6e65656473617474656e74696f6e776f7264),
+        ("windows.ui.needspermission", MessageId::m77696e646f77732e75692e6e656564737065726d697373696f6e),
+        ("windows.ui.next", MessageId::m77696e646f77732e75692e6e657874),
+        ("windows.ui.nextsave", MessageId::m77696e646f77732e75692e6e65787473617665),
+        ("windows.ui.nobrowserconnectednow", MessageId::m77696e646f77732e75692e6e6f62726f77736572636f6e6e65637465646e6f77),
+        ("windows.ui.nocredentialaccess", MessageId::m77696e646f77732e75692e6e6f63726564656e7469616c616363657373),
+        ("windows.ui.noexclusionsactive", MessageId::m77696e646f77732e75692e6e6f6578636c7573696f6e73616374697665),
+        ("windows.ui.noidentitypresented", MessageId::m77696e646f77732e75692e6e6f6964656e7469747970726573656e746564),
+        ("windows.ui.noinputdevice", MessageId::m77696e646f77732e75692e6e6f696e707574646576696365),
+        ("windows.ui.nokeywordsyet", MessageId::m77696e646f77732e75692e6e6f6b6579776f726473796574),
+        ("windows.ui.nolocaljournaltoconnectto", MessageId::m77696e646f77732e75692e6e6f6c6f63616c6a6f75726e616c746f636f6e6e656374746f),
+        ("windows.ui.nomicrophonefound", MessageId::m77696e646f77732e75692e6e6f6d6963726f70686f6e65666f756e64),
+        ("windows.ui.nomicrophoneinputdevices", MessageId::m77696e646f77732e75692e6e6f6d6963726f70686f6e65696e70757464657669636573),
+        ("windows.ui.nomicrophoneisavailableconnectorenableoneinwindo", MessageId::m77696e646f77732e75692e6e6f6d6963726f70686f6e656973617661696c61626c65636f6e6e6563746f72656e61626c656f6e65696e77696e646f),
+        ("windows.ui.nonedisplay", MessageId::m77696e646f77732e75692e6e6f6e65646973706c6179),
+        ("windows.ui.nootherappsrunning", MessageId::m77696e646f77732e75692e6e6f6f746865726170707372756e6e696e67),
+        ("windows.ui.noroommorerightnownew", MessageId::m77696e646f77732e75692e6e6f726f6f6d6d6f726572696768746e6f776e6577),
+        ("windows.ui.noshortcutset", MessageId::m77696e646f77732e75692e6e6f73686f7274637574736574),
+        ("windows.ui.nosoundoutputfound", MessageId::m77696e646f77732e75692e6e6f736f756e646f7574707574666f756e64),
+        ("windows.ui.nosoundoutputisavailableconnectorenableoneinwind", MessageId::m77696e646f77732e75692e6e6f736f756e646f75747075746973617661696c61626c65636f6e6e6563746f72656e61626c656f6e65696e77696e64),
+        ("windows.ui.not", MessageId::m77696e646f77732e75692e6e6f74),
+        ("windows.ui.notanswered", MessageId::m77696e646f77732e75692e6e6f74616e737765726564),
+        ("windows.ui.notavailable", MessageId::m77696e646f77732e75692e6e6f74617661696c61626c65),
+        ("windows.ui.notavailablerightnow", MessageId::m77696e646f77732e75692e6e6f74617661696c61626c6572696768746e6f77),
+        ("windows.ui.notcheckedforupdatesyet", MessageId::m77696e646f77732e75692e6e6f74636865636b6564666f7275706461746573796574),
+        ("windows.ui.notesjournal", MessageId::m77696e646f77732e75692e6e6f7465736a6f75726e616c),
+        ("windows.ui.notgoingtoyourjournalrightnoweachonesayswhy", MessageId::m77696e646f77732e75692e6e6f74676f696e67746f796f75726a6f75726e616c72696768746e6f77656163686f6e6573617973776879),
+        ("windows.ui.nothingexcludedyet", MessageId::m77696e646f77732e75692e6e6f7468696e676578636c75646564796574),
+        ("windows.ui.nothingfrombeforetoday", MessageId::m77696e646f77732e75692e6e6f7468696e6766726f6d6265666f7265746f646179),
+        ("windows.ui.nothingwassavedonthisdevice", MessageId::m77696e646f77732e75692e6e6f7468696e6777617373617665646f6e74686973646576696365),
+        ("windows.ui.nothingyet", MessageId::m77696e646f77732e75692e6e6f7468696e67796574),
+        ("windows.ui.nothingyetxec5a8da6", MessageId::m77696e646f77732e75692e6e6f7468696e67796574786563356138646136),
+        ("windows.ui.notonthiscomputer", MessageId::m77696e646f77732e75692e6e6f746f6e74686973636f6d7075746572),
+        ("windows.ui.notreachingyourjournalrightnow", MessageId::m77696e646f77732e75692e6e6f747265616368696e67796f75726a6f75726e616c72696768746e6f77),
+        ("windows.ui.notreported", MessageId::m77696e646f77732e75692e6e6f747265706f72746564),
+        ("windows.ui.notyet", MessageId::m77696e646f77732e75692e6e6f74796574),
+        ("windows.ui.nousagedataiseversentupdate", MessageId::m77696e646f77732e75692e6e6f75736167656461746169736576657273656e74757064617465),
+        ("windows.ui.november", MessageId::m77696e646f77732e75692e6e6f76656d626572),
+        ("windows.ui.october", MessageId::m77696e646f77732e75692e6f63746f626572),
+        ("windows.ui.offline", MessageId::m77696e646f77732e75692e6f66666c696e65),
+        ("windows.ui.offlinearg0waiting", MessageId::m77696e646f77732e75692e6f66666c696e656172673077616974696e67),
+        ("windows.ui.onlywhatthesolstoneappcantellisascreenshotcomesi", MessageId::m77696e646f77732e75692e6f6e6c7977686174746865736f6c73746f6e6561707063616e74656c6c69736173637265656e73686f74636f6d657369),
+        ("windows.ui.onthesitesyouallowthesolstoneextensiontakesinthe", MessageId::m77696e646f77732e75692e6f6e7468657369746573796f75616c6c6f77746865736f6c73746f6e65657874656e73696f6e74616b6573696e746865),
+        ("windows.ui.onthisdevice", MessageId::m77696e646f77732e75692e6f6e74686973646576696365),
+        ("windows.ui.openfolder", MessageId::m77696e646f77732e75692e6f70656e666f6c646572),
+        ("windows.ui.opennavigation", MessageId::m77696e646f77732e75692e6f70656e6e617669676174696f6e),
+        ("windows.ui.opensettings", MessageId::m77696e646f77732e75692e6f70656e73657474696e6773),
+        ("windows.ui.opensoundsettings", MessageId::m77696e646f77732e75692e6f70656e736f756e6473657474696e6773),
+        ("windows.ui.openwindowssettings", MessageId::m77696e646f77732e75692e6f70656e77696e646f777373657474696e6773),
+        ("windows.ui.otherfilesinarg0staywheretheyare", MessageId::m77696e646f77732e75692e6f7468657266696c6573696e6172673073746179776865726574686579617265),
+        ("windows.ui.pageaddresses", MessageId::m77696e646f77732e75692e70616765616464726573736573),
+        ("windows.ui.pageaddressesedgeandchrome", MessageId::m77696e646f77732e75692e7061676561646472657373657365646765616e646368726f6d65),
+        ("windows.ui.pairagain", MessageId::m77696e646f77732e75692e70616972616761696e),
+        ("windows.ui.pairedwith", MessageId::m77696e646f77732e75692e70616972656477697468),
+        ("windows.ui.pairing", MessageId::m77696e646f77732e75692e70616972696e67),
+        ("windows.ui.pairingcancellednothingthispchaskept", MessageId::m77696e646f77732e75692e70616972696e6763616e63656c6c65646e6f7468696e677468697370636861736b657074),
+        ("windows.ui.pairingdidntgothroughgeta", MessageId::m77696e646f77732e75692e70616972696e676469646e74676f7468726f75676867657461),
+        ("windows.ui.pairinglinkfromyourjournal", MessageId::m77696e646f77732e75692e70616972696e676c696e6b66726f6d796f75726a6f75726e616c),
+        ("windows.ui.pairthispctoyourjournalto", MessageId::m77696e646f77732e75692e70616972746869737063746f796f75726a6f75726e616c746f),
+        ("windows.ui.pairtodelivertoyourjournal", MessageId::m77696e646f77732e75692e70616972746f64656c69766572746f796f75726a6f75726e616c),
+        ("windows.ui.pairwithyourjournalfirst", MessageId::m77696e646f77732e75692e7061697277697468796f75726a6f75726e616c6669727374),
+        ("windows.ui.partvaultcantberead", MessageId::m77696e646f77732e75692e706172747661756c7463616e74626572656164),
+        ("windows.ui.paused", MessageId::m77696e646f77732e75692e706175736564),
+        ("windows.ui.pausedarg0minleft", MessageId::m77696e646f77732e75692e706175736564617267306d696e6c656674),
+        ("windows.ui.pausedlessthanaminuteleft", MessageId::m77696e646f77732e75692e7061757365646c6573737468616e616d696e7574656c656674),
+        ("windows.ui.pauseduntilyouresume", MessageId::m77696e646f77732e75692e706175736564756e74696c796f75726573756d65),
+        ("windows.ui.pausedwiththerestofthesolstone", MessageId::m77696e646f77732e75692e70617573656477697468746865726573746f66746865736f6c73746f6e65),
+        ("windows.ui.pausedword", MessageId::m77696e646f77732e75692e706175736564776f7264),
+        ("windows.ui.pausedxa7a9dc5b", MessageId::m77696e646f77732e75692e706175736564786137613964633562),
+        ("windows.ui.pauseresume", MessageId::m77696e646f77732e75692e7061757365726573756d65),
+        ("windows.ui.pausesallsources", MessageId::m77696e646f77732e75692e706175736573616c6c736f7572636573),
+        ("windows.ui.pending", MessageId::m77696e646f77732e75692e70656e64696e67),
+        ("windows.ui.placeholder", MessageId::m77696e646f77732e75692e706c616365686f6c646572),
+        ("windows.ui.placeholder2", MessageId::m77696e646f77732e75692e706c616365686f6c64657232),
+        ("windows.ui.presented", MessageId::m77696e646f77732e75692e70726573656e746564),
+        ("windows.ui.pressyourshortcut", MessageId::m77696e646f77732e75692e7072657373796f757273686f7274637574),
+        ("windows.ui.previewpaused", MessageId::m77696e646f77732e75692e70726576696577706175736564),
+        ("windows.ui.privacy", MessageId::m77696e646f77732e75692e70726976616379),
+        ("windows.ui.privatewindows", MessageId::m77696e646f77732e75692e7072697661746577696e646f7773),
+        ("windows.ui.progresstext", MessageId::m77696e646f77732e75692e70726f677265737374657874),
+        ("windows.ui.quitsolstone", MessageId::m77696e646f77732e75692e71756974736f6c73746f6e65),
+        ("windows.ui.readytosetupword", MessageId::m77696e646f77732e75692e7265616479746f7365747570776f7264),
+        ("windows.ui.recent", MessageId::m77696e646f77732e75692e726563656e74),
+        ("windows.ui.relaunchtoinstall", MessageId::m77696e646f77732e75692e72656c61756e6368746f696e7374616c6c),
+        ("windows.ui.remove", MessageId::m77696e646f77732e75692e72656d6f7665),
+        ("windows.ui.removearg0", MessageId::m77696e646f77732e75692e72656d6f766561726730),
+        ("windows.ui.removex7e5608ab", MessageId::m77696e646f77732e75692e72656d6f7665783765353630386162),
+        ("windows.ui.restartintake", MessageId::m77696e646f77732e75692e72657374617274696e74616b65),
+        ("windows.ui.retrying", MessageId::m77696e646f77732e75692e7265747279696e67),
+        ("windows.ui.saveacopyofrecentlogs", MessageId::m77696e646f77732e75692e7361766561636f70796f66726563656e746c6f6773),
+        ("windows.ui.savedonthisdevicearg0", MessageId::m77696e646f77732e75692e73617665646f6e7468697364657669636561726730),
+        ("windows.ui.savingonthisdevicearg0ofarg1", MessageId::m77696e646f77732e75692e736176696e676f6e74686973646576696365617267306f6661726731),
+        ("windows.ui.screen", MessageId::m77696e646f77732e75692e73637265656e),
+        ("windows.ui.screenalsoaddstheappsyouuse", MessageId::m77696e646f77732e75692e73637265656e616c736f6164647374686561707073796f75757365),
+        ("windows.ui.screenarg0computersoundarg1micarg2desktopactivit", MessageId::m77696e646f77732e75692e73637265656e61726730636f6d7075746572736f756e64617267316d6963617267326465736b746f7061637469766974),
+        ("windows.ui.screenpreview", MessageId::m77696e646f77732e75692e73637265656e70726576696577),
+        ("windows.ui.screenshots", MessageId::m77696e646f77732e75692e73637265656e73686f7473),
+        ("windows.ui.screenshotsalreadyinyourjournalarentbroughtinaga", MessageId::m77696e646f77732e75692e73637265656e73686f7473616c7265616479696e796f75726a6f75726e616c6172656e7462726f75676874696e616761),
+        ("windows.ui.screenshotsyoutakewhileitspauseddontcomein", MessageId::m77696e646f77732e75692e73637265656e73686f7473796f7574616b657768696c65697473706175736564646f6e74636f6d65696e),
+        ("windows.ui.segmentsthathavenotreachedyourjournal", MessageId::m77696e646f77732e75692e7365676d656e747374686174686176656e6f7472656163686564796f75726a6f75726e616c),
+        ("windows.ui.selecteddevice", MessageId::m77696e646f77732e75692e73656c6563746564646576696365),
+        ("windows.ui.sendingtoyourjournal", MessageId::m77696e646f77732e75692e73656e64696e67746f796f75726a6f75726e616c),
+        ("windows.ui.sendingword", MessageId::m77696e646f77732e75692e73656e64696e67776f7264),
+        ("windows.ui.september", MessageId::m77696e646f77732e75692e73657074656d626572),
+        ("windows.ui.set", MessageId::m77696e646f77732e75692e736574),
+        ("windows.ui.settingupword", MessageId::m77696e646f77732e75692e73657474696e677570776f7264),
+        ("windows.ui.setupconnectionchanged", MessageId::m77696e646f77732e75692e7365747570636f6e6e656374696f6e6368616e676564),
+        ("windows.ui.setupisbusytryagainina", MessageId::m77696e646f77732e75692e7365747570697362757379747279616761696e696e61),
+        ("windows.ui.setupprogresscouldnotbesaved", MessageId::m77696e646f77732e75692e736574757070726f6772657373636f756c646e6f7462657361766564),
+        ("windows.ui.setupsequenceisunavailableinthisbuild", MessageId::m77696e646f77732e75692e736574757073657175656e63656973756e617661696c61626c65696e746869736275696c64),
+        ("windows.ui.setupunavailable", MessageId::m77696e646f77732e75692e7365747570756e617661696c61626c65),
+        ("windows.ui.sharesoundfromthiscomputer", MessageId::m77696e646f77732e75692e7368617265736f756e6466726f6d74686973636f6d7075746572),
+        ("windows.ui.shareyourscreen", MessageId::m77696e646f77732e75692e7368617265796f757273637265656e),
+        ("windows.ui.shortcut", MessageId::m77696e646f77732e75692e73686f7274637574),
+        ("windows.ui.shortcutsetbutturnedoff", MessageId::m77696e646f77732e75692e73686f72746375747365746275747475726e65646f6666),
+        ("windows.ui.skip", MessageId::m77696e646f77732e75692e736b6970),
+        ("windows.ui.sofar", MessageId::m77696e646f77732e75692e736f666172),
+        ("windows.ui.solstoneappcantreadvault", MessageId::m77696e646f77732e75692e736f6c73746f6e6561707063616e74726561647661756c74),
+        ("windows.ui.solstoneappcouldntsaveits", MessageId::m77696e646f77732e75692e736f6c73746f6e65617070636f756c646e7473617665697473),
+        ("windows.ui.solstoneappdidntfindvault", MessageId::m77696e646f77732e75692e736f6c73746f6e656170706469646e7466696e647661756c74),
+        ("windows.ui.solstoneapptakesnotesonevault", MessageId::m77696e646f77732e75692e736f6c73746f6e6561707074616b65736e6f7465736f6e657661756c74),
+        ("windows.ui.solstonearg0installsthenexttimethesolstoneappsta", MessageId::m77696e646f77732e75692e736f6c73746f6e6561726730696e7374616c6c737468656e65787474696d65746865736f6c73746f6e65617070737461),
+        ("windows.ui.solstoneisavailable", MessageId::m77696e646f77732e75692e736f6c73746f6e656973617661696c61626c65),
+        ("windows.ui.solstoneisreadytoinstall", MessageId::m77696e646f77732e75692e736f6c73746f6e6569737265616479746f696e7374616c6c),
+        ("windows.ui.solstonereadyinstall", MessageId::m77696e646f77732e75692e736f6c73746f6e657265616479696e7374616c6c),
+        ("windows.ui.somenotescouldntgointo", MessageId::m77696e646f77732e75692e736f6d656e6f746573636f756c646e74676f696e746f),
+        ("windows.ui.somethingansweredpcatisnt", MessageId::m77696e646f77732e75692e736f6d657468696e67616e7377657265647063617469736e74),
+        ("windows.ui.somethingansweredpcthroughrelayisn", MessageId::m77696e646f77732e75692e736f6d657468696e67616e73776572656470637468726f75676872656c617969736e),
+        ("windows.ui.somethingotherthanyourjournalansweredcompare", MessageId::m77696e646f77732e75692e736f6d657468696e676f746865727468616e796f75726a6f75726e616c616e737765726564636f6d70617265),
+        ("windows.ui.somethingyouwereaddingdidntfinishsavingadditagai", MessageId::m77696e646f77732e75692e736f6d657468696e67796f7577657265616464696e676469646e7466696e697368736176696e67616464697461676169),
+        ("windows.ui.sourcesetupisunfinished", MessageId::m77696e646f77732e75692e736f7572636573657475706973756e66696e6973686564),
+        ("windows.ui.startfromtoday", MessageId::m77696e646f77732e75692e737461727466726f6d746f646179),
+        ("windows.ui.state", MessageId::m77696e646f77732e75692e7374617465),
+        ("windows.ui.status", MessageId::m77696e646f77732e75692e737461747573),
+        ("windows.ui.storage", MessageId::m77696e646f77732e75692e73746f72616765),
+        ("windows.ui.storagelocation", MessageId::m77696e646f77732e75692e73746f726167656c6f636174696f6e),
+        ("windows.ui.storeappsallappsfromthemicrosoft", MessageId::m77696e646f77732e75692e73746f726561707073616c6c6170707366726f6d7468656d6963726f736f6674),
+        ("windows.ui.storedlocally", MessageId::m77696e646f77732e75692e73746f7265646c6f63616c6c79),
+        ("windows.ui.storedonthispc", MessageId::m77696e646f77732e75692e73746f7265646f6e746869737063),
+        ("windows.ui.sync", MessageId::m77696e646f77732e75692e73796e63),
+        ("windows.ui.text", MessageId::m77696e646f77732e75692e74657874),
+        ("windows.ui.text3", MessageId::m77696e646f77732e75692e7465787433),
+        ("windows.ui.text6", MessageId::m77696e646f77732e75692e7465787436),
+        ("windows.ui.textcontent", MessageId::m77696e646f77732e75692e74657874636f6e74656e74),
+        ("windows.ui.textcontent2", MessageId::m77696e646f77732e75692e74657874636f6e74656e7432),
+        ("windows.ui.textcontent4", MessageId::m77696e646f77732e75692e74657874636f6e74656e7434),
+        ("windows.ui.textcontent5", MessageId::m77696e646f77732e75692e74657874636f6e74656e7435),
+        ("windows.ui.textfilestxt", MessageId::m77696e646f77732e75692e7465787466696c6573747874),
+        ("windows.ui.thatcomboisinusebyanother", MessageId::m77696e646f77732e75692e74686174636f6d626f6973696e7573656279616e6f74686572),
+        ("windows.ui.thatdidnotfinish", MessageId::m77696e646f77732e75692e746861746469646e6f7466696e697368),
+        ("windows.ui.thatfolderisntobsidianvault", MessageId::m77696e646f77732e75692e74686174666f6c64657269736e746f6273696469616e7661756c74),
+        ("windows.ui.thatfoldersnamecant", MessageId::m77696e646f77732e75692e74686174666f6c646572736e616d6563616e74),
+        ("windows.ui.thatpairinglinkisntonethe", MessageId::m77696e646f77732e75692e7468617470616972696e676c696e6b69736e746f6e65746865),
+        ("windows.ui.thearg0folderisntonthispcanymore", MessageId::m77696e646f77732e75692e74686561726730666f6c64657269736e746f6e746869737063616e796d6f7265),
+        ("windows.ui.thecopyisalreadygonesothisonlyclearsitfromhere", MessageId::m77696e646f77732e75692e746865636f70796973616c7265616479676f6e65736f746869736f6e6c79636c65617273697466726f6d68657265),
+        ("windows.ui.thecopyonthisdeviceismissing", MessageId::m77696e646f77732e75692e746865636f70796f6e7468697364657669636569736d697373696e67),
+        ("windows.ui.thedownloaddidnotfinish", MessageId::m77696e646f77732e75692e746865646f776e6c6f61646469646e6f7466696e697368),
+        ("windows.ui.thelast30days", MessageId::m77696e646f77732e75692e7468656c617374333064617973),
+        ("windows.ui.thelast6months", MessageId::m77696e646f77732e75692e7468656c617374366d6f6e746873),
+        ("windows.ui.thelastcheckforupdatesfailed", MessageId::m77696e646f77732e75692e7468656c617374636865636b666f72757064617465736661696c6564),
+        ("windows.ui.thelastyear", MessageId::m77696e646f77732e75692e7468656c61737479656172),
+        ("windows.ui.thepairingwindowclosedgetanew", MessageId::m77696e646f77732e75692e74686570616972696e6777696e646f77636c6f736564676574616e6577),
+        ("windows.ui.thereisntenoughroomonthisdevice", MessageId::m77696e646f77732e75692e746865726569736e74656e6f756768726f6f6d6f6e74686973646576696365),
+        ("windows.ui.theserulesareactivenowbutcouldn", MessageId::m77696e646f77732e75692e746865736572756c65736172656163746976656e6f77627574636f756c646e),
+        ("windows.ui.thesolstoneappusesonemicrophoneat", MessageId::m77696e646f77732e75692e746865736f6c73746f6e65617070757365736f6e656d6963726f70686f6e656174),
+        ("windows.ui.thetopenabledmicrophoneisuseduse", MessageId::m77696e646f77732e75692e746865746f70656e61626c65646d6963726f70686f6e65697375736564757365),
+        ("windows.ui.theupdatecouldntbeinstalled", MessageId::m77696e646f77732e75692e746865757064617465636f756c646e746265696e7374616c6c6564),
+        ("windows.ui.thisbuildcantupdateitself", MessageId::m77696e646f77732e75692e746869736275696c6463616e74757064617465697473656c66),
+        ("windows.ui.thisconnectioncouldnotbesavedtry", MessageId::m77696e646f77732e75692e74686973636f6e6e656374696f6e636f756c646e6f7462657361766564747279),
+        ("windows.ui.thisconnectioncouldnotfinishtryagain", MessageId::m77696e646f77732e75692e74686973636f6e6e656374696f6e636f756c646e6f7466696e697368747279616761696e),
+        ("windows.ui.thisconnectioncouldnotfinishtryagain2", MessageId::m77696e646f77732e75692e74686973636f6e6e656374696f6e636f756c646e6f7466696e697368747279616761696e32),
+        ("windows.ui.thiscouldntbereadadditagain", MessageId::m77696e646f77732e75692e74686973636f756c646e746265726561646164646974616761696e),
+        ("windows.ui.thisdevicecantconvertthisphoto", MessageId::m77696e646f77732e75692e7468697364657669636563616e74636f6e766572747468697370686f746f),
+        ("windows.ui.thisdevicecouldntopenitssaved", MessageId::m77696e646f77732e75692e74686973646576696365636f756c646e746f70656e6974737361766564),
+        ("windows.ui.thisdeviceisnotpairedwithyourjournalimportswaith", MessageId::m77696e646f77732e75692e7468697364657669636569736e6f7470616972656477697468796f75726a6f75726e616c696d706f7274737761697468),
+        ("windows.ui.thisdeviceisntonanetwork", MessageId::m77696e646f77732e75692e7468697364657669636569736e746f6e616e6574776f726b),
+        ("windows.ui.thisjournallinkisntvalid", MessageId::m77696e646f77732e75692e746869736a6f75726e616c6c696e6b69736e7476616c6964),
+        ("windows.ui.thislinkcouldnotbedismissedtry", MessageId::m77696e646f77732e75692e746869736c696e6b636f756c646e6f7462656469736d6973736564747279),
+        ("windows.ui.thislinkcouldnotbeusedtry", MessageId::m77696e646f77732e75692e746869736c696e6b636f756c646e6f74626575736564747279),
+        ("windows.ui.thislistappliestoactivitytoo", MessageId::m77696e646f77732e75692e746869736c6973746170706c696573746f6163746976697479746f6f),
+        ("windows.ui.thisonlytakesamoment", MessageId::m77696e646f77732e75692e746869736f6e6c7974616b6573616d6f6d656e74),
+        ("windows.ui.thispc", MessageId::m77696e646f77732e75692e746869737063),
+        ("windows.ui.thispccantconnecttoyour", MessageId::m77696e646f77732e75692e74686973706363616e74636f6e6e656374746f796f7572),
+        ("windows.ui.thispccouldntworkoutyour", MessageId::m77696e646f77732e75692e746869737063636f756c646e74776f726b6f7574796f7572),
+        ("windows.ui.thisreadsthewindowtitleandmatches", MessageId::m77696e646f77732e75692e74686973726561647374686577696e646f777469746c65616e646d617463686573),
+        ("windows.ui.thisremovesthecopyonthisdevicesoitwontreachyourj", MessageId::m77696e646f77732e75692e7468697372656d6f766573746865636f70796f6e74686973646576696365736f6974776f6e747265616368796f75726a),
+        ("windows.ui.thisremovesthecopyonthisdeviceyourjournalmaystil", MessageId::m77696e646f77732e75692e7468697372656d6f766573746865636f70796f6e74686973646576696365796f75726a6f75726e616c6d61797374696c),
+        ("windows.ui.thissetuplinkcouldnotbeused", MessageId::m77696e646f77732e75692e7468697373657475706c696e6b636f756c646e6f74626575736564),
+        ("windows.ui.thisstepcouldnotfinishtryagain", MessageId::m77696e646f77732e75692e7468697373746570636f756c646e6f7466696e697368747279616761696e),
+        ("windows.ui.thisstepcouldntfinishtryagain", MessageId::m77696e646f77732e75692e7468697373746570636f756c646e7466696e697368747279616761696e),
+        ("windows.ui.titlekeywords", MessageId::m77696e646f77732e75692e7469746c656b6579776f726473),
+        ("windows.ui.titlekeywordtoexclude", MessageId::m77696e646f77732e75692e7469746c656b6579776f7264746f6578636c756465),
+        ("windows.ui.toolargebring", MessageId::m77696e646f77732e75692e746f6f6c617267656272696e67),
+        ("windows.ui.trynow", MessageId::m77696e646f77732e75692e7472796e6f77),
+        ("windows.ui.trynowarg0", MessageId::m77696e646f77732e75692e7472796e6f7761726730),
+        ("windows.ui.tryopeningthelinkagain", MessageId::m77696e646f77732e75692e7472796f70656e696e677468656c696e6b616761696e),
+        ("windows.ui.turningoffstopsbringingchangeswhat", MessageId::m77696e646f77732e75692e7475726e696e676f666673746f70736272696e67696e676368616e67657377686174),
+        ("windows.ui.turnitonanytime", MessageId::m77696e646f77732e75692e7475726e69746f6e616e7974696d65),
+        ("windows.ui.turnoff", MessageId::m77696e646f77732e75692e7475726e6f6666),
+        ("windows.ui.turnon", MessageId::m77696e646f77732e75692e7475726e6f6e),
+        ("windows.ui.unavailable", MessageId::m77696e646f77732e75692e756e617661696c61626c65),
+        ("windows.ui.unavailableword", MessageId::m77696e646f77732e75692e756e617661696c61626c65776f7264),
+        ("windows.ui.unknown", MessageId::m77696e646f77732e75692e756e6b6e6f776e),
+        ("windows.ui.unknownjournals", MessageId::m77696e646f77732e75692e756e6b6e6f776e6a6f75726e616c73),
+        ("windows.ui.untiliresume", MessageId::m77696e646f77732e75692e756e74696c69726573756d65),
+        ("windows.ui.usethislink", MessageId::m77696e646f77732e75692e757365746869736c696e6b),
+        ("windows.ui.usevault", MessageId::m77696e646f77732e75692e7573657661756c74),
+        ("windows.ui.value15minutes", MessageId::m77696e646f77732e75692e76616c756531356d696e75746573),
+        ("windows.ui.value1hour", MessageId::m77696e646f77732e75692e76616c756531686f7572),
+        ("windows.ui.value30minutes", MessageId::m77696e646f77732e75692e76616c756533306d696e75746573),
+        ("windows.ui.vaults", MessageId::m77696e646f77732e75692e7661756c7473),
+        ("windows.ui.vaultscomputer", MessageId::m77696e646f77732e75692e7661756c7473636f6d7075746572),
+        ("windows.ui.vaultwithnamealreadyjournal", MessageId::m77696e646f77732e75692e7661756c74776974686e616d65616c72656164796a6f75726e616c),
+        ("windows.ui.viewdetails", MessageId::m77696e646f77732e75692e7669657764657461696c73),
+        ("windows.ui.waiting", MessageId::m77696e646f77732e75692e77616974696e67),
+        ("windows.ui.waitingforajournalupdateyourscreenshotswaitonthi", MessageId::m77696e646f77732e75692e77616974696e67666f72616a6f75726e616c757064617465796f757273637265656e73686f7473776169746f6e746869),
+        ("windows.ui.waitingforyouranswer", MessageId::m77696e646f77732e75692e77616974696e67666f72796f7572616e73776572),
+        ("windows.ui.waitingforyoutoconfirmyourjournalsmark", MessageId::m77696e646f77732e75692e77616974696e67666f72796f75746f636f6e6669726d796f75726a6f75726e616c736d61726b),
+        ("windows.ui.waitingjournalupdate", MessageId::m77696e646f77732e75692e77616974696e676a6f75726e616c757064617465),
+        ("windows.ui.waitingreachjournal", MessageId::m77696e646f77732e75692e77616974696e6772656163686a6f75726e616c),
+        ("windows.ui.waitingsync", MessageId::m77696e646f77732e75692e77616974696e6773796e63),
+        ("windows.ui.waitingtogotoyourjournal", MessageId::m77696e646f77732e75692e77616974696e67746f676f746f796f75726a6f75726e616c),
+        ("windows.ui.waitingtogotoyourjournalx5d789db5", MessageId::m77696e646f77732e75692e77616974696e67746f676f746f796f75726a6f75726e616c783564373839646235),
+        ("windows.ui.waitingtosync", MessageId::m77696e646f77732e75692e77616974696e67746f73796e63),
+        ("windows.ui.waitingword", MessageId::m77696e646f77732e75692e77616974696e67776f7264),
+        ("windows.ui.whatanswered", MessageId::m77696e646f77732e75692e77686174616e737765726564),
+        ("windows.ui.whatsalreadyinyourjournalstayswhenyoupauseorturn", MessageId::m77696e646f77732e75692e7768617473616c7265616479696e796f75726a6f75726e616c73746179737768656e796f7570617573656f727475726e),
+        ("windows.ui.whatyousharestaysonthispc", MessageId::m77696e646f77732e75692e77686174796f75736861726573746179736f6e746869737063),
+        ("windows.ui.whatyouturnongoesintoyour", MessageId::m77696e646f77732e75692e77686174796f757475726e6f6e676f6573696e746f796f7572),
+        ("windows.ui.whilethisisonthesolstoneapptakesinsoundandallofi", MessageId::m77696e646f77732e75692e7768696c657468697369736f6e746865736f6c73746f6e6561707074616b6573696e736f756e64616e64616c6c6f6669),
+        ("windows.ui.whilethisisonthesolstoneapptakesinthescreenshots", MessageId::m77696e646f77732e75692e7768696c657468697369736f6e746865736f6c73746f6e6561707074616b6573696e74686573637265656e73686f7473),
+        ("windows.ui.whilethisisonthesolstoneapptakesinwhatsonyourscr", MessageId::m77696e646f77732e75692e7768696c657468697369736f6e746865736f6c73746f6e6561707074616b6573696e77686174736f6e796f7572736372),
+        ("windows.ui.windowsfromtheseappsneverreachyour", MessageId::m77696e646f77732e75692e77696e646f777366726f6d7468657365617070736e657665727265616368796f7572),
+        ("windows.ui.windowswhosetitlecontainsawordyou", MessageId::m77696e646f77732e75692e77696e646f777377686f73657469746c65636f6e7461696e7361776f7264796f75),
+        ("windows.ui.withactivity", MessageId::m77696e646f77732e75692e776974686163746976697479),
+        ("windows.ui.withcomputersound", MessageId::m77696e646f77732e75692e77697468636f6d7075746572736f756e64),
+        ("windows.ui.yesterday", MessageId::m77696e646f77732e75692e796573746572646179),
+        ("windows.ui.youcanturneachsourceonor", MessageId::m77696e646f77732e75692e796f7563616e7475726e65616368736f757263656f6e6f72),
+        ("windows.ui.youchoosewhichsourcesareon", MessageId::m77696e646f77732e75692e796f7563686f6f73657768696368736f75726365736172656f6e),
+        ("windows.ui.youllseehowmanyscreenshotstherearebeforeanycomei", MessageId::m77696e646f77732e75692e796f756c6c736565686f776d616e7973637265656e73686f747374686572656172656265666f7265616e79636f6d6569),
+        ("windows.ui.your", MessageId::m77696e646f77732e75692e796f7572),
+        ("windows.ui.yourjournal", MessageId::m77696e646f77732e75692e796f75726a6f75726e616c),
+        ("windows.ui.yourjournalcanttakethiskindoffile", MessageId::m77696e646f77732e75692e796f75726a6f75726e616c63616e7474616b65746869736b696e646f6666696c65),
+        ("windows.ui.yourjournalcouldntacceptthis", MessageId::m77696e646f77732e75692e796f75726a6f75726e616c636f756c646e7461636365707474686973),
+        ("windows.ui.yourjournaldoesntsupportthismove", MessageId::m77696e646f77732e75692e796f75726a6f75726e616c646f65736e74737570706f7274746869736d6f7665),
+        ("windows.ui.yourjournalneedsanewlink", MessageId::m77696e646f77732e75692e796f75726a6f75726e616c6e65656473616e65776c696e6b),
+        ("windows.ui.yourjournalnotsetupyet", MessageId::m77696e646f77732e75692e796f75726a6f75726e616c6e6f747365747570796574),
+        ("windows.ui.yourjournalopenedbutsetupprogresscould", MessageId::m77696e646f77732e75692e796f75726a6f75726e616c6f70656e6564627574736574757070726f6772657373636f756c64),
+        ("windows.ui.yourjournalshowsthissamemarkbeside", MessageId::m77696e646f77732e75692e796f75726a6f75726e616c73686f77737468697373616d656d61726b626573696465),
+        ("windows.ui.yourjournalsmarkunavailablerightnow", MessageId::m77696e646f77732e75692e796f75726a6f75726e616c736d61726b756e617661696c61626c6572696768746e6f77),
+        ("windows.ui.yourjournalstoppedacceptingthisdeviceimportswait", MessageId::m77696e646f77732e75692e796f75726a6f75726e616c73746f70706564616363657074696e6774686973646576696365696d706f72747377616974),
+        ("windows.ui.yourshortcut", MessageId::m77696e646f77732e75692e796f757273686f7274637574),
+        ("windows.ui.yousaidthismarkdoesntmatch", MessageId::m77696e646f77732e75692e796f7573616964746869736d61726b646f65736e746d61746368),
+    ];
+    let index = IDS.binary_search_by_key(&dotted_id, |(name, _)| *name).map_err(|_| RenderError::UnknownMessage)?;
+    let id = IDS[index].1;
     render_with_options(locale, id, args, use_isolating)
 }
 
 pub fn render(locale: &str, id: MessageId, args: &[(&str, Value)]) -> Result<String, RenderError> { render_with_options(locale, id, args, true) }
 
 pub fn render_with_options(locale: &str, id: MessageId, args: &[(&str, Value)], use_isolating: bool) -> Result<String, RenderError> {
-    let message_id = id;
-
     let mut seen = HashSet::new();
     for (name, _) in args {
         if !seen.insert(*name) {
@@ -1428,8807 +1428,22 @@ pub fn render_with_options(locale: &str, id: MessageId, args: &[(&str, Value)], 
         }
     }
 
-    let (ftl_content, cardinal_rule) = match locale {
-        "en-US" => (include_str!("en-US.ftl"), Some("en")),
+    let (bundle, cardinal_rule) = match (locale, use_isolating) {
+        ("en-US", false) => {
+            static BUNDLE: OnceLock<Result<FluentBundle<FluentResource>, RenderError>> = OnceLock::new();
+            (BUNDLE.get_or_init(|| load_bundle(include_str!("en-US.ftl"), false)), Some("en"))
+        }
+        ("en-US", true) => {
+            static BUNDLE: OnceLock<Result<FluentBundle<FluentResource>, RenderError>> = OnceLock::new();
+            (BUNDLE.get_or_init(|| load_bundle(include_str!("en-US.ftl"), true)), Some("en"))
+        }
         _ => return Err(RenderError::UnknownLocale),
     };
 
-    let (res_key, fluent_args) = match message_id {
-        MessageId::m77696e646f77732e61626f75742e617070 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e61626f75742e617070".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e61626f75742e64617961676f => {
-            const DECLARED: &[&str] = &["count"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e61626f75742e64617961676f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e61626f75742e686f757261676f => {
-            const DECLARED: &[&str] = &["count"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e61626f75742e686f757261676f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e61626f75742e6a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e61626f75742e6a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e61626f75742e6a7573746e6f77 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e61626f75742e6a7573746e6f77".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e61626f75742e6c6173747365656e => {
-            const DECLARED: &[&str] = &["line", "age"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "line").ok_or_else(|| RenderError::MissingArgument("line".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("line".to_string())),
-            };
-            f_args.set("line", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "age").ok_or_else(|| RenderError::MissingArgument("age".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("age".to_string())),
-            };
-            f_args.set("age", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e61626f75742e6c6173747365656e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e61626f75742e6c696e6530 => {
-            const DECLARED: &[&str] = &["label", "version"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
-            };
-            f_args.set("label", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
-            };
-            f_args.set("version", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e61626f75742e6c696e6530".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e61626f75742e6c696e6531 => {
-            const DECLARED: &[&str] = &["label", "version", "build"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
-            };
-            f_args.set("label", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
-            };
-            f_args.set("version", FluentValue::from(v1.clone()));
-            let val_v2 = args.iter().find(|(n, _)| *n == "build").ok_or_else(|| RenderError::MissingArgument("build".to_string()))?.1.clone();
-            let v2 = match val_v2 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("build".to_string())),
-            };
-            f_args.set("build", FluentValue::from(v2.clone()));
-            ("m77696e646f77732e61626f75742e6c696e6531".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e61626f75742e6c696e6532 => {
-            const DECLARED: &[&str] = &["label", "version", "platform"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
-            };
-            f_args.set("label", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
-            };
-            f_args.set("version", FluentValue::from(v1.clone()));
-            let val_v2 = args.iter().find(|(n, _)| *n == "platform").ok_or_else(|| RenderError::MissingArgument("platform".to_string()))?.1.clone();
-            let v2 = match val_v2 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("platform".to_string())),
-            };
-            f_args.set("platform", FluentValue::from(v2.clone()));
-            ("m77696e646f77732e61626f75742e6c696e6532".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e61626f75742e6c696e6533 => {
-            const DECLARED: &[&str] = &["label", "version", "build", "platform"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
-            };
-            f_args.set("label", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
-            };
-            f_args.set("version", FluentValue::from(v1.clone()));
-            let val_v2 = args.iter().find(|(n, _)| *n == "build").ok_or_else(|| RenderError::MissingArgument("build".to_string()))?.1.clone();
-            let v2 = match val_v2 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("build".to_string())),
-            };
-            f_args.set("build", FluentValue::from(v2.clone()));
-            let val_v3 = args.iter().find(|(n, _)| *n == "platform").ok_or_else(|| RenderError::MissingArgument("platform".to_string()))?.1.clone();
-            let v3 = match val_v3 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("platform".to_string())),
-            };
-            f_args.set("platform", FluentValue::from(v3.clone()));
-            ("m77696e646f77732e61626f75742e6c696e6533".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e61626f75742e6c696e6534 => {
-            const DECLARED: &[&str] = &["label", "version", "arch"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
-            };
-            f_args.set("label", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
-            };
-            f_args.set("version", FluentValue::from(v1.clone()));
-            let val_v2 = args.iter().find(|(n, _)| *n == "arch").ok_or_else(|| RenderError::MissingArgument("arch".to_string()))?.1.clone();
-            let v2 = match val_v2 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arch".to_string())),
-            };
-            f_args.set("arch", FluentValue::from(v2.clone()));
-            ("m77696e646f77732e61626f75742e6c696e6534".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e61626f75742e6c696e6535 => {
-            const DECLARED: &[&str] = &["label", "version", "build", "arch"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
-            };
-            f_args.set("label", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
-            };
-            f_args.set("version", FluentValue::from(v1.clone()));
-            let val_v2 = args.iter().find(|(n, _)| *n == "build").ok_or_else(|| RenderError::MissingArgument("build".to_string()))?.1.clone();
-            let v2 = match val_v2 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("build".to_string())),
-            };
-            f_args.set("build", FluentValue::from(v2.clone()));
-            let val_v3 = args.iter().find(|(n, _)| *n == "arch").ok_or_else(|| RenderError::MissingArgument("arch".to_string()))?.1.clone();
-            let v3 = match val_v3 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arch".to_string())),
-            };
-            f_args.set("arch", FluentValue::from(v3.clone()));
-            ("m77696e646f77732e61626f75742e6c696e6535".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e61626f75742e6c696e6536 => {
-            const DECLARED: &[&str] = &["label", "version", "platform", "arch"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
-            };
-            f_args.set("label", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
-            };
-            f_args.set("version", FluentValue::from(v1.clone()));
-            let val_v2 = args.iter().find(|(n, _)| *n == "platform").ok_or_else(|| RenderError::MissingArgument("platform".to_string()))?.1.clone();
-            let v2 = match val_v2 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("platform".to_string())),
-            };
-            f_args.set("platform", FluentValue::from(v2.clone()));
-            let val_v3 = args.iter().find(|(n, _)| *n == "arch").ok_or_else(|| RenderError::MissingArgument("arch".to_string()))?.1.clone();
-            let v3 = match val_v3 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arch".to_string())),
-            };
-            f_args.set("arch", FluentValue::from(v3.clone()));
-            ("m77696e646f77732e61626f75742e6c696e6536".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e61626f75742e6c696e6537 => {
-            const DECLARED: &[&str] = &["label", "version", "build", "platform", "arch"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
-            };
-            f_args.set("label", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
-            };
-            f_args.set("version", FluentValue::from(v1.clone()));
-            let val_v2 = args.iter().find(|(n, _)| *n == "build").ok_or_else(|| RenderError::MissingArgument("build".to_string()))?.1.clone();
-            let v2 = match val_v2 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("build".to_string())),
-            };
-            f_args.set("build", FluentValue::from(v2.clone()));
-            let val_v3 = args.iter().find(|(n, _)| *n == "platform").ok_or_else(|| RenderError::MissingArgument("platform".to_string()))?.1.clone();
-            let v3 = match val_v3 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("platform".to_string())),
-            };
-            f_args.set("platform", FluentValue::from(v3.clone()));
-            let val_v4 = args.iter().find(|(n, _)| *n == "arch").ok_or_else(|| RenderError::MissingArgument("arch".to_string()))?.1.clone();
-            let v4 = match val_v4 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arch".to_string())),
-            };
-            f_args.set("arch", FluentValue::from(v4.clone()));
-            ("m77696e646f77732e61626f75742e6c696e6537".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e61626f75742e6d696e75746561676f => {
-            const DECLARED: &[&str] = &["count"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e61626f75742e6d696e75746561676f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e61626f75742e756e6b6e6f776e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e61626f75742e756e6b6e6f776e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e62726f777365722e646973636172646564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e62726f777365722e646973636172646564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6a6f75726e616c756e6b6e6f776e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6a6f75726e616c756e6b6e6f776e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6f70656e736f757263656c6f63616c6669727374 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6f70656e736f757263656c6f63616c6669727374".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e70656e64696e6773657474696e6773746162 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e61626f75742e70656e64696e6773657474696e6773746162".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e736574757077656c636f6d65626f647931 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e61626f75742e736574757077656c636f6d65626f647931".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e74657874636f6e74656e74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e61626f75742e74657874636f6e74656e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e61626f75742e74657874636f6e74656e7432 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e61626f75742e74657874636f6e74656e7432".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e61626f7574736f6c73746f6e65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e6170702e61626f7574736f6c73746f6e65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e656d70747974657874 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e6170702e656d70747974657874".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e66726f6e74656e646f726967696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e6170702e66726f6e74656e646f726967696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e6a7573746e6f77 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e6170702e6a7573746e6f77".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e6d6963726f70686f6e656d6f64656f6666 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e6170702e6d6963726f70686f6e656d6f64656f6666".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e6e6f74706169726564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e6170702e6e6f74706169726564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e6f66666c696e657469746c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e6170702e6f66666c696e657469746c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e73657474696e6773646961676e6f73746963736f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e6170702e73657474696e6773646961676e6f73746963736f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e6170702e736f75726365737469746c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e6170702e736f75726365737469746c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e617564696f736f7572636573797374656d => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e617564696f736f7572636573797374656d".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e636865636b616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e636865636b616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e63686f6f7365646576696365 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e63686f6f7365646576696365".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636964696e677469746c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636964696e677469746c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e72656675736564626f6479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e72656675736564626f6479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e726566757365647469746c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e726566757365647469746c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e756e6b6e6f776e626f6479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e756e6b6e6f776e626f6479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e756e6b6e6f776e7469746c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e756e6b6e6f776e7469746c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e646566657263686f696365 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e646566657263686f696365".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b636f6e6669726d627574746f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b636f6e6669726d627574746f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b636f6e6669726d7175657374696f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b636f6e6669726d7175657374696f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b6d69736d61746368627574746f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b6d69736d61746368627574746f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b756e766572696669656463616e63656c627574746f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b756e766572696669656463616e63656c627574746f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b756e7665726966696564636f6e74696e7565627574746f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b756e7665726966696564636f6e74696e7565627574746f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b756e76657269666965647469746c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b756e76657269666965647469746c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6b656570626f7468 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6b656570626f7468".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6c697374756e617661696c61626c65626f6479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6c697374756e617661696c61626c65626f6479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6c697374756e617661696c61626c657469746c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6c697374756e617661696c61626c657469746c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e6f66666c696e65626f6479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6f66666c696e65626f6479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7069636b6572656d707479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7069636b6572656d707479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d626f6479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d626f6479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d7469746c65 => {
-            const DECLARED: &[&str] = &["selecteddevicelabel"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "selecteddevicelabel").ok_or_else(|| RenderError::MissingArgument("selecteddevicelabel".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("selecteddevicelabel".to_string())),
-            };
-            f_args.set("selecteddevicelabel", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d7469746c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d7469746c6566616c6c6261636b => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d7469746c6566616c6c6261636b".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365646576696365 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365646576696365".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c6163656f66666572626f6479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c6163656f66666572626f6479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c6163656f666665727469746c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c6163656f666665727469746c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e67736a6f75726e616c6f70656e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e67736a6f75726e616c6f70656e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e67736c6f676578706f727473617665 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e67736c6f676578706f727473617665".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e67736c6f676578706f72747469746c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e67736c6f676578706f72747469746c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e6773746162617474656e74696f6e61313179 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e6773746162617474656e74696f6e61313179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e677374616275706461746573646f6e6561313179 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e677374616275706461746573646f6e6561313179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706170706c6162656c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706170706c6162656c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706261636b => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706261636b".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7365747570636f6e6e6563746564746f796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7365747570636f6e6e6563746564746f796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7365747570636f6e74696e7565 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7365747570636f6e74696e7565".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706a6f75726e616c6361726468656164696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706a6f75726e616c6361726468656164696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706d6963726f70686f6e65686561646c696e65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706d6963726f70686f6e65686561646c696e65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706f70656e796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706f70656e796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736574757073637265656e6672616d6563617074696f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736574757073637265656e6672616d6563617074696f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736574757077656c636f6d65626f647932 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736574757077656c636f6d65626f647932".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736574757077696e646f777469746c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736574757077696e646f777469746c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f77736572636f6e6e65637465646e6f77 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f77736572636f6e6e65637465646e6f77".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657264697363617264 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657264697363617264".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657264697363617264636f6d6d6974 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657264697363617264636f6d6d6974".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657264697363617264636f6e6669726d => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657264697363617264636f6e6669726d".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657268656c64 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657268656c64".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f777365727061676573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f777365727061676573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73746f72616765756e617661696c61626c65626f6479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73746f72616765756e617661696c61626c65626f6479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e73746f72616765756e617661696c61626c657469746c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73746f72616765756e617661696c61626c657469746c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7461726765746d697373696e67626f6479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7461726765746d697373696e67626f6479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e7461726765746d697373696e677469746c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7461726765746d697373696e677469746c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e746563686e6963616c64657461696c73 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e746563686e6963616c64657461696c73".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e74657874 => {
-            const DECLARED: &[&str] = &["value", "value2"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "value2").ok_or_else(|| RenderError::MissingArgument("value2".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value2".to_string())),
-            };
-            f_args.set("value2", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e74657874".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e636f70792e747279616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e747279616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e616464 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e616464".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e6578636c7564656461707073 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e6578636c7564656461707073".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e67657468656c70 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e67657468656c70".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e68656c70 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e68656c70".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e7265706f72746170726f626c656d => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e7265706f72746170726f626c656d".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e7365766572697479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e7365766572697479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e74657874636f6e74656e74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e74657874636f6e74656e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e75706461746573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e75706461746573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e77696e646f777469746c6573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e77696e646f777469746c6573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657475702e63616e63656c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e73657475702e63616e63656c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657475702e70616972 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e73657475702e70616972".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657475702e737461727461746c6f67696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e73657475702e737461727461746c6f67696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657475702e77697a61726470617573656661696c757265 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e73657475702e77697a61726470617573656661696c757265".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e73657475702e77697a61726470617573656661696c75726532 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e73657475702e77697a61726470617573656661696c75726532".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6175746f6d6174696375706461746573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6175746f6d6174696375706461746573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e636865636b666f72757064617465736175746f6d61746963616c6c79 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e636865636b666f72757064617465736175746f6d61746963616c6c79".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e636865636b6e6f77 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e636865636b6e6f77".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6469736d697373 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6469736d697373".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e646f776e6c6f6164 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e646f776e6c6f6164".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e646f776e6c6f616475706461746573696e7468656261636b67726f756e64 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e646f776e6c6f616475706461746573696e7468656261636b67726f756e64".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6576657279646179 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6576657279646179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e65766572796d6f6e7468 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e65766572796d6f6e7468".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e65766572797765656b => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e65766572797765656b".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e686f776f6674656e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e686f776f6674656e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6e65766572636865636b6564666f7275706461746573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6e65766572636865636b6564666f7275706461746573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e74657874636f6e74656e74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e74657874636f6e74656e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6465736b746f702e7368617265642e757064617465732e77686174736e6577 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e77686174736e6577".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6578636c7573696f6e732e6163746976697479 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e6578636c7573696f6e732e6163746976697479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6578636c7573696f6e732e61637469766974797265646163746564 => {
-            const DECLARED: &[&str] = &["count", "display", "more"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            let val_v2 = args.iter().find(|(n, _)| *n == "more").ok_or_else(|| RenderError::MissingArgument("more".to_string()))?.1.clone();
-            let v2 = match val_v2 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("more".to_string())),
-            };
-            f_args.set("more", FluentValue::from(v2.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e6578636c7573696f6e732e61637469766974797265646163746564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e616c6c686973746f7279 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e616c6c686973746f7279".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e65787069726564776f7264 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e65787069726564776f7264".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e686f6c646f66666c696e65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e686f6c646f66666c696e65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e696e74726f => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e696e74726f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e6d6f726568656c706572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e6d6f726568656c706572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e7265616479746f726576696577776f7264 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e7265616479746f726576696577776f7264".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e726563656e7461313179 => {
-            const DECLARED: &[&str] = &["name", "relative"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
-            };
-            f_args.set("name", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "relative").ok_or_else(|| RenderError::MissingArgument("relative".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("relative".to_string())),
-            };
-            f_args.set("relative", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e696d706f72742e726563656e7461313179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e726563656e746d657461 => {
-            const DECLARED: &[&str] = &["relative"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "relative").ok_or_else(|| RenderError::MissingArgument("relative".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("relative".to_string())),
-            };
-            f_args.set("relative", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e696d706f72742e726563656e746d657461".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e72656d6f76657265616479626f6479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e72656d6f76657265616479626f6479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e726576696577616374696f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e726576696577616374696f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e726576696577616374696f6e61313179 => {
-            const DECLARED: &[&str] = &["name"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
-            };
-            f_args.set("name", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e696d706f72742e726576696577616374696f6e61313179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e72657669657764657461696c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e72657669657764657461696c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e72657669657764657461696c626f6479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e72657669657764657461696c626f6479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e72657669657765787069726564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e72657669657765787069726564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e726f7773656e64696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e726f7773656e64696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e73656374696f6e726576696577 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e73656374696f6e726576696577".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e61313179 => {
-            const DECLARED: &[&str] = &["name"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
-            };
-            f_args.set("name", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e61313179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e737461747573617474656e74696f6e686561646c696e65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e737461747573617474656e74696f6e686561646c696e65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e737461747573617474656e74696f6e737562 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e737461747573617474656e74696f6e737562".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e737461747573726576696577686561646c696e65 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e696d706f72742e737461747573726576696577686561646c696e65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e737461747573726576696577737562 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e737461747573726576696577737562".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e74696c6561313179 => {
-            const DECLARED: &[&str] = &["state", "sub"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "state").ok_or_else(|| RenderError::MissingArgument("state".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("state".to_string())),
-            };
-            f_args.set("state", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "sub").ok_or_else(|| RenderError::MissingArgument("sub".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("sub".to_string())),
-            };
-            f_args.set("sub", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e696d706f72742e74696c6561313179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e74696c657265616479636f756e74 => {
-            const DECLARED: &[&str] = &["display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e696d706f72742e74696c657265616479636f756e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e74696c6573656e64696e67636f756e74 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e696d706f72742e74696c6573656e64696e67636f756e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e74696c6577616974696e67636f756e74 => {
-            const DECLARED: &[&str] = &["display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e696d706f72742e74696c6577616974696e67636f756e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e696d706f72742e74696c6577616974696e676a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e696d706f72742e74696c6577616974696e676a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6c6f67732e617661696c61626c656c6f677361726573686f776e62656c6f77636865636b746865 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6c6f67732e617661696c61626c656c6f677361726573686f776e62656c6f77636865636b746865".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6c6f67732e636f70797361766564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6c6f67732e636f70797361766564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6c6f67732e636f756c646e74726561647468656c6f6766696c6573747279 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6c6f67732e636f756c646e74726561647468656c6f6766696c6573747279".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6c6f67732e6e6f6c6f6766696c6573617265617661696c61626c65796574747279 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6c6f67732e6e6f6c6f6766696c6573617265617661696c61626c65796574747279".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6c6f67732e6e6f726563656e746c6f6773617265617661696c61626c65796574747279 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6c6f67732e6e6f726563656e746c6f6773617265617661696c61626c65796574747279".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6c6f67732e726561647468656c6f677362656c6f777468656e63686f6f736577686574686572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6c6f67732e726561647468656c6f677362656c6f777468656e63686f6f736577686574686572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6c6f67732e74657874636f6e74656e74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6c6f67732e74657874636f6e74656e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6c6f67732e74657874636f6e74656e7432 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6c6f67732e74657874636f6e74656e7432".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6c6f67732e74657874636f6e74656e7433 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6c6f67732e74657874636f6e74656e7433".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6c6f67732e74657874636f6e74656e7434 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6c6f67732e74657874636f6e74656e7434".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6c6f67732e74657874636f6e74656e7435 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6c6f67732e74657874636f6e74656e7435".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6e6f746963652e65766572797468696e6773617665646f6e7468697370636973676f696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6e6f746963652e65766572797468696e6773617665646f6e7468697370636973676f696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6e6f746963652e65766572797468696e67796f757475726e65646f6e6973676f696e67696e746f => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6e6f746963652e65766572797468696e67796f757475726e65646f6e6973676f696e67696e746f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6e6f746963652e696e74616b65697372756e6e696e67616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6e6f746963652e696e74616b65697372756e6e696e67616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6e6f746963652e696e74616b6572616e696e746f6170726f626c656d => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6e6f746963652e696e74616b6572616e696e746f6170726f626c656d".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6e6f746963652e697473676f696e67696e746f796f75726a6f75726e616c616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6e6f746963652e697473676f696e67696e746f796f75726a6f75726e616c616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6e6f746963652e736f6c73746f6e6569737374696c6c6f6e65766572797468696e6769737361766564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6e6f746963652e736f6c73746f6e6569737374696c6c6f6e65766572797468696e6769737361766564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6e6f746963652e74686569736261636b => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e6e6f746963652e74686569736261636b".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6e6f746963652e7468656e65656473796f75727065726d697373696f6e => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e6e6f746963652e7468656e65656473796f75727065726d697373696f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6e6f746963652e746865736f6c73746f6e6569636f6e696e7468657461736b62617273617973 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6e6f746963652e746865736f6c73746f6e6569636f6e696e7468657461736b62617273617973".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6e6f746963652e77696e646f77737072697661637973657474696e6773617265626c6f636b696e6769747475726e => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e6e6f746963652e77696e646f77737072697661637973657474696e6773617265626c6f636b696e6769747475726e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6e6f746963652e796f75726a6f75726e616c69736261636b696e7265616368 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6e6f746963652e796f75726a6f75726e616c69736261636b696e7265616368".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6e6f746963652e796f75726a6f75726e616c69736f75746f667265616368 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6e6f746963652e796f75726a6f75726e616c69736f75746f667265616368".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6f6273696469616e2e63686f6f73656f6273696469616e7661756c74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6f6273696469616e2e63686f6f73656f6273696469616e7661756c74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6f6273696469616e2e7661756c74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e6f6273696469616e2e7661756c74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e67 => {
-            const DECLARED: &[&str] = &["vault"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "vault").ok_or_else(|| RenderError::MissingArgument("vault".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("vault".to_string())),
-            };
-            f_args.set("vault", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e6f6273696469616e2e7761726e696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e6764617465 => {
-            const DECLARED: &[&str] = &["vault", "date"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "vault").ok_or_else(|| RenderError::MissingArgument("vault".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("vault".to_string())),
-            };
-            f_args.set("vault", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "date").ok_or_else(|| RenderError::MissingArgument("date".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("date".to_string())),
-            };
-            f_args.set("date", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e6f6273696469616e2e7761726e696e6764617465".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e67646576696365 => {
-            const DECLARED: &[&str] = &["vault", "device"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "vault").ok_or_else(|| RenderError::MissingArgument("vault".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("vault".to_string())),
-            };
-            f_args.set("vault", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "device").ok_or_else(|| RenderError::MissingArgument("device".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("device".to_string())),
-            };
-            f_args.set("device", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e6f6273696469616e2e7761726e696e67646576696365".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e6f6273696469616e2e7761726e696e6764657669636564617465 => {
-            const DECLARED: &[&str] = &["vault", "device", "date"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "vault").ok_or_else(|| RenderError::MissingArgument("vault".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("vault".to_string())),
-            };
-            f_args.set("vault", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "device").ok_or_else(|| RenderError::MissingArgument("device".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("device".to_string())),
-            };
-            f_args.set("device", FluentValue::from(v1.clone()));
-            let val_v2 = args.iter().find(|(n, _)| *n == "date").ok_or_else(|| RenderError::MissingArgument("date".to_string()))?.1.clone();
-            let v2 = match val_v2 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("date".to_string())),
-            };
-            f_args.set("date", FluentValue::from(v2.clone()));
-            ("m77696e646f77732e6f6273696469616e2e7761726e696e6764657669636564617465".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e70696c6c2e68656c64 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e70696c6c2e68656c64".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e70696c6c2e68656c6477616974696e67 => {
-            const DECLARED: &[&str] = &["waiting"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "waiting").ok_or_else(|| RenderError::MissingArgument("waiting".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("waiting".to_string())),
-            };
-            f_args.set("waiting", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e70696c6c2e68656c6477616974696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e70696c6c2e6f66666c696e65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e70696c6c2e6f66666c696e65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e70696c6c2e6f66666c696e6577616974696e67 => {
-            const DECLARED: &[&str] = &["waiting"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "waiting").ok_or_else(|| RenderError::MissingArgument("waiting".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("waiting".to_string())),
-            };
-            f_args.set("waiting", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e70696c6c2e6f66666c696e6577616974696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e70696c6c2e7265616479746f726576696577 => {
-            const DECLARED: &[&str] = &["display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e70696c6c2e7265616479746f726576696577".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e70696c6c2e72656675736564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e70696c6c2e72656675736564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e70696c6c2e7265667573656477616974696e67 => {
-            const DECLARED: &[&str] = &["waiting"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "waiting").ok_or_else(|| RenderError::MissingArgument("waiting".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("waiting".to_string())),
-            };
-            f_args.set("waiting", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e70696c6c2e7265667573656477616974696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e70696c6c2e73796e63706175736564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e70696c6c2e73796e63706175736564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e70696c6c2e73796e6370617573656477616974696e67 => {
-            const DECLARED: &[&str] = &["waiting"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "waiting").ok_or_else(|| RenderError::MissingArgument("waiting".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("waiting".to_string())),
-            };
-            f_args.set("waiting", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e70696c6c2e73796e6370617573656477616974696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e7175616e746974792e686f757273 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e7175616e746974792e686f757273".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e7175616e746974792e6974656d73 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e7175616e746974792e6974656d73".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e7175616e746974792e6d696e75746573 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e7175616e746974792e6d696e75746573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e7175616e746974792e6e6f746573 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e7175616e746974792e6e6f746573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e7175616e746974792e7061676573 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e7175616e746974792e7061676573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e7175616e746974792e73637265656e73686f7473 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e7175616e746974792e73637265656e73686f7473".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e73637265656e73686f74732e6272696e67636f756e74 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e73637265656e73686f74732e6272696e67636f756e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e73637265656e73686f74732e63616e74636f756e74 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e73637265656e73686f74732e63616e74636f756e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e736861726564736f75726365732e616c736f => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e736861726564736f75726365732e616c736f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e736861726564736f75726365732e6c6162656c616765 => {
-            const DECLARED: &[&str] = &["label", "relative"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
-            };
-            f_args.set("label", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "relative").ok_or_else(|| RenderError::MissingArgument("relative".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("relative".to_string())),
-            };
-            f_args.set("relative", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e736861726564736f75726365732e6c6162656c616765".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465 => {
-            const DECLARED: &[&str] = &["label", "state"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
-            };
-            f_args.set("label", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "state").ok_or_else(|| RenderError::MissingArgument("state".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("state".to_string())),
-            };
-            f_args.set("state", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765 => {
-            const DECLARED: &[&str] = &["label", "state", "relative"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
-            };
-            f_args.set("label", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "state").ok_or_else(|| RenderError::MissingArgument("state".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("state".to_string())),
-            };
-            f_args.set("state", FluentValue::from(v1.clone()));
-            let val_v2 = args.iter().find(|(n, _)| *n == "relative").ok_or_else(|| RenderError::MissingArgument("relative".to_string()))?.1.clone();
-            let v2 = match val_v2 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("relative".to_string())),
-            };
-            f_args.set("relative", FluentValue::from(v2.clone()));
-            ("m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e736861726564736f75726365732e6d616e79 => {
-            const DECLARED: &[&str] = &["count"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            f_args.set("count", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e736861726564736f75726365732e6d616e79".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e736861726564736f75726365732e6f6e65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e736861726564736f75726365732e6f6e65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e736861726564736f75726365732e7374617465616765 => {
-            const DECLARED: &[&str] = &["state", "relative"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "state").ok_or_else(|| RenderError::MissingArgument("state".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("state".to_string())),
-            };
-            f_args.set("state", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "relative").ok_or_else(|| RenderError::MissingArgument("relative".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("relative".to_string())),
-            };
-            f_args.set("relative", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e736861726564736f75726365732e7374617465616765".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e74696d652e636865636b6564646179 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e74696d652e636865636b6564646179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e74696d652e636865636b6564686f7572 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e74696d652e636865636b6564686f7572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e74696d652e636865636b65646d696e757465 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e74696d652e636865636b65646d696e757465".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e74696d652e6e65787473617665 => {
-            const DECLARED: &[&str] = &["minutes", "seconds"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "minutes").ok_or_else(|| RenderError::MissingArgument("minutes".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("minutes".to_string())),
-            };
-            f_args.set("minutes", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "seconds").ok_or_else(|| RenderError::MissingArgument("seconds".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("seconds".to_string())),
-            };
-            f_args.set("seconds", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e74696d652e6e65787473617665".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e74696d652e74616b656e686f757273 => {
-            const DECLARED: &[&str] = &["count", "display"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
-            };
-            f_args.set("display", FluentValue::from(v1.clone()));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e74696d652e74616b656e686f757273".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e636865636b666f7275706461746573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e747261792e636865636b666f7275706461746573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e68726d696e => {
-            const DECLARED: &[&str] = &["count", "count2"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "count2").ok_or_else(|| RenderError::MissingArgument("count2".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count2".to_string())),
-            };
-            if v1 < -2147483648_i64 || v1 > 2147483647_i64 { return Err(RenderError::OutOfRange("count2".to_string())); }
-            f_args.set("count2", FluentValue::from(v1));
-            ("m77696e646f77732e747261792e68726d696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e6c6573737468616e616d696e757465 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e747261792e6c6573737468616e616d696e757465".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e6e656564736172657374617274 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e747261792e6e656564736172657374617274".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e6f6e627574 => {
-            const DECLARED: &[&str] = &["needs"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "needs").ok_or_else(|| RenderError::MissingArgument("needs".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("needs".to_string())),
-            };
-            f_args.set("needs", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e747261792e6f6e627574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e6f6e636f6e6e6563746564746f796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e747261792e6f6e636f6e6e6563746564746f796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e6f6e6e6f74636f6e6e6563746564746f616a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e747261792e6f6e6e6f74636f6e6e6563746564746f616a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e6f6e73617665646f6e746869737063 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e747261792e6f6e73617665646f6e746869737063".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e7061757365646c656674 => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e747261792e7061757365646c656674".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e736f6c73746f6e6577616974696e67666f72796f75746f636f6e6669726d796f7572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e747261792e736f6c73746f6e6577616974696e67666f72796f75746f636f6e6669726d796f7572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e7374617274696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e747261792e7374617274696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e73746f726167656661756c74666f726f776e6572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e747261792e73746f726167656661756c74666f726f776e6572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e74657874 => {
-            const DECLARED: &[&str] = &["tooltip", "notice"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "tooltip").ok_or_else(|| RenderError::MissingArgument("tooltip".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("tooltip".to_string())),
-            };
-            f_args.set("tooltip", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "notice").ok_or_else(|| RenderError::MissingArgument("notice".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("notice".to_string())),
-            };
-            f_args.set("notice", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e747261792e74657874".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e7468656e656564737065726d697373696f6e696e77696e646f777373657474696e6773 => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e747261792e7468656e656564737065726d697373696f6e696e77696e646f777373657474696e6773".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e74686573746f70706564676f696e67696e746f796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e747261792e74686573746f70706564676f696e67696e746f796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e6174 => {
-            const DECLARED: &[&str] = &["name"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
-            };
-            f_args.set("name", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e6174".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e7468726f75676874686572656c6179 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e7468726f75676874686572656c6179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e757064617465617661696c61626c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e747261792e757064617465617661696c61626c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e757064617465636865636b6661696c6564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e747261792e757064617465636865636b6661696c6564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e747261792e7570646174657265616479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e747261792e7570646174657265616479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e61636365737377617364656e696564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e61636365737377617364656e696564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e61636365737377617364656e696564636865636b77696e646f77737065726d697373696f6e73666f72 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e61636365737377617364656e696564636865636b77696e646f77737065726d697373696f6e73666f72".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e616374697665783437346431623735 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e616374697665783437346431623735".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e616374697665783638663530613962 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e616374697665783638663530613962".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e616374697665783936383739363131 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e616374697665783936383739363131".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6163746976697479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6163746976697479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e616374697669747969737374696c6c6f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e616374697669747969737374696c6c6f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6164646170706e616d657377696e646f777469746c6573616e6470616765 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6164646170706e616d657377696e646f777469746c6573616e6470616765".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6164646d6f7265 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6164646d6f7265".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6164647370646673617564696f696d61676573616e6474657874796f7563686f6f7365686572656f7264726f706f6e74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6164647370646673617564696f696d61676573616e6474657874796f7563686f6f7365686572656f7264726f706f6e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e616464746865736f6c73746f6e65657874656e73696f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e616464746865736f6c73746f6e65657874656e73696f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e616464746f => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e616464746f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e61676c6f62616c73686f7274637574746f7061757365616e64726573756d65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e61676c6f62616c73686f7274637574746f7061757365616e64726573756d65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e616c6c6361756768747570 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e616c6c6361756768747570".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e616c6c6f666974 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e616c6c6f666974".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e616c6c736f75726365736f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e616c6c736f75726365736f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e616c6f75646572696e707574666f7271756965746d6963726f70686f6e65736368616e676573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e616c6f75646572696e707574666f7271756965746d6963726f70686f6e65736368616e676573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e616c72656164796f6e686f6d65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e616c72656164796f6e686f6d65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e616e65776c696e6b66726f6d796f75726a6f75726e616c63616e626570617374656468657265 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e616e65776c696e6b66726f6d796f75726a6f75726e616c63616e626570617374656468657265".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e616e6f7468657270616972696e676c696e6b636f756c646e6f7462656164646564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e616e6f7468657270616972696e676c696e6b636f756c646e6f7462656164646564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617072696c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e617072696c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e61726730 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e61726730".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6172673061726731 => {
-            const DECLARED: &[&str] = &["arg0", "arg1"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "arg1").ok_or_else(|| RenderError::MissingArgument("arg1".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg1".to_string())),
-            };
-            f_args.set("arg1", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e75692e6172673061726731".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617267306172673161726732 => {
-            const DECLARED: &[&str] = &["arg0", "arg1", "arg2"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "arg1").ok_or_else(|| RenderError::MissingArgument("arg1".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg1".to_string())),
-            };
-            f_args.set("arg1", FluentValue::from(v1.clone()));
-            let val_v2 = args.iter().find(|(n, _)| *n == "arg2").ok_or_else(|| RenderError::MissingArgument("arg2".to_string()))?.1.clone();
-            let v2 = match val_v2 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg2".to_string())),
-            };
-            f_args.set("arg2", FluentValue::from(v2.clone()));
-            ("m77696e646f77732e75692e617267306172673161726732".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617267306279746573 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e617267306279746573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617267306762 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e617267306762".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617267306872 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e617267306872".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6172673068726c656674 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e6172673068726c656674".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617267306b62 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e617267306b62".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617267306b62783735623131626131 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e617267306b62783735623131626131".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617267306d62 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e617267306d62".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617267306d62786666383832663030 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e617267306d62786666383832663030".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617267306d696e => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e617267306d696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617267306d696e61676f => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e617267306d696e61676f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617267306d696e6c656674 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e617267306d696e6c656674".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617267306e65656473617474656e74696f6e => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e617267306e65656473617474656e74696f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617267306f6661726731696e796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &["arg0", "arg1"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "arg1").ok_or_else(|| RenderError::MissingArgument("arg1".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg1".to_string())),
-            };
-            f_args.set("arg1", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e75692e617267306f6661726731696e796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617267306f666172673173637265656e73686f7473696e796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &["arg0", "arg1"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "arg1").ok_or_else(|| RenderError::MissingArgument("arg1".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg1".to_string())),
-            };
-            f_args.set("arg1", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e75692e617267306f666172673173637265656e73686f7473696e796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617267307462 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e617267307462".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e61726730783231316238626131 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e61726730783231316238626131".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6173637265656e73686f74616c7265616479696e796f75726a6f75726e616c737461797374686572656966796f756465 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6173637265656e73686f74616c7265616479696e796f75726a6f75726e616c737461797374686572656966796f756465".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6173637265656e73686f7474686174736f6e6c79636f70696564746f746865636c6970626f61726469736e7473617665 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6173637265656e73686f7474686174736f6e6c79636f70696564746f746865636c6970626f61726469736e7473617665".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617365676d656e74697361356d696e7574656c6f63616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e617365676d656e74697361356d696e7574656c6f63616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617474656e74696f6e6e6565646564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e617474656e74696f6e6e6565646564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617564696f => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e617564696f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e617567757374 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e617567757374".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6175746f6d61746963636865636b736172656f6666 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6175746f6d61746963636865636b736172656f6666".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6175746f6d61746963636865636b736172656f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6175746f6d61746963636865636b736172656f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6177696e646f7774686174636c6f7365736f726d6f76657363616e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6177696e646f7774686174636c6f7365736f726d6f76657363616e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6261636b67726f756e646461746175736572657374726963746564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6261636b67726f756e646461746175736572657374726963746564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e62726f7773657273 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e62726f7773657273".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e62726f777365727374617465756e617661696c61626c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e62726f777365727374617465756e617661696c61626c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6368616e6765 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6368616e6765".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636865636b65646a7573746e6f77 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636865636b65646a7573746e6f77".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636865636b666f7275706461746573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636865636b666f7275706461746573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636865636b696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636865636b696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636865636b696e67666f7275706461746573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636865636b696e67666f7275706461746573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636865636b696e67776f7264 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636865636b696e67776f7264".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636865636b696e67796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636865636b696e67796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e63686f6f736561666f6c646572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e63686f6f736561666f6c646572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e63686f6f736561666f6c646572786462656337343264 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e63686f6f736561666f6c646572786462656337343264".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e63686f6f7365616e617070746f6578636c756465 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e63686f6f7365616e617070746f6578636c756465".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e63686f6f73656172756e6e696e67617070 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e63686f6f73656172756e6e696e67617070".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e63686f6f736566696c6573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e63686f6f736566696c6573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e63686f6f7365666f6c646572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e63686f6f7365666f6c646572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e63686f6f7365686f776661726261636b746f73746172747468656e6272696e677468656d696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e63686f6f7365686f776661726261636b746f73746172747468656e6272696e677468656d696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e63686f6f7365746865666f6c646572796f757273637265656e73686f747373617665746f => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e63686f6f7365746865666f6c646572796f757273637265656e73686f747373617665746f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e63686f6f73657768617473746179736f75746f66796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e63686f6f73657768617473746179736f75746f66796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636c61696d65646e6f747665726966696564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636c61696d65646e6f747665726966696564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636c69636b7468656e7072657373796f757273686f7274637574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636c69636b7468656e7072657373796f757273686f7274637574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636c6f73656e617669676174696f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636c6f73656e617669676174696f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f6d7075746572736f756e64 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f6d7075746572736f756e64".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f6d7075746572736f756e646c6576656c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f6d7075746572736f756e646c6576656c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f6e6669726d7468656d61726b => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f6e6669726d7468656d61726b".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f6e6669726d7468656d61726b6172673077616974696e67 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e636f6e6669726d7468656d61726b6172673077616974696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f6e6669726d796f75726a6f75726e616c736d61726b746f6f70656e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f6e6669726d796f75726a6f75726e616c736d61726b746f6f70656e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f6e6e656374616a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f6e6e656374616a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f6e6e6563746564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f6e6e6563746564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f6e6e6563746564746f => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e636f6e6e6563746564746f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f6e6e656374696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f6e6e656374696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f6e6e656374696e67783364366466323435 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f6e6e656374696e67783364366466323435".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f6e6e656374696f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f6e6e656374696f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f6e6e656374746f796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f6e6e656374746f796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f6e6e656374796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f6e6e656374796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f6e74696e756574686973636f6e6e656374696f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f6e74696e756574686973636f6e6e656374696f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f70696564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f70696564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f707974686566756c6c6c696e6b66726f6d796f757263686174616e646f70656e6974616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f707974686566756c6c6c696e6b66726f6d796f757263686174616e646f70656e6974616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e6f747061757365747279616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e6f747061757365747279616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e6f74726573756d65747279616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e6f74726573756d65747279616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e6f74736176657468697363686f69636569746d6179 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e6f74736176657468697363686f69636569746d6179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e6f7473617665746869736469736d697373616c747279616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e6f7473617665746869736469736d697373616c747279616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e6f74736176657475726e696e67746869736f6666697469736f66666e6f776275746d61797475726e6f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e6f74736176657475726e696e67746869736f6666697469736f66666e6f776275746d61797475726e6f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e6f74736176657475726e696e67746869736f6e697473746179736f6666747279616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e6f74736176657475726e696e67746869736f6e697473746179736f6666747279616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e6f7473617665796f7572736574757070726f6772657373747279 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e6f7473617665796f7572736574757070726f6772657373747279".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e6f74757064617465737461727461746c6f67696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e6f74757064617465737461727461746c6f67696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e74636865636b666f7275706461746573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e74636865636b666f7275706461746573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e74636865636b666f7275706461746573736f6c73746f6e65776173 => {
-            const DECLARED: &[&str] = &["v"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "v").ok_or_else(|| RenderError::MissingArgument("v".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("v".to_string())),
-            };
-            f_args.set("v", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e636f756c646e74636865636b666f7275706461746573736f6c73746f6e65776173".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e74636f756e74796f757273637265656e73686f7473 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e74636f756e74796f757273637265656e73686f7473".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e74646f776e6c6f6164736f6c73746f6e65 => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e636f756c646e74646f776e6c6f6164736f6c73746f6e65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e74646f776e6c6f6164757064617465 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e74646f776e6c6f6164757064617465".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e7466696e646173637265656e73686f7473666f6c6465726f6e74686973706363686f6f7365746865666f => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e7466696e646173637265656e73686f7473666f6c6465726f6e74686973706363686f6f7365746865666f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e7466696e69736864697363617264696e6777686174736c656674 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e7466696e69736864697363617264696e6777686174736c656674".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e74696e7374616c6c757064617465 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e74696e7374616c6c757064617465".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e746c6f6164746865736f6c73746f6e6561707073 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e746c6f6164746865736f6c73746f6e6561707073".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e746f70656e74686573746f726570616765696e => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e636f756c646e746f70656e74686573746f726570616765696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e746f70656e796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e746f70656e796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e746f70656e796f75726a6f75726e616c747279616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e746f70656e796f75726a6f75726e616c747279616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e747265616368796f75726a6f75726e616c6f766572796f7572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e747265616368796f75726a6f75726e616c6f766572796f7572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e7472656164696d706f7274736f6e746869736465766963656e6f7468696e676861736265656e72656d6f => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e7472656164696d706f7274736f6e746869736465766963656e6f7468696e676861736265656e72656d6f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e7472656164796f75727361766564736f7572636563686f69636573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e7472656164796f75727361766564736f7572636563686f69636573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e7472656769737465727468617473686f7274637574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e7472656769737465727468617473686f7274637574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e7472656d6f766574686973747279616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e7472656d6f766574686973747279616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e747475726e747279616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e747475726e747279616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e636f756c646e747665726966796a6f75726e616c736f6e6f7468696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e636f756c646e747665726966796a6f75726e616c736f6e6f7468696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e64617961676f => {
-            const DECLARED: &[&str] = &["count"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e75692e64617961676f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e646563656d626572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e646563656d626572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e64656c697665726564 => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e64656c697665726564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e64656c69766572656470656e64696e67 => {
-            const DECLARED: &[&str] = &["value", "value2"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "value2").ok_or_else(|| RenderError::MissingArgument("value2".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value2".to_string())),
-            };
-            f_args.set("value2", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e75692e64656c69766572656470656e64696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6465736b746f706163746976697479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6465736b746f706163746976697479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e64657669636563686f696365 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e64657669636563686f696365".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6465766963657072696f72697479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6465766963657072696f72697479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e64697361626c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e64697361626c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e646f6e74737461727461746c6f67696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e646f6e74737461727461746c6f67696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e646f776e6c6f61646465666572726564636f6e6e656374696f6e737461747573756e6b6e6f776e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e646f776e6c6f61646465666572726564636f6e6e656374696f6e737461747573756e6b6e6f776e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e646f776e6c6f616464656665727265646d657465726564636f6e6e656374696f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e646f776e6c6f616464656665727265646d657465726564636f6e6e656374696f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e646f776e6c6f616464656665727265647768696c65726f616d696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e646f776e6c6f616464656665727265647768696c65726f616d696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e646f776e6c6f6164696e67736f6c73746f6e65 => {
-            const DECLARED: &[&str] = &["v"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "v").ok_or_else(|| RenderError::MissingArgument("v".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("v".to_string())),
-            };
-            f_args.set("v", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e646f776e6c6f6164696e67736f6c73746f6e65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e646f776e6c6f61647468656c617465737466726f6d736f6c73746f6e65617070646f776e6c6f616477696e646f7773 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e646f776e6c6f61647468656c617465737466726f6d736f6c73746f6e65617070646f776e6c6f616477696e646f7773".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e65646765616e6466697265666f78736574746f656e676c697368 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e65646765616e6466697265666f78736574746f656e676c697368".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e656e61626c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e656e61626c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e656e61626c657468657061757365726573756d6573686f7274637574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e656e61626c657468657061757365726573756d6573686f7274637574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6572726f72776f7264 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6572726f72776f7264".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e657363746f63616e63656c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e657363746f63616e63656c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6576657279706963747572657361766564696e61726730636f6d6573696e6e6f746f6e6c79796f757273637265656e73 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e6576657279706963747572657361766564696e61726730636f6d6573696e6e6f746f6e6c79796f757273637265656e73".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e65766572797468696e676973696e796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e65766572797468696e676973696e796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6578636c756465 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6578636c756465".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6578636c7573696f6e6163746976697479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6578636c7573696f6e6163746976697479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6661696c6564746f6163717569726573657475706c6f636b => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6661696c6564746f6163717569726573657475706c6f636b".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6665627275617279 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6665627275617279".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e66696c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e66696c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e66696c6573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e66696c6573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e66696e697368636f6e6e656374696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e66696e697368636f6e6e656374696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e66696e697368636f6e6e656374696e67746f796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e66696e697368636f6e6e656374696e67746f796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e66696e69736874686563757272656e74636f6e6e656374696f6e7468656e747279616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e66696e69736874686563757272656e74636f6e6e656374696f6e7468656e747279616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e666f6c646572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e666f6c646572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e666f756e646a6f75726e616c7063 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e666f756e646a6f75726e616c7063".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e66726f6d => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e66726f6d".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e66726f6d6265666f7265746f646179 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e66726f6d6265666f7265746f646179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e67657474696e677265616479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e67657474696e677265616479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e67657474696e677265616479636f6e6e656374696e67746f796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e67657474696e677265616479636f6e6e656374696e67746f796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e67657474696e67746869736465766963657265616479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e67657474696e67746869736465766963657265616479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e676c6f62616c73686f7274637574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e676c6f62616c73686f7274637574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e676f6573616c6f6e67776974686974 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e676f6573616c6f6e67776974686974".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e676f6f6461667465726e6f6f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e676f6f6461667465726e6f6f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e676f6f646576656e696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e676f6f646576656e696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e676f6f646d6f726e696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e676f6f646d6f726e696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e686f6c646f6e656f726d6f72656f666374726c616c74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e686f6c646f6e656f726d6f72656f666374726c616c74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e686f6d65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e686f6d65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e686f6d65783465376135636563 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e686f6d65783465376135636563".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e686f757261676f => {
-            const DECLARED: &[&str] = &["count"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e75692e686f757261676f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e686f776f6674656e746f636865636b666f7275706461746573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e686f776f6674656e746f636865636b666f7275706461746573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e68726c65667468726d696e6c656674626f7468 => {
-            const DECLARED: &[&str] = &["count", "count2"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "count2").ok_or_else(|| RenderError::MissingArgument("count2".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count2".to_string())),
-            };
-            if v1 < -2147483648_i64 || v1 > 2147483647_i64 { return Err(RenderError::OutOfRange("count2".to_string())); }
-            f_args.set("count2", FluentValue::from(v1));
-            ("m77696e646f77732e75692e68726c65667468726d696e6c656674626f7468".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e69646c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e69646c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6966796f75686176656e74796574616464746865 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6966796f75686176656e74796574616464746865".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e696d706f7274 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e696d706f7274".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e696d706f727473776169746f6e74686973646576696365756e74696c796f75636f6e6e656374616a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e696d706f727473776169746f6e74686973646576696365756e74696c796f75636f6e6e656374616a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e696d706f72747377616974756e74696c796f75636f6e6669726d796f75726a6f75726e616c736d61726b => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e696d706f72747377616974756e74696c796f75636f6e6669726d796f75726a6f75726e616c736d61726b".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e696d706f72747377616974756e74696c796f75726a6f75726e616c697375706461746564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e696d706f72747377616974756e74696c796f75726a6f75726e616c697375706461746564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e696e7075746761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e696e7075746761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e696e7374616c6c696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e696e7374616c6c696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e696e7374616c6c696e67736f6c73746f6e65 => {
-            const DECLARED: &[&str] = &["v"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "v").ok_or_else(|| RenderError::MissingArgument("v".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("v".to_string())),
-            };
-            f_args.set("v", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e696e7374616c6c696e67736f6c73746f6e65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e696e796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e696e796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e696e796f75726a6f75726e616c63686f6f73657061697261646576696365616e6470617374657468656c696e6b686572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e696e796f75726a6f75726e616c63686f6f73657061697261646576696365616e6470617374657468656c696e6b686572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6974696e7374616c6c737468656e65787474696d65746865736f6c73746f6e65617070737461727473696e636c756469 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6974696e7374616c6c737468656e65787474696d65746865736f6c73746f6e65617070737461727473696e636c756469".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6974736c61726765727468616e796f75726a6f75726e616c74616b6573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6974736c61726765727468616e796f75726a6f75726e616c74616b6573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6a616e75617279 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6a616e75617279".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6a6f75726e616c64657461696c73 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6a6f75726e616c64657461696c73".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6a6f75726e616c6c61737472656163686564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6a6f75726e616c6c61737472656163686564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6a6f75726e616c6e656564737570646174656265666f726563616e74616b65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6a6f75726e616c6e656564737570646174656265666f726563616e74616b65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6a6f75726e616c73796e63 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6a6f75726e616c73796e63".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6a6f75726e616c7570646174656e6565646564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6a6f75726e616c7570646174656e6565646564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6a6f75726e616c76657273696f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6a6f75726e616c76657273696f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6a756c79 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6a756c79".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6a756e65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6a756e65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6b6565706f6e7768696c657061757365646f7273637265656e6973 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6b6565706f6e7768696c657061757365646f7273637265656e6973".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6b6565707072697661746577696e646f77736f75746f66796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6b6565707072697661746577696e646f77736f75746f66796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6b6570746f6e746869737063 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6b6570746f6e746869737063".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6b6570746f6e7468697370636e6f747265616368696e67796f7572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6b6570746f6e7468697370636e6f747265616368696e67796f7572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6c6162656c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6c6162656c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6c617374636865636b6564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6c617374636865636b6564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6c61737472656163686564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6c61737472656163686564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6c61737474616b656e696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6c61737474616b656e696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6c6566746f7574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6c6566746f7574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6c6573737468616e616d696e7574656c656674 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6c6573737468616e616d696e7574656c656674".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6d6164656279736f6c706263 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6d6164656279736f6c706263".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6d61726368 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6d61726368".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6d61726b => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6d61726b".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6d61726b756e617661696c61626c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6d61726b756e617661696c61626c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6d61726b756e617661696c61626c65783561636264313165 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6d61726b756e617661696c61626c65783561636264313165".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6d6179 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6d6179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6d6963726f70686f6e65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6d6963726f70686f6e65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6d6963726f70686f6e656c6576656c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6d6963726f70686f6e656c6576656c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6d6963726f70686f6e6573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6d6963726f70686f6e6573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6d696e75746561676f => {
-            const DECLARED: &[&str] = &["count"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
-            f_args.set("count", FluentValue::from(v0));
-            f_args.set("i18nCategory", plural_category(cardinal_rule, v0));
-            ("m77696e646f77732e75692e6d696e75746561676f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6d6f726561626f757474686973 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6d6f726561626f757474686973".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6d6f7265696d706f727473 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6d6f7265696d706f727473".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6d6f7665646f776e => {
-            const DECLARED: &[&str] = &["name"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
-            };
-            f_args.set("name", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e6d6f7665646f776e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6d6f76657570 => {
-            const DECLARED: &[&str] = &["name"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
-            };
-            f_args.set("name", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e6d6f76657570".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e3170617373776f726462697477617264656e616e647468656f7468657270617373776f72646d616e61676572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e3170617373776f726462697477617264656e616e647468656f7468657270617373776f72646d616e61676572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e65656473617474656e74696f6e776f7264 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e65656473617474656e74696f6e776f7264".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e656564737065726d697373696f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e656564737065726d697373696f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e657874 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e657874".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e65787473617665 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e65787473617665".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f62726f77736572636f6e6e65637465646e6f77 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f62726f77736572636f6e6e65637465646e6f77".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f63726564656e7469616c616363657373 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f63726564656e7469616c616363657373".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f6578636c7573696f6e73616374697665 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f6578636c7573696f6e73616374697665".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f6964656e7469747970726573656e746564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f6964656e7469747970726573656e746564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f696e707574646576696365 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f696e707574646576696365".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f6b6579776f726473796574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f6b6579776f726473796574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f6c6f63616c6a6f75726e616c746f636f6e6e656374746f => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f6c6f63616c6a6f75726e616c746f636f6e6e656374746f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f6d6963726f70686f6e65666f756e64 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f6d6963726f70686f6e65666f756e64".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f6d6963726f70686f6e65696e70757464657669636573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f6d6963726f70686f6e65696e70757464657669636573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f6d6963726f70686f6e656973617661696c61626c65636f6e6e6563746f72656e61626c656f6e65696e77696e646f => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f6d6963726f70686f6e656973617661696c61626c65636f6e6e6563746f72656e61626c656f6e65696e77696e646f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f6e65646973706c6179 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f6e65646973706c6179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f6f746865726170707372756e6e696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f6f746865726170707372756e6e696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f726f6f6d6d6f726572696768746e6f776e6577 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f726f6f6d6d6f726572696768746e6f776e6577".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f73686f7274637574736574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f73686f7274637574736574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f736f756e646f7574707574666f756e64 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f736f756e646f7574707574666f756e64".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f736f756e646f75747075746973617661696c61626c65636f6e6e6563746f72656e61626c656f6e65696e77696e64 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f736f756e646f75747075746973617661696c61626c65636f6e6e6563746f72656e61626c656f6e65696e77696e64".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f74616e737765726564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f74616e737765726564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f74617661696c61626c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f74617661696c61626c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f74617661696c61626c6572696768746e6f77 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f74617661696c61626c6572696768746e6f77".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f74636865636b6564666f7275706461746573796574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f74636865636b6564666f7275706461746573796574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f7465736a6f75726e616c => {
-            const DECLARED: &[&str] = &["value", "value2"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "value2").ok_or_else(|| RenderError::MissingArgument("value2".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value2".to_string())),
-            };
-            f_args.set("value2", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e75692e6e6f7465736a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f74676f696e67746f796f75726a6f75726e616c72696768746e6f77656163686f6e6573617973776879 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f74676f696e67746f796f75726a6f75726e616c72696768746e6f77656163686f6e6573617973776879".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f7468696e676578636c75646564796574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f7468696e676578636c75646564796574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f7468696e6766726f6d6265666f7265746f646179 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f7468696e6766726f6d6265666f7265746f646179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f7468696e6777617373617665646f6e74686973646576696365 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f7468696e6777617373617665646f6e74686973646576696365".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f7468696e67796574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f7468696e67796574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f7468696e67796574786563356138646136 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f7468696e67796574786563356138646136".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f746f6e74686973636f6d7075746572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f746f6e74686973636f6d7075746572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f747265616368696e67796f75726a6f75726e616c72696768746e6f77 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f747265616368696e67796f75726a6f75726e616c72696768746e6f77".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f747265706f72746564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f747265706f72746564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f74796574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f74796574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f75736167656461746169736576657273656e74757064617465 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f75736167656461746169736576657273656e74757064617465".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6e6f76656d626572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6e6f76656d626572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6f63746f626572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6f63746f626572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6f66666c696e65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6f66666c696e65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6f66666c696e656172673077616974696e67 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e6f66666c696e656172673077616974696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6f6e6c7977686174746865736f6c73746f6e6561707063616e74656c6c69736173637265656e73686f74636f6d657369 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6f6e6c7977686174746865736f6c73746f6e6561707063616e74656c6c69736173637265656e73686f74636f6d657369".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6f6e7468657369746573796f75616c6c6f77746865736f6c73746f6e65657874656e73696f6e74616b6573696e746865 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6f6e7468657369746573796f75616c6c6f77746865736f6c73746f6e65657874656e73696f6e74616b6573696e746865".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6f6e74686973646576696365 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6f6e74686973646576696365".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6f70656e666f6c646572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6f70656e666f6c646572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6f70656e6e617669676174696f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6f70656e6e617669676174696f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6f70656e73657474696e6773 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6f70656e73657474696e6773".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6f70656e736f756e6473657474696e6773 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6f70656e736f756e6473657474696e6773".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6f70656e77696e646f777373657474696e6773 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e6f70656e77696e646f777373657474696e6773".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e6f7468657266696c6573696e6172673073746179776865726574686579617265 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e6f7468657266696c6573696e6172673073746179776865726574686579617265".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e70616765616464726573736573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e70616765616464726573736573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7061676561646472657373657365646765616e646368726f6d65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7061676561646472657373657365646765616e646368726f6d65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e70616972616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e70616972616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e70616972656477697468 => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e70616972656477697468".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e70616972696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e70616972696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e70616972696e6763616e63656c6c65646e6f7468696e677468697370636861736b657074 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e70616972696e6763616e63656c6c65646e6f7468696e677468697370636861736b657074".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e70616972696e676469646e74676f7468726f75676867657461 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e70616972696e676469646e74676f7468726f75676867657461".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e70616972696e676c696e6b66726f6d796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e70616972696e676c696e6b66726f6d796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e70616972746869737063746f796f75726a6f75726e616c746f => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e70616972746869737063746f796f75726a6f75726e616c746f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e70616972746f64656c69766572746f796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e70616972746f64656c69766572746f796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7061697277697468796f75726a6f75726e616c6669727374 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7061697277697468796f75726a6f75726e616c6669727374".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e706172747661756c7463616e74626572656164 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e706172747661756c7463616e74626572656164".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e706175736564 => {
-            const DECLARED: &[&str] = &["count"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
-            };
-            f_args.set("count", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e706175736564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e706175736564617267306d696e6c656674 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e706175736564617267306d696e6c656674".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7061757365646c6573737468616e616d696e7574656c656674 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7061757365646c6573737468616e616d696e7574656c656674".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e706175736564756e74696c796f75726573756d65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e706175736564756e74696c796f75726573756d65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e70617573656477697468746865726573746f66746865736f6c73746f6e65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e70617573656477697468746865726573746f66746865736f6c73746f6e65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e706175736564776f7264 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e706175736564776f7264".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e706175736564786137613964633562 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e706175736564786137613964633562".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7061757365726573756d65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7061757365726573756d65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e706175736573616c6c736f7572636573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e706175736573616c6c736f7572636573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e70656e64696e67 => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e70656e64696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e706c616365686f6c646572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e706c616365686f6c646572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e706c616365686f6c64657232 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e706c616365686f6c64657232".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e70726573656e746564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e70726573656e746564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7072657373796f757273686f7274637574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7072657373796f757273686f7274637574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e70726576696577706175736564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e70726576696577706175736564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e70726976616379 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e70726976616379".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7072697661746577696e646f7773 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7072697661746577696e646f7773".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e70726f677265737374657874 => {
-            const DECLARED: &[&str] = &["stepnum", "totalsteps"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "stepnum").ok_or_else(|| RenderError::MissingArgument("stepnum".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("stepnum".to_string())),
-            };
-            if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("stepnum".to_string())); }
-            f_args.set("stepnum", FluentValue::from(v0));
-            let val_v1 = args.iter().find(|(n, _)| *n == "totalsteps").ok_or_else(|| RenderError::MissingArgument("totalsteps".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::Cardinal(c) => c,
-                _ => return Err(RenderError::InvalidArgumentType("totalsteps".to_string())),
-            };
-            if v1 < -2147483648_i64 || v1 > 2147483647_i64 { return Err(RenderError::OutOfRange("totalsteps".to_string())); }
-            f_args.set("totalsteps", FluentValue::from(v1));
-            ("m77696e646f77732e75692e70726f677265737374657874".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e71756974736f6c73746f6e65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e71756974736f6c73746f6e65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7265616479746f7365747570776f7264 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7265616479746f7365747570776f7264".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e726563656e74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e726563656e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e72656c61756e6368746f696e7374616c6c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e72656c61756e6368746f696e7374616c6c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e72656d6f7665 => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e72656d6f7665".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e72656d6f766561726730 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e72656d6f766561726730".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e72656d6f7665783765353630386162 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e72656d6f7665783765353630386162".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e72657374617274696e74616b65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e72657374617274696e74616b65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7265747279696e67 => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e7265747279696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7361766561636f70796f66726563656e746c6f6773 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7361766561636f70796f66726563656e746c6f6773".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73617665646f6e7468697364657669636561726730 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e73617665646f6e7468697364657669636561726730".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736176696e676f6e74686973646576696365617267306f6661726731 => {
-            const DECLARED: &[&str] = &["arg0", "arg1"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "arg1").ok_or_else(|| RenderError::MissingArgument("arg1".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg1".to_string())),
-            };
-            f_args.set("arg1", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e75692e736176696e676f6e74686973646576696365617267306f6661726731".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73637265656e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73637265656e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73637265656e616c736f6164647374686561707073796f75757365 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73637265656e616c736f6164647374686561707073796f75757365".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73637265656e61726730636f6d7075746572736f756e64617267316d6963617267326465736b746f7061637469766974 => {
-            const DECLARED: &[&str] = &["arg0", "arg1", "arg2", "arg3"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "arg1").ok_or_else(|| RenderError::MissingArgument("arg1".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg1".to_string())),
-            };
-            f_args.set("arg1", FluentValue::from(v1.clone()));
-            let val_v2 = args.iter().find(|(n, _)| *n == "arg2").ok_or_else(|| RenderError::MissingArgument("arg2".to_string()))?.1.clone();
-            let v2 = match val_v2 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg2".to_string())),
-            };
-            f_args.set("arg2", FluentValue::from(v2.clone()));
-            let val_v3 = args.iter().find(|(n, _)| *n == "arg3").ok_or_else(|| RenderError::MissingArgument("arg3".to_string()))?.1.clone();
-            let v3 = match val_v3 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg3".to_string())),
-            };
-            f_args.set("arg3", FluentValue::from(v3.clone()));
-            ("m77696e646f77732e75692e73637265656e61726730636f6d7075746572736f756e64617267316d6963617267326465736b746f7061637469766974".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73637265656e70726576696577 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73637265656e70726576696577".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73637265656e73686f7473 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73637265656e73686f7473".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73637265656e73686f7473616c7265616479696e796f75726a6f75726e616c6172656e7462726f75676874696e616761 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73637265656e73686f7473616c7265616479696e796f75726a6f75726e616c6172656e7462726f75676874696e616761".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73637265656e73686f7473796f7574616b657768696c65697473706175736564646f6e74636f6d65696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73637265656e73686f7473796f7574616b657768696c65697473706175736564646f6e74636f6d65696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7365676d656e747374686174686176656e6f7472656163686564796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7365676d656e747374686174686176656e6f7472656163686564796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73656c6563746564646576696365 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73656c6563746564646576696365".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73656e64696e67746f796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73656e64696e67746f796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73656e64696e67776f7264 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73656e64696e67776f7264".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73657074656d626572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73657074656d626572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e736574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73657474696e677570776f7264 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73657474696e677570776f7264".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7365747570636f6e6e656374696f6e6368616e676564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7365747570636f6e6e656374696f6e6368616e676564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7365747570697362757379747279616761696e696e61 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7365747570697362757379747279616761696e696e61".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736574757070726f6772657373636f756c646e6f7462657361766564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e736574757070726f6772657373636f756c646e6f7462657361766564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736574757073657175656e63656973756e617661696c61626c65696e746869736275696c64 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e736574757073657175656e63656973756e617661696c61626c65696e746869736275696c64".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7365747570756e617661696c61626c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7365747570756e617661696c61626c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7368617265736f756e6466726f6d74686973636f6d7075746572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7368617265736f756e6466726f6d74686973636f6d7075746572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7368617265796f757273637265656e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7368617265796f757273637265656e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73686f7274637574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73686f7274637574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73686f72746375747365746275747475726e65646f6666 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73686f72746375747365746275747475726e65646f6666".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736b6970 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e736b6970".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736f666172 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e736f666172".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736f6c73746f6e6561707063616e74726561647661756c74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e736f6c73746f6e6561707063616e74726561647661756c74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736f6c73746f6e65617070636f756c646e7473617665697473 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e736f6c73746f6e65617070636f756c646e7473617665697473".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736f6c73746f6e656170706469646e7466696e647661756c74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e736f6c73746f6e656170706469646e7466696e647661756c74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736f6c73746f6e6561707074616b65736e6f7465736f6e657661756c74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e736f6c73746f6e6561707074616b65736e6f7465736f6e657661756c74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736f6c73746f6e6561726730696e7374616c6c737468656e65787474696d65746865736f6c73746f6e65617070737461 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e736f6c73746f6e6561726730696e7374616c6c737468656e65787474696d65746865736f6c73746f6e65617070737461".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736f6c73746f6e656973617661696c61626c65 => {
-            const DECLARED: &[&str] = &["v"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "v").ok_or_else(|| RenderError::MissingArgument("v".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("v".to_string())),
-            };
-            f_args.set("v", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e736f6c73746f6e656973617661696c61626c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736f6c73746f6e6569737265616479746f696e7374616c6c => {
-            const DECLARED: &[&str] = &["v"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "v").ok_or_else(|| RenderError::MissingArgument("v".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("v".to_string())),
-            };
-            f_args.set("v", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e736f6c73746f6e6569737265616479746f696e7374616c6c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736f6c73746f6e657265616479696e7374616c6c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e736f6c73746f6e657265616479696e7374616c6c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736f6d656e6f746573636f756c646e74676f696e746f => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e736f6d656e6f746573636f756c646e74676f696e746f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736f6d657468696e67616e7377657265647063617469736e74 => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e736f6d657468696e67616e7377657265647063617469736e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736f6d657468696e67616e73776572656470637468726f75676872656c617969736e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e736f6d657468696e67616e73776572656470637468726f75676872656c617969736e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736f6d657468696e676f746865727468616e796f75726a6f75726e616c616e737765726564636f6d70617265 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e736f6d657468696e676f746865727468616e796f75726a6f75726e616c616e737765726564636f6d70617265".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736f6d657468696e67796f7577657265616464696e676469646e7466696e697368736176696e67616464697461676169 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e736f6d657468696e67796f7577657265616464696e676469646e7466696e697368736176696e67616464697461676169".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e736f7572636573657475706973756e66696e6973686564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e736f7572636573657475706973756e66696e6973686564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e737461727466726f6d746f646179 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e737461727466726f6d746f646179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7374617465 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7374617465".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e737461747573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e737461747573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73746f72616765 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73746f72616765".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73746f726167656c6f636174696f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73746f726167656c6f636174696f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73746f726561707073616c6c6170707366726f6d7468656d6963726f736f6674 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73746f726561707073616c6c6170707366726f6d7468656d6963726f736f6674".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73746f7265646c6f63616c6c79 => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e73746f7265646c6f63616c6c79".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73746f7265646f6e746869737063 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73746f7265646f6e746869737063".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e73796e63 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e73796e63".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74657874 => {
-            const DECLARED: &[&str] = &["name", "value2"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
-            };
-            f_args.set("name", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "value2").ok_or_else(|| RenderError::MissingArgument("value2".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value2".to_string())),
-            };
-            f_args.set("value2", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e75692e74657874".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7465787433 => {
-            const DECLARED: &[&str] = &["name", "name2", "value3", "value4"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
-            };
-            f_args.set("name", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "name2").ok_or_else(|| RenderError::MissingArgument("name2".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("name2".to_string())),
-            };
-            f_args.set("name2", FluentValue::from(v1.clone()));
-            let val_v2 = args.iter().find(|(n, _)| *n == "value3").ok_or_else(|| RenderError::MissingArgument("value3".to_string()))?.1.clone();
-            let v2 = match val_v2 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value3".to_string())),
-            };
-            f_args.set("value3", FluentValue::from(v2.clone()));
-            let val_v3 = args.iter().find(|(n, _)| *n == "value4").ok_or_else(|| RenderError::MissingArgument("value4".to_string()))?.1.clone();
-            let v3 = match val_v3 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value4".to_string())),
-            };
-            f_args.set("value4", FluentValue::from(v3.clone()));
-            ("m77696e646f77732e75692e7465787433".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7465787436 => {
-            const DECLARED: &[&str] = &["status", "reason"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "status").ok_or_else(|| RenderError::MissingArgument("status".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("status".to_string())),
-            };
-            f_args.set("status", FluentValue::from(v0.clone()));
-            let val_v1 = args.iter().find(|(n, _)| *n == "reason").ok_or_else(|| RenderError::MissingArgument("reason".to_string()))?.1.clone();
-            let v1 = match val_v1 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("reason".to_string())),
-            };
-            f_args.set("reason", FluentValue::from(v1.clone()));
-            ("m77696e646f77732e75692e7465787436".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74657874636f6e74656e74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e74657874636f6e74656e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74657874636f6e74656e7432 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e74657874636f6e74656e7432".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74657874636f6e74656e7434 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e74657874636f6e74656e7434".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74657874636f6e74656e7435 => {
-            const DECLARED: &[&str] = &["level"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "level").ok_or_else(|| RenderError::MissingArgument("level".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("level".to_string())),
-            };
-            f_args.set("level", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e74657874636f6e74656e7435".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7465787466696c6573747874 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7465787466696c6573747874".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74686174636f6d626f6973696e7573656279616e6f74686572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e74686174636f6d626f6973696e7573656279616e6f74686572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746861746469646e6f7466696e697368 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746861746469646e6f7466696e697368".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74686174666f6c64657269736e746f6273696469616e7661756c74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e74686174666f6c64657269736e746f6273696469616e7661756c74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74686174666f6c646572736e616d6563616e74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e74686174666f6c646572736e616d6563616e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7468617470616972696e676c696e6b69736e746f6e65746865 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7468617470616972696e676c696e6b69736e746f6e65746865".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74686561726730666f6c64657269736e746f6e746869737063616e796d6f7265 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e74686561726730666f6c64657269736e746f6e746869737063616e796d6f7265".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746865636f70796973616c7265616479676f6e65736f746869736f6e6c79636c65617273697466726f6d68657265 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746865636f70796973616c7265616479676f6e65736f746869736f6e6c79636c65617273697466726f6d68657265".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746865636f70796f6e7468697364657669636569736d697373696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746865636f70796f6e7468697364657669636569736d697373696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746865646f776e6c6f61646469646e6f7466696e697368 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746865646f776e6c6f61646469646e6f7466696e697368".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7468656c617374333064617973 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7468656c617374333064617973".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7468656c617374366d6f6e746873 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7468656c617374366d6f6e746873".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7468656c617374636865636b666f72757064617465736661696c6564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7468656c617374636865636b666f72757064617465736661696c6564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7468656c61737479656172 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7468656c61737479656172".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74686570616972696e6777696e646f77636c6f736564676574616e6577 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e74686570616972696e6777696e646f77636c6f736564676574616e6577".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746865726569736e74656e6f756768726f6f6d6f6e74686973646576696365 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746865726569736e74656e6f756768726f6f6d6f6e74686973646576696365".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746865736572756c65736172656163746976656e6f77627574636f756c646e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746865736572756c65736172656163746976656e6f77627574636f756c646e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746865736f6c73746f6e65617070757365736f6e656d6963726f70686f6e656174 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746865736f6c73746f6e65617070757365736f6e656d6963726f70686f6e656174".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746865746f70656e61626c65646d6963726f70686f6e65697375736564757365 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746865746f70656e61626c65646d6963726f70686f6e65697375736564757365".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746865757064617465636f756c646e746265696e7374616c6c6564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746865757064617465636f756c646e746265696e7374616c6c6564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746869736275696c6463616e74757064617465697473656c66 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746869736275696c6463616e74757064617465697473656c66".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74686973636f6e6e656374696f6e636f756c646e6f7462657361766564747279 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e74686973636f6e6e656374696f6e636f756c646e6f7462657361766564747279".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74686973636f6e6e656374696f6e636f756c646e6f7466696e697368747279616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e74686973636f6e6e656374696f6e636f756c646e6f7466696e697368747279616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74686973636f6e6e656374696f6e636f756c646e6f7466696e697368747279616761696e32 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e74686973636f6e6e656374696f6e636f756c646e6f7466696e697368747279616761696e32".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74686973636f756c646e746265726561646164646974616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e74686973636f756c646e746265726561646164646974616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7468697364657669636563616e74636f6e766572747468697370686f746f => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7468697364657669636563616e74636f6e766572747468697370686f746f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74686973646576696365636f756c646e746f70656e6974737361766564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e74686973646576696365636f756c646e746f70656e6974737361766564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7468697364657669636569736e6f7470616972656477697468796f75726a6f75726e616c696d706f7274737761697468 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7468697364657669636569736e6f7470616972656477697468796f75726a6f75726e616c696d706f7274737761697468".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7468697364657669636569736e746f6e616e6574776f726b => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7468697364657669636569736e746f6e616e6574776f726b".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746869736a6f75726e616c6c696e6b69736e7476616c6964 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746869736a6f75726e616c6c696e6b69736e7476616c6964".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746869736c696e6b636f756c646e6f7462656469736d6973736564747279 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746869736c696e6b636f756c646e6f7462656469736d6973736564747279".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746869736c696e6b636f756c646e6f74626575736564747279 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746869736c696e6b636f756c646e6f74626575736564747279".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746869736c6973746170706c696573746f6163746976697479746f6f => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746869736c6973746170706c696573746f6163746976697479746f6f".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746869736f6e6c7974616b6573616d6f6d656e74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746869736f6e6c7974616b6573616d6f6d656e74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746869737063 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746869737063".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74686973706363616e74636f6e6e656374746f796f7572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e74686973706363616e74636f6e6e656374746f796f7572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746869737063636f756c646e74776f726b6f7574796f7572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746869737063636f756c646e74776f726b6f7574796f7572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e74686973726561647374686577696e646f777469746c65616e646d617463686573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e74686973726561647374686577696e646f777469746c65616e646d617463686573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7468697372656d6f766573746865636f70796f6e74686973646576696365736f6974776f6e747265616368796f75726a => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7468697372656d6f766573746865636f70796f6e74686973646576696365736f6974776f6e747265616368796f75726a".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7468697372656d6f766573746865636f70796f6e74686973646576696365796f75726a6f75726e616c6d61797374696c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7468697372656d6f766573746865636f70796f6e74686973646576696365796f75726a6f75726e616c6d61797374696c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7468697373657475706c696e6b636f756c646e6f74626575736564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7468697373657475706c696e6b636f756c646e6f74626575736564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7468697373746570636f756c646e6f7466696e697368747279616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7468697373746570636f756c646e6f7466696e697368747279616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7468697373746570636f756c646e7466696e697368747279616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7468697373746570636f756c646e7466696e697368747279616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7469746c656b6579776f726473 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7469746c656b6579776f726473".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7469746c656b6579776f7264746f6578636c756465 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7469746c656b6579776f7264746f6578636c756465".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e746f6f6c617267656272696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e746f6f6c617267656272696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7472796e6f77 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7472796e6f77".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7472796e6f7761726730 => {
-            const DECLARED: &[&str] = &["arg0"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
-            };
-            f_args.set("arg0", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e7472796e6f7761726730".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7472796f70656e696e677468656c696e6b616761696e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7472796f70656e696e677468656c696e6b616761696e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7475726e696e676f666673746f70736272696e67696e676368616e67657377686174 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7475726e696e676f666673746f70736272696e67696e676368616e67657377686174".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7475726e69746f6e616e7974696d65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7475726e69746f6e616e7974696d65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7475726e6f6666 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7475726e6f6666".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7475726e6f6e => {
-            const DECLARED: &[&str] = &["accessiblename"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "accessiblename").ok_or_else(|| RenderError::MissingArgument("accessiblename".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("accessiblename".to_string())),
-            };
-            f_args.set("accessiblename", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e7475726e6f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e756e617661696c61626c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e756e617661696c61626c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e756e617661696c61626c65776f7264 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e756e617661696c61626c65776f7264".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e756e6b6e6f776e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e756e6b6e6f776e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e756e6b6e6f776e6a6f75726e616c73 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e756e6b6e6f776e6a6f75726e616c73".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e756e74696c69726573756d65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e756e74696c69726573756d65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e757365746869736c696e6b => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e757365746869736c696e6b".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7573657661756c74 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7573657661756c74".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e76616c756531356d696e75746573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e76616c756531356d696e75746573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e76616c756531686f7572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e76616c756531686f7572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e76616c756533306d696e75746573 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e76616c756533306d696e75746573".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7661756c7473 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7661756c7473".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7661756c7473636f6d7075746572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7661756c7473636f6d7075746572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7661756c74776974686e616d65616c72656164796a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7661756c74776974686e616d65616c72656164796a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7669657764657461696c73 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7669657764657461696c73".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77616974696e67 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77616974696e67".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77616974696e67666f72616a6f75726e616c757064617465796f757273637265656e73686f7473776169746f6e746869 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77616974696e67666f72616a6f75726e616c757064617465796f757273637265656e73686f7473776169746f6e746869".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77616974696e67666f72796f7572616e73776572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77616974696e67666f72796f7572616e73776572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77616974696e67666f72796f75746f636f6e6669726d796f75726a6f75726e616c736d61726b => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77616974696e67666f72796f75746f636f6e6669726d796f75726a6f75726e616c736d61726b".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77616974696e676a6f75726e616c757064617465 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77616974696e676a6f75726e616c757064617465".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77616974696e6772656163686a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77616974696e6772656163686a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77616974696e6773796e63 => {
-            const DECLARED: &[&str] = &["value"];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
-            let v0 = match val_v0 {
-                Value::String(s) => s.to_string(),
-                _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
-            };
-            f_args.set("value", FluentValue::from(v0.clone()));
-            ("m77696e646f77732e75692e77616974696e6773796e63".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77616974696e67746f676f746f796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77616974696e67746f676f746f796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77616974696e67746f676f746f796f75726a6f75726e616c783564373839646235 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77616974696e67746f676f746f796f75726a6f75726e616c783564373839646235".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77616974696e67746f73796e63 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77616974696e67746f73796e63".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77616974696e67776f7264 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77616974696e67776f7264".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77686174616e737765726564 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77686174616e737765726564".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7768617473616c7265616479696e796f75726a6f75726e616c73746179737768656e796f7570617573656f727475726e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7768617473616c7265616479696e796f75726a6f75726e616c73746179737768656e796f7570617573656f727475726e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77686174796f75736861726573746179736f6e746869737063 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77686174796f75736861726573746179736f6e746869737063".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77686174796f757475726e6f6e676f6573696e746f796f7572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77686174796f757475726e6f6e676f6573696e746f796f7572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7768696c657468697369736f6e746865736f6c73746f6e6561707074616b6573696e736f756e64616e64616c6c6f6669 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7768696c657468697369736f6e746865736f6c73746f6e6561707074616b6573696e736f756e64616e64616c6c6f6669".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7768696c657468697369736f6e746865736f6c73746f6e6561707074616b6573696e74686573637265656e73686f7473 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7768696c657468697369736f6e746865736f6c73746f6e6561707074616b6573696e74686573637265656e73686f7473".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e7768696c657468697369736f6e746865736f6c73746f6e6561707074616b6573696e77686174736f6e796f7572736372 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e7768696c657468697369736f6e746865736f6c73746f6e6561707074616b6573696e77686174736f6e796f7572736372".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77696e646f777366726f6d7468657365617070736e657665727265616368796f7572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77696e646f777366726f6d7468657365617070736e657665727265616368796f7572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77696e646f777377686f73657469746c65636f6e7461696e7361776f7264796f75 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77696e646f777377686f73657469746c65636f6e7461696e7361776f7264796f75".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e776974686163746976697479 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e776974686163746976697479".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e77697468636f6d7075746572736f756e64 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e77697468636f6d7075746572736f756e64".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796573746572646179 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796573746572646179".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f7563616e7475726e65616368736f757263656f6e6f72 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f7563616e7475726e65616368736f757263656f6e6f72".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f7563686f6f73657768696368736f75726365736172656f6e => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f7563686f6f73657768696368736f75726365736172656f6e".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f756c6c736565686f776d616e7973637265656e73686f747374686572656172656265666f7265616e79636f6d6569 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f756c6c736565686f776d616e7973637265656e73686f747374686572656172656265666f7265616e79636f6d6569".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f7572 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f7572".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f75726a6f75726e616c => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f75726a6f75726e616c".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f75726a6f75726e616c63616e7474616b65746869736b696e646f6666696c65 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f75726a6f75726e616c63616e7474616b65746869736b696e646f6666696c65".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f75726a6f75726e616c636f756c646e7461636365707474686973 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f75726a6f75726e616c636f756c646e7461636365707474686973".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f75726a6f75726e616c646f65736e74737570706f7274746869736d6f7665 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f75726a6f75726e616c646f65736e74737570706f7274746869736d6f7665".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f75726a6f75726e616c6e65656473616e65776c696e6b => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f75726a6f75726e616c6e65656473616e65776c696e6b".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f75726a6f75726e616c6e6f747365747570796574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f75726a6f75726e616c6e6f747365747570796574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f75726a6f75726e616c6f70656e6564627574736574757070726f6772657373636f756c64 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f75726a6f75726e616c6f70656e6564627574736574757070726f6772657373636f756c64".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f75726a6f75726e616c73686f77737468697373616d656d61726b626573696465 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f75726a6f75726e616c73686f77737468697373616d656d61726b626573696465".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f75726a6f75726e616c736d61726b756e617661696c61626c6572696768746e6f77 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f75726a6f75726e616c736d61726b756e617661696c61626c6572696768746e6f77".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f75726a6f75726e616c73746f70706564616363657074696e6774686973646576696365696d706f72747377616974 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f75726a6f75726e616c73746f70706564616363657074696e6774686973646576696365696d706f72747377616974".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f757273686f7274637574 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f757273686f7274637574".to_string(), f_args)
-        }
-        MessageId::m77696e646f77732e75692e796f7573616964746869736d61726b646f65736e746d61746368 => {
-            const DECLARED: &[&str] = &[];
-            for (name, _) in args {
-                if !DECLARED.contains(name) {
-                    return Err(RenderError::UnknownArgument((*name).to_string()));
-                }
-            }
-            #[allow(unused_mut)]
-            let mut f_args = FluentArgs::new();
-            ("m77696e646f77732e75692e796f7573616964746869736d61726b646f65736e746d61746368".to_string(), f_args)
-        }
-    };
-
-    let _ = cardinal_rule;
-    let lang = "und".parse().map_err(|_| RenderError::FormatFailed)?;
-    let mut bundle = FluentBundle::new(vec![lang]);
-    bundle.set_use_isolating(use_isolating);
-    let _ = bundle.add_builtins();
-    let res = FluentResource::try_new(ftl_content.to_string()).map_err(|_| RenderError::FormatFailed)?;
-    bundle.add_resource(res).map_err(|_| RenderError::FormatFailed)?;
-
-    let msg = bundle.get_message(&res_key).ok_or(RenderError::FormatFailed)?;
+    let (key, prepare) = MESSAGES[id as usize];
+    let (res_key, fluent_args) = prepare(key, args, cardinal_rule)?;
+    let bundle = bundle.as_ref().map_err(Clone::clone)?;
+    let msg = bundle.get_message(res_key).ok_or(RenderError::FormatFailed)?;
     let pattern = msg.value().ok_or(RenderError::FormatFailed)?;
     let mut errs = vec![];
     let formatted = bundle.format_pattern(pattern, Some(&fluent_args), &mut errs);
@@ -10236,4 +1451,3504 @@ pub fn render_with_options(locale: &str, id: MessageId, args: &[(&str, Value)], 
         return Err(RenderError::FormatFailed);
     }
     Ok(formatted.into_owned())
+}
+
+type Prepared = Result<(&'static str, FluentArgs<'static>), RenderError>;
+type Prepare = fn(&'static str, &[(&str, Value)], Option<&str>) -> Prepared;
+static MESSAGES: &[(&str, Prepare)] = &[
+    ("m77696e646f77732e61626f75742e617070", no_arguments),
+    ("m77696e646f77732e61626f75742e64617961676f", prepare_m77696e646f77732e61626f75742e64617961676f),
+    ("m77696e646f77732e61626f75742e686f757261676f", prepare_m77696e646f77732e61626f75742e686f757261676f),
+    ("m77696e646f77732e61626f75742e6a6f75726e616c", no_arguments),
+    ("m77696e646f77732e61626f75742e6a7573746e6f77", no_arguments),
+    ("m77696e646f77732e61626f75742e6c6173747365656e", prepare_m77696e646f77732e61626f75742e6c6173747365656e),
+    ("m77696e646f77732e61626f75742e6c696e6530", prepare_m77696e646f77732e61626f75742e6c696e6530),
+    ("m77696e646f77732e61626f75742e6c696e6531", prepare_m77696e646f77732e61626f75742e6c696e6531),
+    ("m77696e646f77732e61626f75742e6c696e6532", prepare_m77696e646f77732e61626f75742e6c696e6532),
+    ("m77696e646f77732e61626f75742e6c696e6533", prepare_m77696e646f77732e61626f75742e6c696e6533),
+    ("m77696e646f77732e61626f75742e6c696e6534", prepare_m77696e646f77732e61626f75742e6c696e6534),
+    ("m77696e646f77732e61626f75742e6c696e6535", prepare_m77696e646f77732e61626f75742e6c696e6535),
+    ("m77696e646f77732e61626f75742e6c696e6536", prepare_m77696e646f77732e61626f75742e6c696e6536),
+    ("m77696e646f77732e61626f75742e6c696e6537", prepare_m77696e646f77732e61626f75742e6c696e6537),
+    ("m77696e646f77732e61626f75742e6d696e75746561676f", prepare_m77696e646f77732e61626f75742e6d696e75746561676f),
+    ("m77696e646f77732e61626f75742e756e6b6e6f776e", no_arguments),
+    ("m77696e646f77732e62726f777365722e646973636172646564", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6a6f75726e616c756e6b6e6f776e", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e61626f75742e6f70656e736f757263656c6f63616c6669727374", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e61626f75742e70656e64696e6773657474696e6773746162", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e61626f75742e736574757077656c636f6d65626f647931", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e61626f75742e74657874636f6e74656e74", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e61626f75742e74657874636f6e74656e7432", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e6170702e61626f7574736f6c73746f6e65", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e6170702e656d70747974657874", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e6170702e66726f6e74656e646f726967696e", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e6170702e6a7573746e6f77", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e6170702e6d6963726f70686f6e656d6f64656f6666", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e6170702e6e6f74706169726564", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e6170702e6f66666c696e657469746c65", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e6170702e73657474696e6773646961676e6f73746963736f6e", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e6170702e736f75726365737469746c65", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e617564696f736f7572636573797374656d", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e636865636b616761696e", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e63686f6f7365646576696365", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636964696e677469746c65", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e72656675736564626f6479", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e726566757365647469746c65", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e756e6b6e6f776e626f6479", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6465636973696f6e756e6b6e6f776e7469746c65", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e646566657263686f696365", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b636f6e6669726d627574746f6e", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b636f6e6669726d7175657374696f6e", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b6d69736d61746368627574746f6e", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b756e766572696669656463616e63656c627574746f6e", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b756e7665726966696564636f6e74696e7565627574746f6e", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6a6f75726e616c6d61726b756e76657269666965647469746c65", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6b656570626f7468", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6c697374756e617661696c61626c65626f6479", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6c697374756e617661696c61626c657469746c65", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e6f66666c696e65626f6479", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7069636b6572656d707479", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d626f6479", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d7469746c65", prepare_m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d7469746c65),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d7469746c6566616c6c6261636b", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365646576696365", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c6163656f66666572626f6479", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c6163656f666665727469746c65", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e67736a6f75726e616c6f70656e", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e67736c6f676578706f727473617665", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e67736c6f676578706f72747469746c65", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e6773746162617474656e74696f6e61313179", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657474696e677374616275706461746573646f6e6561313179", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706170706c6162656c", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706261636b", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7365747570636f6e6e6563746564746f796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7365747570636f6e74696e7565", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706a6f75726e616c6361726468656164696e67", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706d6963726f70686f6e65686561646c696e65", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73657475706f70656e796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736574757073637265656e6672616d6563617074696f6e", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736574757077656c636f6d65626f647932", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736574757077696e646f777469746c65", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f77736572636f6e6e65637465646e6f77", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657264697363617264", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657264697363617264636f6d6d6974", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657264697363617264636f6e6669726d", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f7773657268656c64", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e736f757263657362726f777365727061676573", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73746f72616765756e617661696c61626c65626f6479", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e73746f72616765756e617661696c61626c657469746c65", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7461726765746d697373696e67626f6479", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e7461726765746d697373696e677469746c65", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e746563686e6963616c64657461696c73", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e74657874", prepare_m77696e646f77732e6465736b746f702e7368617265642e636f70792e74657874),
+    ("m77696e646f77732e6465736b746f702e7368617265642e636f70792e747279616761696e", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e616464", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e6578636c7564656461707073", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e67657468656c70", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e68656c70", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e7265706f72746170726f626c656d", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e7365766572697479", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e74657874636f6e74656e74", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e75706461746573", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e73657474696e67732e77696e646f777469746c6573", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e73657475702e63616e63656c", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e73657475702e70616972", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e73657475702e737461727461746c6f67696e", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e73657475702e77697a61726470617573656661696c757265", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e73657475702e77697a61726470617573656661696c75726532", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6175746f6d6174696375706461746573", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e636865636b666f72757064617465736175746f6d61746963616c6c79", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e636865636b6e6f77", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6469736d697373", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e646f776e6c6f6164", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e646f776e6c6f616475706461746573696e7468656261636b67726f756e64", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6576657279646179", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e65766572796d6f6e7468", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e65766572797765656b", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e686f776f6674656e", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e6e65766572636865636b6564666f7275706461746573", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e74657874636f6e74656e74", no_arguments),
+    ("m77696e646f77732e6465736b746f702e7368617265642e757064617465732e77686174736e6577", no_arguments),
+    ("m77696e646f77732e6578636c7573696f6e732e6163746976697479", prepare_m77696e646f77732e6578636c7573696f6e732e6163746976697479),
+    ("m77696e646f77732e6578636c7573696f6e732e61637469766974797265646163746564", prepare_m77696e646f77732e6578636c7573696f6e732e61637469766974797265646163746564),
+    ("m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74", prepare_m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74),
+    ("m77696e646f77732e696d706f72742e616c6c686973746f7279", no_arguments),
+    ("m77696e646f77732e696d706f72742e65787069726564776f7264", no_arguments),
+    ("m77696e646f77732e696d706f72742e686f6c646f66666c696e65", no_arguments),
+    ("m77696e646f77732e696d706f72742e696e74726f", no_arguments),
+    ("m77696e646f77732e696d706f72742e6d6f726568656c706572", no_arguments),
+    ("m77696e646f77732e696d706f72742e7265616479746f726576696577776f7264", no_arguments),
+    ("m77696e646f77732e696d706f72742e726563656e7461313179", prepare_m77696e646f77732e696d706f72742e726563656e7461313179),
+    ("m77696e646f77732e696d706f72742e726563656e746d657461", prepare_m77696e646f77732e696d706f72742e726563656e746d657461),
+    ("m77696e646f77732e696d706f72742e72656d6f76657265616479626f6479", no_arguments),
+    ("m77696e646f77732e696d706f72742e726576696577616374696f6e", no_arguments),
+    ("m77696e646f77732e696d706f72742e726576696577616374696f6e61313179", prepare_m77696e646f77732e696d706f72742e726576696577616374696f6e61313179),
+    ("m77696e646f77732e696d706f72742e72657669657764657461696c", no_arguments),
+    ("m77696e646f77732e696d706f72742e72657669657764657461696c626f6479", no_arguments),
+    ("m77696e646f77732e696d706f72742e72657669657765787069726564", no_arguments),
+    ("m77696e646f77732e696d706f72742e726f7773656e64696e67", no_arguments),
+    ("m77696e646f77732e696d706f72742e73656374696f6e726576696577", no_arguments),
+    ("m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e", no_arguments),
+    ("m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e61313179", prepare_m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e61313179),
+    ("m77696e646f77732e696d706f72742e737461747573617474656e74696f6e686561646c696e65", no_arguments),
+    ("m77696e646f77732e696d706f72742e737461747573617474656e74696f6e737562", no_arguments),
+    ("m77696e646f77732e696d706f72742e737461747573726576696577686561646c696e65", prepare_m77696e646f77732e696d706f72742e737461747573726576696577686561646c696e65),
+    ("m77696e646f77732e696d706f72742e737461747573726576696577737562", no_arguments),
+    ("m77696e646f77732e696d706f72742e74696c6561313179", prepare_m77696e646f77732e696d706f72742e74696c6561313179),
+    ("m77696e646f77732e696d706f72742e74696c657265616479636f756e74", prepare_m77696e646f77732e696d706f72742e74696c657265616479636f756e74),
+    ("m77696e646f77732e696d706f72742e74696c6573656e64696e67636f756e74", prepare_m77696e646f77732e696d706f72742e74696c6573656e64696e67636f756e74),
+    ("m77696e646f77732e696d706f72742e74696c6577616974696e67636f756e74", prepare_m77696e646f77732e696d706f72742e74696c6577616974696e67636f756e74),
+    ("m77696e646f77732e696d706f72742e74696c6577616974696e676a6f75726e616c", no_arguments),
+    ("m77696e646f77732e6c6f67732e617661696c61626c656c6f677361726573686f776e62656c6f77636865636b746865", no_arguments),
+    ("m77696e646f77732e6c6f67732e636f70797361766564", no_arguments),
+    ("m77696e646f77732e6c6f67732e636f756c646e74726561647468656c6f6766696c6573747279", no_arguments),
+    ("m77696e646f77732e6c6f67732e6e6f6c6f6766696c6573617265617661696c61626c65796574747279", no_arguments),
+    ("m77696e646f77732e6c6f67732e6e6f726563656e746c6f6773617265617661696c61626c65796574747279", no_arguments),
+    ("m77696e646f77732e6c6f67732e726561647468656c6f677362656c6f777468656e63686f6f736577686574686572", no_arguments),
+    ("m77696e646f77732e6c6f67732e74657874636f6e74656e74", no_arguments),
+    ("m77696e646f77732e6c6f67732e74657874636f6e74656e7432", no_arguments),
+    ("m77696e646f77732e6c6f67732e74657874636f6e74656e7433", no_arguments),
+    ("m77696e646f77732e6c6f67732e74657874636f6e74656e7434", no_arguments),
+    ("m77696e646f77732e6c6f67732e74657874636f6e74656e7435", no_arguments),
+    ("m77696e646f77732e6e6f746963652e65766572797468696e6773617665646f6e7468697370636973676f696e67", no_arguments),
+    ("m77696e646f77732e6e6f746963652e65766572797468696e67796f757475726e65646f6e6973676f696e67696e746f", no_arguments),
+    ("m77696e646f77732e6e6f746963652e696e74616b65697372756e6e696e67616761696e", no_arguments),
+    ("m77696e646f77732e6e6f746963652e696e74616b6572616e696e746f6170726f626c656d", no_arguments),
+    ("m77696e646f77732e6e6f746963652e697473676f696e67696e746f796f75726a6f75726e616c616761696e", no_arguments),
+    ("m77696e646f77732e6e6f746963652e736f6c73746f6e6569737374696c6c6f6e65766572797468696e6769737361766564", no_arguments),
+    ("m77696e646f77732e6e6f746963652e74686569736261636b", prepare_m77696e646f77732e6e6f746963652e74686569736261636b),
+    ("m77696e646f77732e6e6f746963652e7468656e65656473796f75727065726d697373696f6e", prepare_m77696e646f77732e6e6f746963652e7468656e65656473796f75727065726d697373696f6e),
+    ("m77696e646f77732e6e6f746963652e746865736f6c73746f6e6569636f6e696e7468657461736b62617273617973", no_arguments),
+    ("m77696e646f77732e6e6f746963652e77696e646f77737072697661637973657474696e6773617265626c6f636b696e6769747475726e", prepare_m77696e646f77732e6e6f746963652e77696e646f77737072697661637973657474696e6773617265626c6f636b696e6769747475726e),
+    ("m77696e646f77732e6e6f746963652e796f75726a6f75726e616c69736261636b696e7265616368", no_arguments),
+    ("m77696e646f77732e6e6f746963652e796f75726a6f75726e616c69736f75746f667265616368", no_arguments),
+    ("m77696e646f77732e6f6273696469616e2e63686f6f73656f6273696469616e7661756c74", no_arguments),
+    ("m77696e646f77732e6f6273696469616e2e7661756c74", no_arguments),
+    ("m77696e646f77732e6f6273696469616e2e7761726e696e67", prepare_m77696e646f77732e6f6273696469616e2e7761726e696e67),
+    ("m77696e646f77732e6f6273696469616e2e7761726e696e6764617465", prepare_m77696e646f77732e6f6273696469616e2e7761726e696e6764617465),
+    ("m77696e646f77732e6f6273696469616e2e7761726e696e67646576696365", prepare_m77696e646f77732e6f6273696469616e2e7761726e696e67646576696365),
+    ("m77696e646f77732e6f6273696469616e2e7761726e696e6764657669636564617465", prepare_m77696e646f77732e6f6273696469616e2e7761726e696e6764657669636564617465),
+    ("m77696e646f77732e70696c6c2e68656c64", no_arguments),
+    ("m77696e646f77732e70696c6c2e68656c6477616974696e67", prepare_m77696e646f77732e70696c6c2e68656c6477616974696e67),
+    ("m77696e646f77732e70696c6c2e6f66666c696e65", no_arguments),
+    ("m77696e646f77732e70696c6c2e6f66666c696e6577616974696e67", prepare_m77696e646f77732e70696c6c2e6f66666c696e6577616974696e67),
+    ("m77696e646f77732e70696c6c2e7265616479746f726576696577", prepare_m77696e646f77732e70696c6c2e7265616479746f726576696577),
+    ("m77696e646f77732e70696c6c2e72656675736564", no_arguments),
+    ("m77696e646f77732e70696c6c2e7265667573656477616974696e67", prepare_m77696e646f77732e70696c6c2e7265667573656477616974696e67),
+    ("m77696e646f77732e70696c6c2e73796e63706175736564", no_arguments),
+    ("m77696e646f77732e70696c6c2e73796e6370617573656477616974696e67", prepare_m77696e646f77732e70696c6c2e73796e6370617573656477616974696e67),
+    ("m77696e646f77732e7175616e746974792e686f757273", prepare_m77696e646f77732e7175616e746974792e686f757273),
+    ("m77696e646f77732e7175616e746974792e6974656d73", prepare_m77696e646f77732e7175616e746974792e6974656d73),
+    ("m77696e646f77732e7175616e746974792e6d696e75746573", prepare_m77696e646f77732e7175616e746974792e6d696e75746573),
+    ("m77696e646f77732e7175616e746974792e6e6f746573", prepare_m77696e646f77732e7175616e746974792e6e6f746573),
+    ("m77696e646f77732e7175616e746974792e7061676573", prepare_m77696e646f77732e7175616e746974792e7061676573),
+    ("m77696e646f77732e7175616e746974792e73637265656e73686f7473", prepare_m77696e646f77732e7175616e746974792e73637265656e73686f7473),
+    ("m77696e646f77732e73637265656e73686f74732e6272696e67636f756e74", prepare_m77696e646f77732e73637265656e73686f74732e6272696e67636f756e74),
+    ("m77696e646f77732e73637265656e73686f74732e63616e74636f756e74", prepare_m77696e646f77732e73637265656e73686f74732e63616e74636f756e74),
+    ("m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74", prepare_m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74),
+    ("m77696e646f77732e736861726564736f75726365732e616c736f", no_arguments),
+    ("m77696e646f77732e736861726564736f75726365732e6c6162656c616765", prepare_m77696e646f77732e736861726564736f75726365732e6c6162656c616765),
+    ("m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465", prepare_m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465),
+    ("m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765", prepare_m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765),
+    ("m77696e646f77732e736861726564736f75726365732e6d616e79", prepare_m77696e646f77732e736861726564736f75726365732e6d616e79),
+    ("m77696e646f77732e736861726564736f75726365732e6f6e65", no_arguments),
+    ("m77696e646f77732e736861726564736f75726365732e7374617465616765", prepare_m77696e646f77732e736861726564736f75726365732e7374617465616765),
+    ("m77696e646f77732e74696d652e636865636b6564646179", prepare_m77696e646f77732e74696d652e636865636b6564646179),
+    ("m77696e646f77732e74696d652e636865636b6564686f7572", prepare_m77696e646f77732e74696d652e636865636b6564686f7572),
+    ("m77696e646f77732e74696d652e636865636b65646d696e757465", prepare_m77696e646f77732e74696d652e636865636b65646d696e757465),
+    ("m77696e646f77732e74696d652e6e65787473617665", prepare_m77696e646f77732e74696d652e6e65787473617665),
+    ("m77696e646f77732e74696d652e74616b656e686f757273", prepare_m77696e646f77732e74696d652e74616b656e686f757273),
+    ("m77696e646f77732e747261792e636865636b666f7275706461746573", no_arguments),
+    ("m77696e646f77732e747261792e68726d696e", prepare_m77696e646f77732e747261792e68726d696e),
+    ("m77696e646f77732e747261792e6c6573737468616e616d696e757465", no_arguments),
+    ("m77696e646f77732e747261792e6e656564736172657374617274", no_arguments),
+    ("m77696e646f77732e747261792e6f6e627574", prepare_m77696e646f77732e747261792e6f6e627574),
+    ("m77696e646f77732e747261792e6f6e636f6e6e6563746564746f796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e747261792e6f6e6e6f74636f6e6e6563746564746f616a6f75726e616c", no_arguments),
+    ("m77696e646f77732e747261792e6f6e73617665646f6e746869737063", no_arguments),
+    ("m77696e646f77732e747261792e7061757365646c656674", prepare_m77696e646f77732e747261792e7061757365646c656674),
+    ("m77696e646f77732e747261792e736f6c73746f6e6577616974696e67666f72796f75746f636f6e6669726d796f7572", no_arguments),
+    ("m77696e646f77732e747261792e7374617274696e67", no_arguments),
+    ("m77696e646f77732e747261792e73746f726167656661756c74666f726f776e6572", no_arguments),
+    ("m77696e646f77732e747261792e74657874", prepare_m77696e646f77732e747261792e74657874),
+    ("m77696e646f77732e747261792e7468656e656564737065726d697373696f6e696e77696e646f777373657474696e6773", prepare_m77696e646f77732e747261792e7468656e656564737065726d697373696f6e696e77696e646f777373657474696e6773),
+    ("m77696e646f77732e747261792e74686573746f70706564676f696e67696e746f796f75726a6f75726e616c", prepare_m77696e646f77732e747261792e74686573746f70706564676f696e67696e746f796f75726a6f75726e616c),
+    ("m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e6174", prepare_m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e6174),
+    ("m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e7468726f75676874686572656c6179", no_arguments),
+    ("m77696e646f77732e747261792e757064617465617661696c61626c65", no_arguments),
+    ("m77696e646f77732e747261792e757064617465636865636b6661696c6564", no_arguments),
+    ("m77696e646f77732e747261792e7570646174657265616479", no_arguments),
+    ("m77696e646f77732e75692e61636365737377617364656e696564", no_arguments),
+    ("m77696e646f77732e75692e61636365737377617364656e696564636865636b77696e646f77737065726d697373696f6e73666f72", no_arguments),
+    ("m77696e646f77732e75692e616374697665783437346431623735", no_arguments),
+    ("m77696e646f77732e75692e616374697665783638663530613962", no_arguments),
+    ("m77696e646f77732e75692e616374697665783936383739363131", no_arguments),
+    ("m77696e646f77732e75692e6163746976697479", no_arguments),
+    ("m77696e646f77732e75692e616374697669747969737374696c6c6f6e", no_arguments),
+    ("m77696e646f77732e75692e6164646170706e616d657377696e646f777469746c6573616e6470616765", no_arguments),
+    ("m77696e646f77732e75692e6164646d6f7265", no_arguments),
+    ("m77696e646f77732e75692e6164647370646673617564696f696d61676573616e6474657874796f7563686f6f7365686572656f7264726f706f6e74", no_arguments),
+    ("m77696e646f77732e75692e616464746865736f6c73746f6e65657874656e73696f6e", no_arguments),
+    ("m77696e646f77732e75692e616464746f", prepare_m77696e646f77732e75692e616464746f),
+    ("m77696e646f77732e75692e61676c6f62616c73686f7274637574746f7061757365616e64726573756d65", no_arguments),
+    ("m77696e646f77732e75692e616c6c6361756768747570", no_arguments),
+    ("m77696e646f77732e75692e616c6c6f666974", no_arguments),
+    ("m77696e646f77732e75692e616c6c736f75726365736f6e", no_arguments),
+    ("m77696e646f77732e75692e616c6f75646572696e707574666f7271756965746d6963726f70686f6e65736368616e676573", no_arguments),
+    ("m77696e646f77732e75692e616c72656164796f6e686f6d65", no_arguments),
+    ("m77696e646f77732e75692e616e65776c696e6b66726f6d796f75726a6f75726e616c63616e626570617374656468657265", no_arguments),
+    ("m77696e646f77732e75692e616e6f7468657270616972696e676c696e6b636f756c646e6f7462656164646564", no_arguments),
+    ("m77696e646f77732e75692e617072696c", no_arguments),
+    ("m77696e646f77732e75692e61726730", prepare_m77696e646f77732e75692e61726730),
+    ("m77696e646f77732e75692e6172673061726731", prepare_m77696e646f77732e75692e6172673061726731),
+    ("m77696e646f77732e75692e617267306172673161726732", prepare_m77696e646f77732e75692e617267306172673161726732),
+    ("m77696e646f77732e75692e617267306279746573", prepare_m77696e646f77732e75692e617267306279746573),
+    ("m77696e646f77732e75692e617267306762", prepare_m77696e646f77732e75692e617267306762),
+    ("m77696e646f77732e75692e617267306872", prepare_m77696e646f77732e75692e617267306872),
+    ("m77696e646f77732e75692e6172673068726c656674", prepare_m77696e646f77732e75692e6172673068726c656674),
+    ("m77696e646f77732e75692e617267306b62", prepare_m77696e646f77732e75692e617267306b62),
+    ("m77696e646f77732e75692e617267306b62783735623131626131", prepare_m77696e646f77732e75692e617267306b62783735623131626131),
+    ("m77696e646f77732e75692e617267306d62", prepare_m77696e646f77732e75692e617267306d62),
+    ("m77696e646f77732e75692e617267306d62786666383832663030", prepare_m77696e646f77732e75692e617267306d62786666383832663030),
+    ("m77696e646f77732e75692e617267306d696e", prepare_m77696e646f77732e75692e617267306d696e),
+    ("m77696e646f77732e75692e617267306d696e61676f", prepare_m77696e646f77732e75692e617267306d696e61676f),
+    ("m77696e646f77732e75692e617267306d696e6c656674", prepare_m77696e646f77732e75692e617267306d696e6c656674),
+    ("m77696e646f77732e75692e617267306e65656473617474656e74696f6e", prepare_m77696e646f77732e75692e617267306e65656473617474656e74696f6e),
+    ("m77696e646f77732e75692e617267306f6661726731696e796f75726a6f75726e616c", prepare_m77696e646f77732e75692e617267306f6661726731696e796f75726a6f75726e616c),
+    ("m77696e646f77732e75692e617267306f666172673173637265656e73686f7473696e796f75726a6f75726e616c", prepare_m77696e646f77732e75692e617267306f666172673173637265656e73686f7473696e796f75726a6f75726e616c),
+    ("m77696e646f77732e75692e617267307462", prepare_m77696e646f77732e75692e617267307462),
+    ("m77696e646f77732e75692e61726730783231316238626131", prepare_m77696e646f77732e75692e61726730783231316238626131),
+    ("m77696e646f77732e75692e6173637265656e73686f74616c7265616479696e796f75726a6f75726e616c737461797374686572656966796f756465", no_arguments),
+    ("m77696e646f77732e75692e6173637265656e73686f7474686174736f6e6c79636f70696564746f746865636c6970626f61726469736e7473617665", no_arguments),
+    ("m77696e646f77732e75692e617365676d656e74697361356d696e7574656c6f63616c", no_arguments),
+    ("m77696e646f77732e75692e617474656e74696f6e6e6565646564", no_arguments),
+    ("m77696e646f77732e75692e617564696f", no_arguments),
+    ("m77696e646f77732e75692e617567757374", no_arguments),
+    ("m77696e646f77732e75692e6175746f6d61746963636865636b736172656f6666", no_arguments),
+    ("m77696e646f77732e75692e6175746f6d61746963636865636b736172656f6e", no_arguments),
+    ("m77696e646f77732e75692e6177696e646f7774686174636c6f7365736f726d6f76657363616e", no_arguments),
+    ("m77696e646f77732e75692e6261636b67726f756e646461746175736572657374726963746564", no_arguments),
+    ("m77696e646f77732e75692e62726f7773657273", no_arguments),
+    ("m77696e646f77732e75692e62726f777365727374617465756e617661696c61626c65", no_arguments),
+    ("m77696e646f77732e75692e6368616e6765", no_arguments),
+    ("m77696e646f77732e75692e636865636b65646a7573746e6f77", no_arguments),
+    ("m77696e646f77732e75692e636865636b666f7275706461746573", no_arguments),
+    ("m77696e646f77732e75692e636865636b696e67", no_arguments),
+    ("m77696e646f77732e75692e636865636b696e67666f7275706461746573", no_arguments),
+    ("m77696e646f77732e75692e636865636b696e67776f7264", no_arguments),
+    ("m77696e646f77732e75692e636865636b696e67796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e63686f6f736561666f6c646572", no_arguments),
+    ("m77696e646f77732e75692e63686f6f736561666f6c646572786462656337343264", no_arguments),
+    ("m77696e646f77732e75692e63686f6f7365616e617070746f6578636c756465", no_arguments),
+    ("m77696e646f77732e75692e63686f6f73656172756e6e696e67617070", no_arguments),
+    ("m77696e646f77732e75692e63686f6f736566696c6573", no_arguments),
+    ("m77696e646f77732e75692e63686f6f7365666f6c646572", no_arguments),
+    ("m77696e646f77732e75692e63686f6f7365686f776661726261636b746f73746172747468656e6272696e677468656d696e", no_arguments),
+    ("m77696e646f77732e75692e63686f6f7365746865666f6c646572796f757273637265656e73686f747373617665746f", no_arguments),
+    ("m77696e646f77732e75692e63686f6f73657768617473746179736f75746f66796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e636c61696d65646e6f747665726966696564", no_arguments),
+    ("m77696e646f77732e75692e636c69636b7468656e7072657373796f757273686f7274637574", no_arguments),
+    ("m77696e646f77732e75692e636c6f73656e617669676174696f6e", no_arguments),
+    ("m77696e646f77732e75692e636f6d7075746572736f756e64", no_arguments),
+    ("m77696e646f77732e75692e636f6d7075746572736f756e646c6576656c", no_arguments),
+    ("m77696e646f77732e75692e636f6e6669726d7468656d61726b", no_arguments),
+    ("m77696e646f77732e75692e636f6e6669726d7468656d61726b6172673077616974696e67", prepare_m77696e646f77732e75692e636f6e6669726d7468656d61726b6172673077616974696e67),
+    ("m77696e646f77732e75692e636f6e6669726d796f75726a6f75726e616c736d61726b746f6f70656e", no_arguments),
+    ("m77696e646f77732e75692e636f6e6e656374616a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e636f6e6e6563746564", no_arguments),
+    ("m77696e646f77732e75692e636f6e6e6563746564746f", prepare_m77696e646f77732e75692e636f6e6e6563746564746f),
+    ("m77696e646f77732e75692e636f6e6e656374696e67", no_arguments),
+    ("m77696e646f77732e75692e636f6e6e656374696e67783364366466323435", no_arguments),
+    ("m77696e646f77732e75692e636f6e6e656374696f6e", no_arguments),
+    ("m77696e646f77732e75692e636f6e6e656374746f796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e636f6e6e656374796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e636f6e74696e756574686973636f6e6e656374696f6e", no_arguments),
+    ("m77696e646f77732e75692e636f70696564", no_arguments),
+    ("m77696e646f77732e75692e636f707974686566756c6c6c696e6b66726f6d796f757263686174616e646f70656e6974616761696e", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e6f747061757365747279616761696e", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e6f74726573756d65747279616761696e", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e6f74736176657468697363686f69636569746d6179", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e6f7473617665746869736469736d697373616c747279616761696e", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e6f74736176657475726e696e67746869736f6666697469736f66666e6f776275746d61797475726e6f6e", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e6f74736176657475726e696e67746869736f6e697473746179736f6666747279616761696e", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e6f7473617665796f7572736574757070726f6772657373747279", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e6f74757064617465737461727461746c6f67696e", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e74636865636b666f7275706461746573", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e74636865636b666f7275706461746573736f6c73746f6e65776173", prepare_m77696e646f77732e75692e636f756c646e74636865636b666f7275706461746573736f6c73746f6e65776173),
+    ("m77696e646f77732e75692e636f756c646e74636f756e74796f757273637265656e73686f7473", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e74646f776e6c6f6164736f6c73746f6e65", prepare_m77696e646f77732e75692e636f756c646e74646f776e6c6f6164736f6c73746f6e65),
+    ("m77696e646f77732e75692e636f756c646e74646f776e6c6f6164757064617465", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e7466696e646173637265656e73686f7473666f6c6465726f6e74686973706363686f6f7365746865666f", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e7466696e69736864697363617264696e6777686174736c656674", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e74696e7374616c6c757064617465", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e746c6f6164746865736f6c73746f6e6561707073", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e746f70656e74686573746f726570616765696e", prepare_m77696e646f77732e75692e636f756c646e746f70656e74686573746f726570616765696e),
+    ("m77696e646f77732e75692e636f756c646e746f70656e796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e746f70656e796f75726a6f75726e616c747279616761696e", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e747265616368796f75726a6f75726e616c6f766572796f7572", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e7472656164696d706f7274736f6e746869736465766963656e6f7468696e676861736265656e72656d6f", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e7472656164796f75727361766564736f7572636563686f69636573", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e7472656769737465727468617473686f7274637574", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e7472656d6f766574686973747279616761696e", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e747475726e747279616761696e", no_arguments),
+    ("m77696e646f77732e75692e636f756c646e747665726966796a6f75726e616c736f6e6f7468696e67", no_arguments),
+    ("m77696e646f77732e75692e64617961676f", prepare_m77696e646f77732e75692e64617961676f),
+    ("m77696e646f77732e75692e646563656d626572", no_arguments),
+    ("m77696e646f77732e75692e64656c697665726564", prepare_m77696e646f77732e75692e64656c697665726564),
+    ("m77696e646f77732e75692e64656c69766572656470656e64696e67", prepare_m77696e646f77732e75692e64656c69766572656470656e64696e67),
+    ("m77696e646f77732e75692e6465736b746f706163746976697479", no_arguments),
+    ("m77696e646f77732e75692e64657669636563686f696365", no_arguments),
+    ("m77696e646f77732e75692e6465766963657072696f72697479", no_arguments),
+    ("m77696e646f77732e75692e64697361626c65", no_arguments),
+    ("m77696e646f77732e75692e646f6e74737461727461746c6f67696e", no_arguments),
+    ("m77696e646f77732e75692e646f776e6c6f61646465666572726564636f6e6e656374696f6e737461747573756e6b6e6f776e", no_arguments),
+    ("m77696e646f77732e75692e646f776e6c6f616464656665727265646d657465726564636f6e6e656374696f6e", no_arguments),
+    ("m77696e646f77732e75692e646f776e6c6f616464656665727265647768696c65726f616d696e67", no_arguments),
+    ("m77696e646f77732e75692e646f776e6c6f6164696e67736f6c73746f6e65", prepare_m77696e646f77732e75692e646f776e6c6f6164696e67736f6c73746f6e65),
+    ("m77696e646f77732e75692e646f776e6c6f61647468656c617465737466726f6d736f6c73746f6e65617070646f776e6c6f616477696e646f7773", no_arguments),
+    ("m77696e646f77732e75692e65646765616e6466697265666f78736574746f656e676c697368", no_arguments),
+    ("m77696e646f77732e75692e656e61626c65", no_arguments),
+    ("m77696e646f77732e75692e656e61626c657468657061757365726573756d6573686f7274637574", no_arguments),
+    ("m77696e646f77732e75692e6572726f72776f7264", no_arguments),
+    ("m77696e646f77732e75692e657363746f63616e63656c", no_arguments),
+    ("m77696e646f77732e75692e6576657279706963747572657361766564696e61726730636f6d6573696e6e6f746f6e6c79796f757273637265656e73", prepare_m77696e646f77732e75692e6576657279706963747572657361766564696e61726730636f6d6573696e6e6f746f6e6c79796f757273637265656e73),
+    ("m77696e646f77732e75692e65766572797468696e676973696e796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e6578636c756465", no_arguments),
+    ("m77696e646f77732e75692e6578636c7573696f6e6163746976697479", no_arguments),
+    ("m77696e646f77732e75692e6661696c6564746f6163717569726573657475706c6f636b", no_arguments),
+    ("m77696e646f77732e75692e6665627275617279", no_arguments),
+    ("m77696e646f77732e75692e66696c65", no_arguments),
+    ("m77696e646f77732e75692e66696c6573", no_arguments),
+    ("m77696e646f77732e75692e66696e697368636f6e6e656374696e67", no_arguments),
+    ("m77696e646f77732e75692e66696e697368636f6e6e656374696e67746f796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e66696e69736874686563757272656e74636f6e6e656374696f6e7468656e747279616761696e", no_arguments),
+    ("m77696e646f77732e75692e666f6c646572", no_arguments),
+    ("m77696e646f77732e75692e666f756e646a6f75726e616c7063", no_arguments),
+    ("m77696e646f77732e75692e66726f6d", prepare_m77696e646f77732e75692e66726f6d),
+    ("m77696e646f77732e75692e66726f6d6265666f7265746f646179", no_arguments),
+    ("m77696e646f77732e75692e67657474696e677265616479", no_arguments),
+    ("m77696e646f77732e75692e67657474696e677265616479636f6e6e656374696e67746f796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e67657474696e67746869736465766963657265616479", no_arguments),
+    ("m77696e646f77732e75692e676c6f62616c73686f7274637574", no_arguments),
+    ("m77696e646f77732e75692e676f6573616c6f6e67776974686974", no_arguments),
+    ("m77696e646f77732e75692e676f6f6461667465726e6f6f6e", no_arguments),
+    ("m77696e646f77732e75692e676f6f646576656e696e67", no_arguments),
+    ("m77696e646f77732e75692e676f6f646d6f726e696e67", no_arguments),
+    ("m77696e646f77732e75692e686f6c646f6e656f726d6f72656f666374726c616c74", no_arguments),
+    ("m77696e646f77732e75692e686f6d65", no_arguments),
+    ("m77696e646f77732e75692e686f6d65783465376135636563", no_arguments),
+    ("m77696e646f77732e75692e686f757261676f", prepare_m77696e646f77732e75692e686f757261676f),
+    ("m77696e646f77732e75692e686f776f6674656e746f636865636b666f7275706461746573", no_arguments),
+    ("m77696e646f77732e75692e68726c65667468726d696e6c656674626f7468", prepare_m77696e646f77732e75692e68726c65667468726d696e6c656674626f7468),
+    ("m77696e646f77732e75692e69646c65", no_arguments),
+    ("m77696e646f77732e75692e6966796f75686176656e74796574616464746865", no_arguments),
+    ("m77696e646f77732e75692e696d706f7274", no_arguments),
+    ("m77696e646f77732e75692e696d706f727473776169746f6e74686973646576696365756e74696c796f75636f6e6e656374616a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e696d706f72747377616974756e74696c796f75636f6e6669726d796f75726a6f75726e616c736d61726b", no_arguments),
+    ("m77696e646f77732e75692e696d706f72747377616974756e74696c796f75726a6f75726e616c697375706461746564", no_arguments),
+    ("m77696e646f77732e75692e696e7075746761696e", no_arguments),
+    ("m77696e646f77732e75692e696e7374616c6c696e67", no_arguments),
+    ("m77696e646f77732e75692e696e7374616c6c696e67736f6c73746f6e65", prepare_m77696e646f77732e75692e696e7374616c6c696e67736f6c73746f6e65),
+    ("m77696e646f77732e75692e696e796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e696e796f75726a6f75726e616c63686f6f73657061697261646576696365616e6470617374657468656c696e6b686572", no_arguments),
+    ("m77696e646f77732e75692e6974696e7374616c6c737468656e65787474696d65746865736f6c73746f6e65617070737461727473696e636c756469", no_arguments),
+    ("m77696e646f77732e75692e6974736c61726765727468616e796f75726a6f75726e616c74616b6573", no_arguments),
+    ("m77696e646f77732e75692e6a616e75617279", no_arguments),
+    ("m77696e646f77732e75692e6a6f75726e616c64657461696c73", no_arguments),
+    ("m77696e646f77732e75692e6a6f75726e616c6c61737472656163686564", no_arguments),
+    ("m77696e646f77732e75692e6a6f75726e616c6e656564737570646174656265666f726563616e74616b65", no_arguments),
+    ("m77696e646f77732e75692e6a6f75726e616c73796e63", no_arguments),
+    ("m77696e646f77732e75692e6a6f75726e616c7570646174656e6565646564", no_arguments),
+    ("m77696e646f77732e75692e6a6f75726e616c76657273696f6e", no_arguments),
+    ("m77696e646f77732e75692e6a756c79", no_arguments),
+    ("m77696e646f77732e75692e6a756e65", no_arguments),
+    ("m77696e646f77732e75692e6b6565706f6e7768696c657061757365646f7273637265656e6973", no_arguments),
+    ("m77696e646f77732e75692e6b6565707072697661746577696e646f77736f75746f66796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e6b6570746f6e746869737063", no_arguments),
+    ("m77696e646f77732e75692e6b6570746f6e7468697370636e6f747265616368696e67796f7572", no_arguments),
+    ("m77696e646f77732e75692e6c6162656c", no_arguments),
+    ("m77696e646f77732e75692e6c617374636865636b6564", no_arguments),
+    ("m77696e646f77732e75692e6c61737472656163686564", no_arguments),
+    ("m77696e646f77732e75692e6c61737474616b656e696e", no_arguments),
+    ("m77696e646f77732e75692e6c6566746f7574", no_arguments),
+    ("m77696e646f77732e75692e6c6573737468616e616d696e7574656c656674", no_arguments),
+    ("m77696e646f77732e75692e6d6164656279736f6c706263", no_arguments),
+    ("m77696e646f77732e75692e6d61726368", no_arguments),
+    ("m77696e646f77732e75692e6d61726b", no_arguments),
+    ("m77696e646f77732e75692e6d61726b756e617661696c61626c65", no_arguments),
+    ("m77696e646f77732e75692e6d61726b756e617661696c61626c65783561636264313165", no_arguments),
+    ("m77696e646f77732e75692e6d6179", no_arguments),
+    ("m77696e646f77732e75692e6d6963726f70686f6e65", no_arguments),
+    ("m77696e646f77732e75692e6d6963726f70686f6e656c6576656c", no_arguments),
+    ("m77696e646f77732e75692e6d6963726f70686f6e6573", no_arguments),
+    ("m77696e646f77732e75692e6d696e75746561676f", prepare_m77696e646f77732e75692e6d696e75746561676f),
+    ("m77696e646f77732e75692e6d6f726561626f757474686973", no_arguments),
+    ("m77696e646f77732e75692e6d6f7265696d706f727473", no_arguments),
+    ("m77696e646f77732e75692e6d6f7665646f776e", prepare_m77696e646f77732e75692e6d6f7665646f776e),
+    ("m77696e646f77732e75692e6d6f76657570", prepare_m77696e646f77732e75692e6d6f76657570),
+    ("m77696e646f77732e75692e6e3170617373776f726462697477617264656e616e647468656f7468657270617373776f72646d616e61676572", no_arguments),
+    ("m77696e646f77732e75692e6e65656473617474656e74696f6e776f7264", no_arguments),
+    ("m77696e646f77732e75692e6e656564737065726d697373696f6e", no_arguments),
+    ("m77696e646f77732e75692e6e657874", no_arguments),
+    ("m77696e646f77732e75692e6e65787473617665", no_arguments),
+    ("m77696e646f77732e75692e6e6f62726f77736572636f6e6e65637465646e6f77", no_arguments),
+    ("m77696e646f77732e75692e6e6f63726564656e7469616c616363657373", no_arguments),
+    ("m77696e646f77732e75692e6e6f6578636c7573696f6e73616374697665", no_arguments),
+    ("m77696e646f77732e75692e6e6f6964656e7469747970726573656e746564", no_arguments),
+    ("m77696e646f77732e75692e6e6f696e707574646576696365", no_arguments),
+    ("m77696e646f77732e75692e6e6f6b6579776f726473796574", no_arguments),
+    ("m77696e646f77732e75692e6e6f6c6f63616c6a6f75726e616c746f636f6e6e656374746f", no_arguments),
+    ("m77696e646f77732e75692e6e6f6d6963726f70686f6e65666f756e64", no_arguments),
+    ("m77696e646f77732e75692e6e6f6d6963726f70686f6e65696e70757464657669636573", no_arguments),
+    ("m77696e646f77732e75692e6e6f6d6963726f70686f6e656973617661696c61626c65636f6e6e6563746f72656e61626c656f6e65696e77696e646f", no_arguments),
+    ("m77696e646f77732e75692e6e6f6e65646973706c6179", no_arguments),
+    ("m77696e646f77732e75692e6e6f6f746865726170707372756e6e696e67", no_arguments),
+    ("m77696e646f77732e75692e6e6f726f6f6d6d6f726572696768746e6f776e6577", no_arguments),
+    ("m77696e646f77732e75692e6e6f73686f7274637574736574", no_arguments),
+    ("m77696e646f77732e75692e6e6f736f756e646f7574707574666f756e64", no_arguments),
+    ("m77696e646f77732e75692e6e6f736f756e646f75747075746973617661696c61626c65636f6e6e6563746f72656e61626c656f6e65696e77696e64", no_arguments),
+    ("m77696e646f77732e75692e6e6f74", no_arguments),
+    ("m77696e646f77732e75692e6e6f74616e737765726564", no_arguments),
+    ("m77696e646f77732e75692e6e6f74617661696c61626c65", no_arguments),
+    ("m77696e646f77732e75692e6e6f74617661696c61626c6572696768746e6f77", no_arguments),
+    ("m77696e646f77732e75692e6e6f74636865636b6564666f7275706461746573796574", no_arguments),
+    ("m77696e646f77732e75692e6e6f7465736a6f75726e616c", prepare_m77696e646f77732e75692e6e6f7465736a6f75726e616c),
+    ("m77696e646f77732e75692e6e6f74676f696e67746f796f75726a6f75726e616c72696768746e6f77656163686f6e6573617973776879", no_arguments),
+    ("m77696e646f77732e75692e6e6f7468696e676578636c75646564796574", no_arguments),
+    ("m77696e646f77732e75692e6e6f7468696e6766726f6d6265666f7265746f646179", no_arguments),
+    ("m77696e646f77732e75692e6e6f7468696e6777617373617665646f6e74686973646576696365", no_arguments),
+    ("m77696e646f77732e75692e6e6f7468696e67796574", no_arguments),
+    ("m77696e646f77732e75692e6e6f7468696e67796574786563356138646136", no_arguments),
+    ("m77696e646f77732e75692e6e6f746f6e74686973636f6d7075746572", no_arguments),
+    ("m77696e646f77732e75692e6e6f747265616368696e67796f75726a6f75726e616c72696768746e6f77", no_arguments),
+    ("m77696e646f77732e75692e6e6f747265706f72746564", no_arguments),
+    ("m77696e646f77732e75692e6e6f74796574", no_arguments),
+    ("m77696e646f77732e75692e6e6f75736167656461746169736576657273656e74757064617465", no_arguments),
+    ("m77696e646f77732e75692e6e6f76656d626572", no_arguments),
+    ("m77696e646f77732e75692e6f63746f626572", no_arguments),
+    ("m77696e646f77732e75692e6f66666c696e65", no_arguments),
+    ("m77696e646f77732e75692e6f66666c696e656172673077616974696e67", prepare_m77696e646f77732e75692e6f66666c696e656172673077616974696e67),
+    ("m77696e646f77732e75692e6f6e6c7977686174746865736f6c73746f6e6561707063616e74656c6c69736173637265656e73686f74636f6d657369", no_arguments),
+    ("m77696e646f77732e75692e6f6e7468657369746573796f75616c6c6f77746865736f6c73746f6e65657874656e73696f6e74616b6573696e746865", no_arguments),
+    ("m77696e646f77732e75692e6f6e74686973646576696365", no_arguments),
+    ("m77696e646f77732e75692e6f70656e666f6c646572", no_arguments),
+    ("m77696e646f77732e75692e6f70656e6e617669676174696f6e", no_arguments),
+    ("m77696e646f77732e75692e6f70656e73657474696e6773", no_arguments),
+    ("m77696e646f77732e75692e6f70656e736f756e6473657474696e6773", no_arguments),
+    ("m77696e646f77732e75692e6f70656e77696e646f777373657474696e6773", no_arguments),
+    ("m77696e646f77732e75692e6f7468657266696c6573696e6172673073746179776865726574686579617265", prepare_m77696e646f77732e75692e6f7468657266696c6573696e6172673073746179776865726574686579617265),
+    ("m77696e646f77732e75692e70616765616464726573736573", no_arguments),
+    ("m77696e646f77732e75692e7061676561646472657373657365646765616e646368726f6d65", no_arguments),
+    ("m77696e646f77732e75692e70616972616761696e", no_arguments),
+    ("m77696e646f77732e75692e70616972656477697468", prepare_m77696e646f77732e75692e70616972656477697468),
+    ("m77696e646f77732e75692e70616972696e67", no_arguments),
+    ("m77696e646f77732e75692e70616972696e6763616e63656c6c65646e6f7468696e677468697370636861736b657074", no_arguments),
+    ("m77696e646f77732e75692e70616972696e676469646e74676f7468726f75676867657461", no_arguments),
+    ("m77696e646f77732e75692e70616972696e676c696e6b66726f6d796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e70616972746869737063746f796f75726a6f75726e616c746f", no_arguments),
+    ("m77696e646f77732e75692e70616972746f64656c69766572746f796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e7061697277697468796f75726a6f75726e616c6669727374", no_arguments),
+    ("m77696e646f77732e75692e706172747661756c7463616e74626572656164", no_arguments),
+    ("m77696e646f77732e75692e706175736564", prepare_m77696e646f77732e75692e706175736564),
+    ("m77696e646f77732e75692e706175736564617267306d696e6c656674", prepare_m77696e646f77732e75692e706175736564617267306d696e6c656674),
+    ("m77696e646f77732e75692e7061757365646c6573737468616e616d696e7574656c656674", no_arguments),
+    ("m77696e646f77732e75692e706175736564756e74696c796f75726573756d65", no_arguments),
+    ("m77696e646f77732e75692e70617573656477697468746865726573746f66746865736f6c73746f6e65", no_arguments),
+    ("m77696e646f77732e75692e706175736564776f7264", no_arguments),
+    ("m77696e646f77732e75692e706175736564786137613964633562", no_arguments),
+    ("m77696e646f77732e75692e7061757365726573756d65", no_arguments),
+    ("m77696e646f77732e75692e706175736573616c6c736f7572636573", no_arguments),
+    ("m77696e646f77732e75692e70656e64696e67", prepare_m77696e646f77732e75692e70656e64696e67),
+    ("m77696e646f77732e75692e706c616365686f6c646572", no_arguments),
+    ("m77696e646f77732e75692e706c616365686f6c64657232", no_arguments),
+    ("m77696e646f77732e75692e70726573656e746564", no_arguments),
+    ("m77696e646f77732e75692e7072657373796f757273686f7274637574", no_arguments),
+    ("m77696e646f77732e75692e70726576696577706175736564", no_arguments),
+    ("m77696e646f77732e75692e70726976616379", no_arguments),
+    ("m77696e646f77732e75692e7072697661746577696e646f7773", no_arguments),
+    ("m77696e646f77732e75692e70726f677265737374657874", prepare_m77696e646f77732e75692e70726f677265737374657874),
+    ("m77696e646f77732e75692e71756974736f6c73746f6e65", no_arguments),
+    ("m77696e646f77732e75692e7265616479746f7365747570776f7264", no_arguments),
+    ("m77696e646f77732e75692e726563656e74", no_arguments),
+    ("m77696e646f77732e75692e72656c61756e6368746f696e7374616c6c", no_arguments),
+    ("m77696e646f77732e75692e72656d6f7665", prepare_m77696e646f77732e75692e72656d6f7665),
+    ("m77696e646f77732e75692e72656d6f766561726730", prepare_m77696e646f77732e75692e72656d6f766561726730),
+    ("m77696e646f77732e75692e72656d6f7665783765353630386162", no_arguments),
+    ("m77696e646f77732e75692e72657374617274696e74616b65", no_arguments),
+    ("m77696e646f77732e75692e7265747279696e67", prepare_m77696e646f77732e75692e7265747279696e67),
+    ("m77696e646f77732e75692e7361766561636f70796f66726563656e746c6f6773", no_arguments),
+    ("m77696e646f77732e75692e73617665646f6e7468697364657669636561726730", prepare_m77696e646f77732e75692e73617665646f6e7468697364657669636561726730),
+    ("m77696e646f77732e75692e736176696e676f6e74686973646576696365617267306f6661726731", prepare_m77696e646f77732e75692e736176696e676f6e74686973646576696365617267306f6661726731),
+    ("m77696e646f77732e75692e73637265656e", no_arguments),
+    ("m77696e646f77732e75692e73637265656e616c736f6164647374686561707073796f75757365", no_arguments),
+    ("m77696e646f77732e75692e73637265656e61726730636f6d7075746572736f756e64617267316d6963617267326465736b746f7061637469766974", prepare_m77696e646f77732e75692e73637265656e61726730636f6d7075746572736f756e64617267316d6963617267326465736b746f7061637469766974),
+    ("m77696e646f77732e75692e73637265656e70726576696577", no_arguments),
+    ("m77696e646f77732e75692e73637265656e73686f7473", no_arguments),
+    ("m77696e646f77732e75692e73637265656e73686f7473616c7265616479696e796f75726a6f75726e616c6172656e7462726f75676874696e616761", no_arguments),
+    ("m77696e646f77732e75692e73637265656e73686f7473796f7574616b657768696c65697473706175736564646f6e74636f6d65696e", no_arguments),
+    ("m77696e646f77732e75692e7365676d656e747374686174686176656e6f7472656163686564796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e73656c6563746564646576696365", no_arguments),
+    ("m77696e646f77732e75692e73656e64696e67746f796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e73656e64696e67776f7264", no_arguments),
+    ("m77696e646f77732e75692e73657074656d626572", no_arguments),
+    ("m77696e646f77732e75692e736574", no_arguments),
+    ("m77696e646f77732e75692e73657474696e677570776f7264", no_arguments),
+    ("m77696e646f77732e75692e7365747570636f6e6e656374696f6e6368616e676564", no_arguments),
+    ("m77696e646f77732e75692e7365747570697362757379747279616761696e696e61", no_arguments),
+    ("m77696e646f77732e75692e736574757070726f6772657373636f756c646e6f7462657361766564", no_arguments),
+    ("m77696e646f77732e75692e736574757073657175656e63656973756e617661696c61626c65696e746869736275696c64", no_arguments),
+    ("m77696e646f77732e75692e7365747570756e617661696c61626c65", no_arguments),
+    ("m77696e646f77732e75692e7368617265736f756e6466726f6d74686973636f6d7075746572", no_arguments),
+    ("m77696e646f77732e75692e7368617265796f757273637265656e", no_arguments),
+    ("m77696e646f77732e75692e73686f7274637574", no_arguments),
+    ("m77696e646f77732e75692e73686f72746375747365746275747475726e65646f6666", no_arguments),
+    ("m77696e646f77732e75692e736b6970", no_arguments),
+    ("m77696e646f77732e75692e736f666172", no_arguments),
+    ("m77696e646f77732e75692e736f6c73746f6e6561707063616e74726561647661756c74", no_arguments),
+    ("m77696e646f77732e75692e736f6c73746f6e65617070636f756c646e7473617665697473", no_arguments),
+    ("m77696e646f77732e75692e736f6c73746f6e656170706469646e7466696e647661756c74", no_arguments),
+    ("m77696e646f77732e75692e736f6c73746f6e6561707074616b65736e6f7465736f6e657661756c74", no_arguments),
+    ("m77696e646f77732e75692e736f6c73746f6e6561726730696e7374616c6c737468656e65787474696d65746865736f6c73746f6e65617070737461", prepare_m77696e646f77732e75692e736f6c73746f6e6561726730696e7374616c6c737468656e65787474696d65746865736f6c73746f6e65617070737461),
+    ("m77696e646f77732e75692e736f6c73746f6e656973617661696c61626c65", prepare_m77696e646f77732e75692e736f6c73746f6e656973617661696c61626c65),
+    ("m77696e646f77732e75692e736f6c73746f6e6569737265616479746f696e7374616c6c", prepare_m77696e646f77732e75692e736f6c73746f6e6569737265616479746f696e7374616c6c),
+    ("m77696e646f77732e75692e736f6c73746f6e657265616479696e7374616c6c", no_arguments),
+    ("m77696e646f77732e75692e736f6d656e6f746573636f756c646e74676f696e746f", no_arguments),
+    ("m77696e646f77732e75692e736f6d657468696e67616e7377657265647063617469736e74", prepare_m77696e646f77732e75692e736f6d657468696e67616e7377657265647063617469736e74),
+    ("m77696e646f77732e75692e736f6d657468696e67616e73776572656470637468726f75676872656c617969736e", no_arguments),
+    ("m77696e646f77732e75692e736f6d657468696e676f746865727468616e796f75726a6f75726e616c616e737765726564636f6d70617265", no_arguments),
+    ("m77696e646f77732e75692e736f6d657468696e67796f7577657265616464696e676469646e7466696e697368736176696e67616464697461676169", no_arguments),
+    ("m77696e646f77732e75692e736f7572636573657475706973756e66696e6973686564", no_arguments),
+    ("m77696e646f77732e75692e737461727466726f6d746f646179", no_arguments),
+    ("m77696e646f77732e75692e7374617465", no_arguments),
+    ("m77696e646f77732e75692e737461747573", no_arguments),
+    ("m77696e646f77732e75692e73746f72616765", no_arguments),
+    ("m77696e646f77732e75692e73746f726167656c6f636174696f6e", no_arguments),
+    ("m77696e646f77732e75692e73746f726561707073616c6c6170707366726f6d7468656d6963726f736f6674", no_arguments),
+    ("m77696e646f77732e75692e73746f7265646c6f63616c6c79", prepare_m77696e646f77732e75692e73746f7265646c6f63616c6c79),
+    ("m77696e646f77732e75692e73746f7265646f6e746869737063", no_arguments),
+    ("m77696e646f77732e75692e73796e63", no_arguments),
+    ("m77696e646f77732e75692e74657874", prepare_m77696e646f77732e75692e74657874),
+    ("m77696e646f77732e75692e7465787433", prepare_m77696e646f77732e75692e7465787433),
+    ("m77696e646f77732e75692e7465787436", prepare_m77696e646f77732e75692e7465787436),
+    ("m77696e646f77732e75692e74657874636f6e74656e74", no_arguments),
+    ("m77696e646f77732e75692e74657874636f6e74656e7432", no_arguments),
+    ("m77696e646f77732e75692e74657874636f6e74656e7434", no_arguments),
+    ("m77696e646f77732e75692e74657874636f6e74656e7435", prepare_m77696e646f77732e75692e74657874636f6e74656e7435),
+    ("m77696e646f77732e75692e7465787466696c6573747874", no_arguments),
+    ("m77696e646f77732e75692e74686174636f6d626f6973696e7573656279616e6f74686572", no_arguments),
+    ("m77696e646f77732e75692e746861746469646e6f7466696e697368", no_arguments),
+    ("m77696e646f77732e75692e74686174666f6c64657269736e746f6273696469616e7661756c74", no_arguments),
+    ("m77696e646f77732e75692e74686174666f6c646572736e616d6563616e74", no_arguments),
+    ("m77696e646f77732e75692e7468617470616972696e676c696e6b69736e746f6e65746865", no_arguments),
+    ("m77696e646f77732e75692e74686561726730666f6c64657269736e746f6e746869737063616e796d6f7265", prepare_m77696e646f77732e75692e74686561726730666f6c64657269736e746f6e746869737063616e796d6f7265),
+    ("m77696e646f77732e75692e746865636f70796973616c7265616479676f6e65736f746869736f6e6c79636c65617273697466726f6d68657265", no_arguments),
+    ("m77696e646f77732e75692e746865636f70796f6e7468697364657669636569736d697373696e67", no_arguments),
+    ("m77696e646f77732e75692e746865646f776e6c6f61646469646e6f7466696e697368", no_arguments),
+    ("m77696e646f77732e75692e7468656c617374333064617973", no_arguments),
+    ("m77696e646f77732e75692e7468656c617374366d6f6e746873", no_arguments),
+    ("m77696e646f77732e75692e7468656c617374636865636b666f72757064617465736661696c6564", no_arguments),
+    ("m77696e646f77732e75692e7468656c61737479656172", no_arguments),
+    ("m77696e646f77732e75692e74686570616972696e6777696e646f77636c6f736564676574616e6577", no_arguments),
+    ("m77696e646f77732e75692e746865726569736e74656e6f756768726f6f6d6f6e74686973646576696365", no_arguments),
+    ("m77696e646f77732e75692e746865736572756c65736172656163746976656e6f77627574636f756c646e", no_arguments),
+    ("m77696e646f77732e75692e746865736f6c73746f6e65617070757365736f6e656d6963726f70686f6e656174", no_arguments),
+    ("m77696e646f77732e75692e746865746f70656e61626c65646d6963726f70686f6e65697375736564757365", no_arguments),
+    ("m77696e646f77732e75692e746865757064617465636f756c646e746265696e7374616c6c6564", no_arguments),
+    ("m77696e646f77732e75692e746869736275696c6463616e74757064617465697473656c66", no_arguments),
+    ("m77696e646f77732e75692e74686973636f6e6e656374696f6e636f756c646e6f7462657361766564747279", no_arguments),
+    ("m77696e646f77732e75692e74686973636f6e6e656374696f6e636f756c646e6f7466696e697368747279616761696e", no_arguments),
+    ("m77696e646f77732e75692e74686973636f6e6e656374696f6e636f756c646e6f7466696e697368747279616761696e32", no_arguments),
+    ("m77696e646f77732e75692e74686973636f756c646e746265726561646164646974616761696e", no_arguments),
+    ("m77696e646f77732e75692e7468697364657669636563616e74636f6e766572747468697370686f746f", no_arguments),
+    ("m77696e646f77732e75692e74686973646576696365636f756c646e746f70656e6974737361766564", no_arguments),
+    ("m77696e646f77732e75692e7468697364657669636569736e6f7470616972656477697468796f75726a6f75726e616c696d706f7274737761697468", no_arguments),
+    ("m77696e646f77732e75692e7468697364657669636569736e746f6e616e6574776f726b", no_arguments),
+    ("m77696e646f77732e75692e746869736a6f75726e616c6c696e6b69736e7476616c6964", no_arguments),
+    ("m77696e646f77732e75692e746869736c696e6b636f756c646e6f7462656469736d6973736564747279", no_arguments),
+    ("m77696e646f77732e75692e746869736c696e6b636f756c646e6f74626575736564747279", no_arguments),
+    ("m77696e646f77732e75692e746869736c6973746170706c696573746f6163746976697479746f6f", no_arguments),
+    ("m77696e646f77732e75692e746869736f6e6c7974616b6573616d6f6d656e74", no_arguments),
+    ("m77696e646f77732e75692e746869737063", no_arguments),
+    ("m77696e646f77732e75692e74686973706363616e74636f6e6e656374746f796f7572", no_arguments),
+    ("m77696e646f77732e75692e746869737063636f756c646e74776f726b6f7574796f7572", no_arguments),
+    ("m77696e646f77732e75692e74686973726561647374686577696e646f777469746c65616e646d617463686573", no_arguments),
+    ("m77696e646f77732e75692e7468697372656d6f766573746865636f70796f6e74686973646576696365736f6974776f6e747265616368796f75726a", no_arguments),
+    ("m77696e646f77732e75692e7468697372656d6f766573746865636f70796f6e74686973646576696365796f75726a6f75726e616c6d61797374696c", no_arguments),
+    ("m77696e646f77732e75692e7468697373657475706c696e6b636f756c646e6f74626575736564", no_arguments),
+    ("m77696e646f77732e75692e7468697373746570636f756c646e6f7466696e697368747279616761696e", no_arguments),
+    ("m77696e646f77732e75692e7468697373746570636f756c646e7466696e697368747279616761696e", no_arguments),
+    ("m77696e646f77732e75692e7469746c656b6579776f726473", no_arguments),
+    ("m77696e646f77732e75692e7469746c656b6579776f7264746f6578636c756465", no_arguments),
+    ("m77696e646f77732e75692e746f6f6c617267656272696e67", no_arguments),
+    ("m77696e646f77732e75692e7472796e6f77", no_arguments),
+    ("m77696e646f77732e75692e7472796e6f7761726730", prepare_m77696e646f77732e75692e7472796e6f7761726730),
+    ("m77696e646f77732e75692e7472796f70656e696e677468656c696e6b616761696e", no_arguments),
+    ("m77696e646f77732e75692e7475726e696e676f666673746f70736272696e67696e676368616e67657377686174", no_arguments),
+    ("m77696e646f77732e75692e7475726e69746f6e616e7974696d65", no_arguments),
+    ("m77696e646f77732e75692e7475726e6f6666", no_arguments),
+    ("m77696e646f77732e75692e7475726e6f6e", prepare_m77696e646f77732e75692e7475726e6f6e),
+    ("m77696e646f77732e75692e756e617661696c61626c65", no_arguments),
+    ("m77696e646f77732e75692e756e617661696c61626c65776f7264", no_arguments),
+    ("m77696e646f77732e75692e756e6b6e6f776e", no_arguments),
+    ("m77696e646f77732e75692e756e6b6e6f776e6a6f75726e616c73", no_arguments),
+    ("m77696e646f77732e75692e756e74696c69726573756d65", no_arguments),
+    ("m77696e646f77732e75692e757365746869736c696e6b", no_arguments),
+    ("m77696e646f77732e75692e7573657661756c74", no_arguments),
+    ("m77696e646f77732e75692e76616c756531356d696e75746573", no_arguments),
+    ("m77696e646f77732e75692e76616c756531686f7572", no_arguments),
+    ("m77696e646f77732e75692e76616c756533306d696e75746573", no_arguments),
+    ("m77696e646f77732e75692e7661756c7473", no_arguments),
+    ("m77696e646f77732e75692e7661756c7473636f6d7075746572", no_arguments),
+    ("m77696e646f77732e75692e7661756c74776974686e616d65616c72656164796a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e7669657764657461696c73", no_arguments),
+    ("m77696e646f77732e75692e77616974696e67", no_arguments),
+    ("m77696e646f77732e75692e77616974696e67666f72616a6f75726e616c757064617465796f757273637265656e73686f7473776169746f6e746869", no_arguments),
+    ("m77696e646f77732e75692e77616974696e67666f72796f7572616e73776572", no_arguments),
+    ("m77696e646f77732e75692e77616974696e67666f72796f75746f636f6e6669726d796f75726a6f75726e616c736d61726b", no_arguments),
+    ("m77696e646f77732e75692e77616974696e676a6f75726e616c757064617465", no_arguments),
+    ("m77696e646f77732e75692e77616974696e6772656163686a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e77616974696e6773796e63", prepare_m77696e646f77732e75692e77616974696e6773796e63),
+    ("m77696e646f77732e75692e77616974696e67746f676f746f796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e77616974696e67746f676f746f796f75726a6f75726e616c783564373839646235", no_arguments),
+    ("m77696e646f77732e75692e77616974696e67746f73796e63", no_arguments),
+    ("m77696e646f77732e75692e77616974696e67776f7264", no_arguments),
+    ("m77696e646f77732e75692e77686174616e737765726564", no_arguments),
+    ("m77696e646f77732e75692e7768617473616c7265616479696e796f75726a6f75726e616c73746179737768656e796f7570617573656f727475726e", no_arguments),
+    ("m77696e646f77732e75692e77686174796f75736861726573746179736f6e746869737063", no_arguments),
+    ("m77696e646f77732e75692e77686174796f757475726e6f6e676f6573696e746f796f7572", no_arguments),
+    ("m77696e646f77732e75692e7768696c657468697369736f6e746865736f6c73746f6e6561707074616b6573696e736f756e64616e64616c6c6f6669", no_arguments),
+    ("m77696e646f77732e75692e7768696c657468697369736f6e746865736f6c73746f6e6561707074616b6573696e74686573637265656e73686f7473", no_arguments),
+    ("m77696e646f77732e75692e7768696c657468697369736f6e746865736f6c73746f6e6561707074616b6573696e77686174736f6e796f7572736372", no_arguments),
+    ("m77696e646f77732e75692e77696e646f777366726f6d7468657365617070736e657665727265616368796f7572", no_arguments),
+    ("m77696e646f77732e75692e77696e646f777377686f73657469746c65636f6e7461696e7361776f7264796f75", no_arguments),
+    ("m77696e646f77732e75692e776974686163746976697479", no_arguments),
+    ("m77696e646f77732e75692e77697468636f6d7075746572736f756e64", no_arguments),
+    ("m77696e646f77732e75692e796573746572646179", no_arguments),
+    ("m77696e646f77732e75692e796f7563616e7475726e65616368736f757263656f6e6f72", no_arguments),
+    ("m77696e646f77732e75692e796f7563686f6f73657768696368736f75726365736172656f6e", no_arguments),
+    ("m77696e646f77732e75692e796f756c6c736565686f776d616e7973637265656e73686f747374686572656172656265666f7265616e79636f6d6569", no_arguments),
+    ("m77696e646f77732e75692e796f7572", no_arguments),
+    ("m77696e646f77732e75692e796f75726a6f75726e616c", no_arguments),
+    ("m77696e646f77732e75692e796f75726a6f75726e616c63616e7474616b65746869736b696e646f6666696c65", no_arguments),
+    ("m77696e646f77732e75692e796f75726a6f75726e616c636f756c646e7461636365707474686973", no_arguments),
+    ("m77696e646f77732e75692e796f75726a6f75726e616c646f65736e74737570706f7274746869736d6f7665", no_arguments),
+    ("m77696e646f77732e75692e796f75726a6f75726e616c6e65656473616e65776c696e6b", no_arguments),
+    ("m77696e646f77732e75692e796f75726a6f75726e616c6e6f747365747570796574", no_arguments),
+    ("m77696e646f77732e75692e796f75726a6f75726e616c6f70656e6564627574736574757070726f6772657373636f756c64", no_arguments),
+    ("m77696e646f77732e75692e796f75726a6f75726e616c73686f77737468697373616d656d61726b626573696465", no_arguments),
+    ("m77696e646f77732e75692e796f75726a6f75726e616c736d61726b756e617661696c61626c6572696768746e6f77", no_arguments),
+    ("m77696e646f77732e75692e796f75726a6f75726e616c73746f70706564616363657074696e6774686973646576696365696d706f72747377616974", no_arguments),
+    ("m77696e646f77732e75692e796f757273686f7274637574", no_arguments),
+    ("m77696e646f77732e75692e796f7573616964746869736d61726b646f65736e746d61746368", no_arguments),
+];
+
+fn no_arguments(key: &'static str, args: &[(&str, Value)], _: Option<&str>) -> Prepared {
+    if let Some((name, _)) = args.first() { return Err(RenderError::UnknownArgument((*name).to_owned())); }
+    Ok((key, FluentArgs::new()))
+}
+
+fn prepare_m77696e646f77732e61626f75742e64617961676f(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e61626f75742e686f757261676f(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e61626f75742e6c6173747365656e(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["line", "age"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "line").ok_or_else(|| RenderError::MissingArgument("line".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("line".to_string())),
+    };
+    f_args.set("line", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "age").ok_or_else(|| RenderError::MissingArgument("age".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("age".to_string())),
+    };
+    f_args.set("age", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e61626f75742e6c696e6530(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["label", "version"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
+    };
+    f_args.set("label", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
+    };
+    f_args.set("version", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e61626f75742e6c696e6531(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["label", "version", "build"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
+    };
+    f_args.set("label", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
+    };
+    f_args.set("version", FluentValue::from(v1.clone()));
+    let val_v2 = args.iter().find(|(n, _)| *n == "build").ok_or_else(|| RenderError::MissingArgument("build".to_string()))?.1.clone();
+    let v2 = match val_v2 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("build".to_string())),
+    };
+    f_args.set("build", FluentValue::from(v2.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e61626f75742e6c696e6532(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["label", "version", "platform"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
+    };
+    f_args.set("label", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
+    };
+    f_args.set("version", FluentValue::from(v1.clone()));
+    let val_v2 = args.iter().find(|(n, _)| *n == "platform").ok_or_else(|| RenderError::MissingArgument("platform".to_string()))?.1.clone();
+    let v2 = match val_v2 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("platform".to_string())),
+    };
+    f_args.set("platform", FluentValue::from(v2.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e61626f75742e6c696e6533(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["label", "version", "build", "platform"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
+    };
+    f_args.set("label", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
+    };
+    f_args.set("version", FluentValue::from(v1.clone()));
+    let val_v2 = args.iter().find(|(n, _)| *n == "build").ok_or_else(|| RenderError::MissingArgument("build".to_string()))?.1.clone();
+    let v2 = match val_v2 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("build".to_string())),
+    };
+    f_args.set("build", FluentValue::from(v2.clone()));
+    let val_v3 = args.iter().find(|(n, _)| *n == "platform").ok_or_else(|| RenderError::MissingArgument("platform".to_string()))?.1.clone();
+    let v3 = match val_v3 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("platform".to_string())),
+    };
+    f_args.set("platform", FluentValue::from(v3.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e61626f75742e6c696e6534(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["label", "version", "arch"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
+    };
+    f_args.set("label", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
+    };
+    f_args.set("version", FluentValue::from(v1.clone()));
+    let val_v2 = args.iter().find(|(n, _)| *n == "arch").ok_or_else(|| RenderError::MissingArgument("arch".to_string()))?.1.clone();
+    let v2 = match val_v2 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arch".to_string())),
+    };
+    f_args.set("arch", FluentValue::from(v2.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e61626f75742e6c696e6535(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["label", "version", "build", "arch"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
+    };
+    f_args.set("label", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
+    };
+    f_args.set("version", FluentValue::from(v1.clone()));
+    let val_v2 = args.iter().find(|(n, _)| *n == "build").ok_or_else(|| RenderError::MissingArgument("build".to_string()))?.1.clone();
+    let v2 = match val_v2 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("build".to_string())),
+    };
+    f_args.set("build", FluentValue::from(v2.clone()));
+    let val_v3 = args.iter().find(|(n, _)| *n == "arch").ok_or_else(|| RenderError::MissingArgument("arch".to_string()))?.1.clone();
+    let v3 = match val_v3 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arch".to_string())),
+    };
+    f_args.set("arch", FluentValue::from(v3.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e61626f75742e6c696e6536(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["label", "version", "platform", "arch"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
+    };
+    f_args.set("label", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
+    };
+    f_args.set("version", FluentValue::from(v1.clone()));
+    let val_v2 = args.iter().find(|(n, _)| *n == "platform").ok_or_else(|| RenderError::MissingArgument("platform".to_string()))?.1.clone();
+    let v2 = match val_v2 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("platform".to_string())),
+    };
+    f_args.set("platform", FluentValue::from(v2.clone()));
+    let val_v3 = args.iter().find(|(n, _)| *n == "arch").ok_or_else(|| RenderError::MissingArgument("arch".to_string()))?.1.clone();
+    let v3 = match val_v3 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arch".to_string())),
+    };
+    f_args.set("arch", FluentValue::from(v3.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e61626f75742e6c696e6537(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["label", "version", "build", "platform", "arch"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
+    };
+    f_args.set("label", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "version").ok_or_else(|| RenderError::MissingArgument("version".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("version".to_string())),
+    };
+    f_args.set("version", FluentValue::from(v1.clone()));
+    let val_v2 = args.iter().find(|(n, _)| *n == "build").ok_or_else(|| RenderError::MissingArgument("build".to_string()))?.1.clone();
+    let v2 = match val_v2 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("build".to_string())),
+    };
+    f_args.set("build", FluentValue::from(v2.clone()));
+    let val_v3 = args.iter().find(|(n, _)| *n == "platform").ok_or_else(|| RenderError::MissingArgument("platform".to_string()))?.1.clone();
+    let v3 = match val_v3 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("platform".to_string())),
+    };
+    f_args.set("platform", FluentValue::from(v3.clone()));
+    let val_v4 = args.iter().find(|(n, _)| *n == "arch").ok_or_else(|| RenderError::MissingArgument("arch".to_string()))?.1.clone();
+    let v4 = match val_v4 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arch".to_string())),
+    };
+    f_args.set("arch", FluentValue::from(v4.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e61626f75742e6d696e75746561676f(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e6465736b746f702e7368617265642e636f70792e7265706c616365636f6e6669726d7469746c65(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["selecteddevicelabel"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "selecteddevicelabel").ok_or_else(|| RenderError::MissingArgument("selecteddevicelabel".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("selecteddevicelabel".to_string())),
+    };
+    f_args.set("selecteddevicelabel", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e6465736b746f702e7368617265642e636f70792e74657874(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value", "value2"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "value2").ok_or_else(|| RenderError::MissingArgument("value2".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value2".to_string())),
+    };
+    f_args.set("value2", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e6578636c7573696f6e732e6163746976697479(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e6578636c7573696f6e732e61637469766974797265646163746564(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display", "more"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    let val_v2 = args.iter().find(|(n, _)| *n == "more").ok_or_else(|| RenderError::MissingArgument("more".to_string()))?.1.clone();
+    let v2 = match val_v2 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("more".to_string())),
+    };
+    f_args.set("more", FluentValue::from(v2.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e696d706f72742e726563656e7461313179(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["name", "relative"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
+    };
+    f_args.set("name", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "relative").ok_or_else(|| RenderError::MissingArgument("relative".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("relative".to_string())),
+    };
+    f_args.set("relative", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e696d706f72742e726563656e746d657461(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["relative"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "relative").ok_or_else(|| RenderError::MissingArgument("relative".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("relative".to_string())),
+    };
+    f_args.set("relative", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e696d706f72742e726576696577616374696f6e61313179(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["name"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
+    };
+    f_args.set("name", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e696d706f72742e73656e64616761696e616374696f6e61313179(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["name"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
+    };
+    f_args.set("name", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e696d706f72742e737461747573726576696577686561646c696e65(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e696d706f72742e74696c6561313179(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["state", "sub"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "state").ok_or_else(|| RenderError::MissingArgument("state".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("state".to_string())),
+    };
+    f_args.set("state", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "sub").ok_or_else(|| RenderError::MissingArgument("sub".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("sub".to_string())),
+    };
+    f_args.set("sub", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e696d706f72742e74696c657265616479636f756e74(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e696d706f72742e74696c6573656e64696e67636f756e74(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e696d706f72742e74696c6577616974696e67636f756e74(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e6e6f746963652e74686569736261636b(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e6e6f746963652e7468656e65656473796f75727065726d697373696f6e(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e6e6f746963652e77696e646f77737072697661637973657474696e6773617265626c6f636b696e6769747475726e(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e6f6273696469616e2e7761726e696e67(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["vault"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "vault").ok_or_else(|| RenderError::MissingArgument("vault".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("vault".to_string())),
+    };
+    f_args.set("vault", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e6f6273696469616e2e7761726e696e6764617465(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["vault", "date"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "vault").ok_or_else(|| RenderError::MissingArgument("vault".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("vault".to_string())),
+    };
+    f_args.set("vault", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "date").ok_or_else(|| RenderError::MissingArgument("date".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("date".to_string())),
+    };
+    f_args.set("date", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e6f6273696469616e2e7761726e696e67646576696365(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["vault", "device"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "vault").ok_or_else(|| RenderError::MissingArgument("vault".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("vault".to_string())),
+    };
+    f_args.set("vault", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "device").ok_or_else(|| RenderError::MissingArgument("device".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("device".to_string())),
+    };
+    f_args.set("device", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e6f6273696469616e2e7761726e696e6764657669636564617465(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["vault", "device", "date"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "vault").ok_or_else(|| RenderError::MissingArgument("vault".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("vault".to_string())),
+    };
+    f_args.set("vault", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "device").ok_or_else(|| RenderError::MissingArgument("device".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("device".to_string())),
+    };
+    f_args.set("device", FluentValue::from(v1.clone()));
+    let val_v2 = args.iter().find(|(n, _)| *n == "date").ok_or_else(|| RenderError::MissingArgument("date".to_string()))?.1.clone();
+    let v2 = match val_v2 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("date".to_string())),
+    };
+    f_args.set("date", FluentValue::from(v2.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e70696c6c2e68656c6477616974696e67(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["waiting"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "waiting").ok_or_else(|| RenderError::MissingArgument("waiting".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("waiting".to_string())),
+    };
+    f_args.set("waiting", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e70696c6c2e6f66666c696e6577616974696e67(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["waiting"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "waiting").ok_or_else(|| RenderError::MissingArgument("waiting".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("waiting".to_string())),
+    };
+    f_args.set("waiting", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e70696c6c2e7265616479746f726576696577(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e70696c6c2e7265667573656477616974696e67(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["waiting"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "waiting").ok_or_else(|| RenderError::MissingArgument("waiting".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("waiting".to_string())),
+    };
+    f_args.set("waiting", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e70696c6c2e73796e6370617573656477616974696e67(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["waiting"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "waiting").ok_or_else(|| RenderError::MissingArgument("waiting".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("waiting".to_string())),
+    };
+    f_args.set("waiting", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e7175616e746974792e686f757273(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e7175616e746974792e6974656d73(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e7175616e746974792e6d696e75746573(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e7175616e746974792e6e6f746573(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e7175616e746974792e7061676573(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e7175616e746974792e73637265656e73686f7473(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e73637265656e73686f74732e6272696e67636f756e74(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e73637265656e73686f74732e63616e74636f756e74(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e73637265656e73686f74732e756e7265616461626c65636f756e74(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e736861726564736f75726365732e6c6162656c616765(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["label", "relative"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
+    };
+    f_args.set("label", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "relative").ok_or_else(|| RenderError::MissingArgument("relative".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("relative".to_string())),
+    };
+    f_args.set("relative", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["label", "state"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
+    };
+    f_args.set("label", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "state").ok_or_else(|| RenderError::MissingArgument("state".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("state".to_string())),
+    };
+    f_args.set("state", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e736861726564736f75726365732e6c6162656c7374617465616765(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["label", "state", "relative"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "label").ok_or_else(|| RenderError::MissingArgument("label".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("label".to_string())),
+    };
+    f_args.set("label", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "state").ok_or_else(|| RenderError::MissingArgument("state".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("state".to_string())),
+    };
+    f_args.set("state", FluentValue::from(v1.clone()));
+    let val_v2 = args.iter().find(|(n, _)| *n == "relative").ok_or_else(|| RenderError::MissingArgument("relative".to_string()))?.1.clone();
+    let v2 = match val_v2 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("relative".to_string())),
+    };
+    f_args.set("relative", FluentValue::from(v2.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e736861726564736f75726365732e6d616e79(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    f_args.set("count", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e736861726564736f75726365732e7374617465616765(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["state", "relative"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "state").ok_or_else(|| RenderError::MissingArgument("state".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("state".to_string())),
+    };
+    f_args.set("state", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "relative").ok_or_else(|| RenderError::MissingArgument("relative".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("relative".to_string())),
+    };
+    f_args.set("relative", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e74696d652e636865636b6564646179(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e74696d652e636865636b6564686f7572(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e74696d652e636865636b65646d696e757465(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e74696d652e6e65787473617665(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["minutes", "seconds"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "minutes").ok_or_else(|| RenderError::MissingArgument("minutes".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("minutes".to_string())),
+    };
+    f_args.set("minutes", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "seconds").ok_or_else(|| RenderError::MissingArgument("seconds".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("seconds".to_string())),
+    };
+    f_args.set("seconds", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e74696d652e74616b656e686f757273(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "display"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "display").ok_or_else(|| RenderError::MissingArgument("display".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("display".to_string())),
+    };
+    f_args.set("display", FluentValue::from(v1.clone()));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e747261792e68726d696e(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "count2"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "count2").ok_or_else(|| RenderError::MissingArgument("count2".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count2".to_string())),
+    };
+    if v1 < -2147483648_i64 || v1 > 2147483647_i64 { return Err(RenderError::OutOfRange("count2".to_string())); }
+    f_args.set("count2", FluentValue::from(v1));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e747261792e6f6e627574(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["needs"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "needs").ok_or_else(|| RenderError::MissingArgument("needs".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("needs".to_string())),
+    };
+    f_args.set("needs", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e747261792e7061757365646c656674(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e747261792e74657874(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["tooltip", "notice"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "tooltip").ok_or_else(|| RenderError::MissingArgument("tooltip".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("tooltip".to_string())),
+    };
+    f_args.set("tooltip", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "notice").ok_or_else(|| RenderError::MissingArgument("notice".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("notice".to_string())),
+    };
+    f_args.set("notice", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e747261792e7468656e656564737065726d697373696f6e696e77696e646f777373657474696e6773(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e747261792e74686573746f70706564676f696e67696e746f796f75726a6f75726e616c(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e747261792e756e6b6e6f776e6a6f75726e616c7365656e6174(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["name"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
+    };
+    f_args.set("name", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e616464746f(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e61726730(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e6172673061726731(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0", "arg1"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "arg1").ok_or_else(|| RenderError::MissingArgument("arg1".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg1".to_string())),
+    };
+    f_args.set("arg1", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e617267306172673161726732(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0", "arg1", "arg2"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "arg1").ok_or_else(|| RenderError::MissingArgument("arg1".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg1".to_string())),
+    };
+    f_args.set("arg1", FluentValue::from(v1.clone()));
+    let val_v2 = args.iter().find(|(n, _)| *n == "arg2").ok_or_else(|| RenderError::MissingArgument("arg2".to_string()))?.1.clone();
+    let v2 = match val_v2 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg2".to_string())),
+    };
+    f_args.set("arg2", FluentValue::from(v2.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e617267306279746573(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e617267306762(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e617267306872(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e6172673068726c656674(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e617267306b62(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e617267306b62783735623131626131(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e617267306d62(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e617267306d62786666383832663030(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e617267306d696e(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e617267306d696e61676f(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e617267306d696e6c656674(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e617267306e65656473617474656e74696f6e(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e617267306f6661726731696e796f75726a6f75726e616c(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0", "arg1"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "arg1").ok_or_else(|| RenderError::MissingArgument("arg1".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg1".to_string())),
+    };
+    f_args.set("arg1", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e617267306f666172673173637265656e73686f7473696e796f75726a6f75726e616c(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0", "arg1"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "arg1").ok_or_else(|| RenderError::MissingArgument("arg1".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg1".to_string())),
+    };
+    f_args.set("arg1", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e617267307462(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e61726730783231316238626131(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e636f6e6669726d7468656d61726b6172673077616974696e67(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e636f6e6e6563746564746f(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e636f756c646e74636865636b666f7275706461746573736f6c73746f6e65776173(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["v"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "v").ok_or_else(|| RenderError::MissingArgument("v".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("v".to_string())),
+    };
+    f_args.set("v", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e636f756c646e74646f776e6c6f6164736f6c73746f6e65(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e636f756c646e746f70656e74686573746f726570616765696e(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e64617961676f(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e64656c697665726564(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e64656c69766572656470656e64696e67(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value", "value2"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "value2").ok_or_else(|| RenderError::MissingArgument("value2".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value2".to_string())),
+    };
+    f_args.set("value2", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e646f776e6c6f6164696e67736f6c73746f6e65(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["v"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "v").ok_or_else(|| RenderError::MissingArgument("v".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("v".to_string())),
+    };
+    f_args.set("v", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e6576657279706963747572657361766564696e61726730636f6d6573696e6e6f746f6e6c79796f757273637265656e73(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e66726f6d(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e686f757261676f(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e68726c65667468726d696e6c656674626f7468(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count", "count2"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "count2").ok_or_else(|| RenderError::MissingArgument("count2".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count2".to_string())),
+    };
+    if v1 < -2147483648_i64 || v1 > 2147483647_i64 { return Err(RenderError::OutOfRange("count2".to_string())); }
+    f_args.set("count2", FluentValue::from(v1));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e696e7374616c6c696e67736f6c73746f6e65(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["v"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "v").ok_or_else(|| RenderError::MissingArgument("v".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("v".to_string())),
+    };
+    f_args.set("v", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e6d696e75746561676f(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("count".to_string())); }
+    f_args.set("count", FluentValue::from(v0));
+    f_args.set("i18nCategory", plural_category(_cardinal_rule, v0));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e6d6f7665646f776e(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["name"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
+    };
+    f_args.set("name", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e6d6f76657570(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["name"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
+    };
+    f_args.set("name", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e6e6f7465736a6f75726e616c(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value", "value2"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "value2").ok_or_else(|| RenderError::MissingArgument("value2".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value2".to_string())),
+    };
+    f_args.set("value2", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e6f66666c696e656172673077616974696e67(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e6f7468657266696c6573696e6172673073746179776865726574686579617265(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e70616972656477697468(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e706175736564(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["count"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "count").ok_or_else(|| RenderError::MissingArgument("count".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("count".to_string())),
+    };
+    f_args.set("count", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e706175736564617267306d696e6c656674(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e70656e64696e67(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e70726f677265737374657874(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["stepnum", "totalsteps"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "stepnum").ok_or_else(|| RenderError::MissingArgument("stepnum".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("stepnum".to_string())),
+    };
+    if v0 < -2147483648_i64 || v0 > 2147483647_i64 { return Err(RenderError::OutOfRange("stepnum".to_string())); }
+    f_args.set("stepnum", FluentValue::from(v0));
+    let val_v1 = args.iter().find(|(n, _)| *n == "totalsteps").ok_or_else(|| RenderError::MissingArgument("totalsteps".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::Cardinal(c) => c,
+        _ => return Err(RenderError::InvalidArgumentType("totalsteps".to_string())),
+    };
+    if v1 < -2147483648_i64 || v1 > 2147483647_i64 { return Err(RenderError::OutOfRange("totalsteps".to_string())); }
+    f_args.set("totalsteps", FluentValue::from(v1));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e72656d6f7665(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e72656d6f766561726730(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e7265747279696e67(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e73617665646f6e7468697364657669636561726730(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e736176696e676f6e74686973646576696365617267306f6661726731(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0", "arg1"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "arg1").ok_or_else(|| RenderError::MissingArgument("arg1".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg1".to_string())),
+    };
+    f_args.set("arg1", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e73637265656e61726730636f6d7075746572736f756e64617267316d6963617267326465736b746f7061637469766974(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0", "arg1", "arg2", "arg3"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "arg1").ok_or_else(|| RenderError::MissingArgument("arg1".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg1".to_string())),
+    };
+    f_args.set("arg1", FluentValue::from(v1.clone()));
+    let val_v2 = args.iter().find(|(n, _)| *n == "arg2").ok_or_else(|| RenderError::MissingArgument("arg2".to_string()))?.1.clone();
+    let v2 = match val_v2 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg2".to_string())),
+    };
+    f_args.set("arg2", FluentValue::from(v2.clone()));
+    let val_v3 = args.iter().find(|(n, _)| *n == "arg3").ok_or_else(|| RenderError::MissingArgument("arg3".to_string()))?.1.clone();
+    let v3 = match val_v3 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg3".to_string())),
+    };
+    f_args.set("arg3", FluentValue::from(v3.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e736f6c73746f6e6561726730696e7374616c6c737468656e65787474696d65746865736f6c73746f6e65617070737461(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e736f6c73746f6e656973617661696c61626c65(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["v"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "v").ok_or_else(|| RenderError::MissingArgument("v".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("v".to_string())),
+    };
+    f_args.set("v", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e736f6c73746f6e6569737265616479746f696e7374616c6c(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["v"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "v").ok_or_else(|| RenderError::MissingArgument("v".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("v".to_string())),
+    };
+    f_args.set("v", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e736f6d657468696e67616e7377657265647063617469736e74(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e73746f7265646c6f63616c6c79(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e74657874(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["name", "value2"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
+    };
+    f_args.set("name", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "value2").ok_or_else(|| RenderError::MissingArgument("value2".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value2".to_string())),
+    };
+    f_args.set("value2", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e7465787433(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["name", "name2", "value3", "value4"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "name").ok_or_else(|| RenderError::MissingArgument("name".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("name".to_string())),
+    };
+    f_args.set("name", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "name2").ok_or_else(|| RenderError::MissingArgument("name2".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("name2".to_string())),
+    };
+    f_args.set("name2", FluentValue::from(v1.clone()));
+    let val_v2 = args.iter().find(|(n, _)| *n == "value3").ok_or_else(|| RenderError::MissingArgument("value3".to_string()))?.1.clone();
+    let v2 = match val_v2 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value3".to_string())),
+    };
+    f_args.set("value3", FluentValue::from(v2.clone()));
+    let val_v3 = args.iter().find(|(n, _)| *n == "value4").ok_or_else(|| RenderError::MissingArgument("value4".to_string()))?.1.clone();
+    let v3 = match val_v3 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value4".to_string())),
+    };
+    f_args.set("value4", FluentValue::from(v3.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e7465787436(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["status", "reason"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "status").ok_or_else(|| RenderError::MissingArgument("status".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("status".to_string())),
+    };
+    f_args.set("status", FluentValue::from(v0.clone()));
+    let val_v1 = args.iter().find(|(n, _)| *n == "reason").ok_or_else(|| RenderError::MissingArgument("reason".to_string()))?.1.clone();
+    let v1 = match val_v1 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("reason".to_string())),
+    };
+    f_args.set("reason", FluentValue::from(v1.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e74657874636f6e74656e7435(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["level"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "level").ok_or_else(|| RenderError::MissingArgument("level".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("level".to_string())),
+    };
+    f_args.set("level", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e74686561726730666f6c64657269736e746f6e746869737063616e796d6f7265(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e7472796e6f7761726730(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["arg0"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "arg0").ok_or_else(|| RenderError::MissingArgument("arg0".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("arg0".to_string())),
+    };
+    f_args.set("arg0", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e7475726e6f6e(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["accessiblename"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "accessiblename").ok_or_else(|| RenderError::MissingArgument("accessiblename".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("accessiblename".to_string())),
+    };
+    f_args.set("accessiblename", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn prepare_m77696e646f77732e75692e77616974696e6773796e63(_resource_key: &'static str, args: &[(&str, Value)], _cardinal_rule: Option<&str>) -> Prepared {
+    const DECLARED: &[&str] = &["value"];
+    for (name, _) in args {
+        if !DECLARED.contains(name) {
+            return Err(RenderError::UnknownArgument((*name).to_string()));
+        }
+    }
+    #[allow(unused_mut)]
+    let mut f_args = FluentArgs::new();
+    let val_v0 = args.iter().find(|(n, _)| *n == "value").ok_or_else(|| RenderError::MissingArgument("value".to_string()))?.1.clone();
+    let v0 = match val_v0 {
+        Value::String(s) => s.to_string(),
+        _ => return Err(RenderError::InvalidArgumentType("value".to_string())),
+    };
+    f_args.set("value", FluentValue::from(v0.clone()));
+    Ok((_resource_key, f_args))
+}
+
+fn load_bundle(ftl: &str, use_isolating: bool) -> Result<FluentBundle<FluentResource>, RenderError> {
+    let lang = "und".parse().map_err(|_| RenderError::FormatFailed)?;
+    let mut bundle = FluentBundle::new_concurrent(vec![lang]);
+    bundle.set_use_isolating(use_isolating);
+    let _ = bundle.add_builtins();
+    let resource = FluentResource::try_new(ftl.to_owned()).map_err(|_| RenderError::FormatFailed)?;
+    bundle.add_resource(resource).map_err(|_| RenderError::FormatFailed)?;
+    Ok(bundle)
 }

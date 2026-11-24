@@ -1,7 +1,7 @@
 {
   "crates/observer-model/i18n/generated/cases.json": "67cc2cc695dfdce554e5ea55b6b3819d6afbd5760be0f430a79be2b5fc8d2c72",
   "crates/observer-model/i18n/generated/i18n-catalog-targets": "d904c61cd960027fc929f3235b17da05978b35bbef8e11a29598e916b94bf503",
-  "crates/observer-model/i18n/generated/rust/windows/api.rs": "35da807bdbb6a7ddd3c4d131aeefa396df37ca021b11d7ae2af720925c08106d",
+  "crates/observer-model/i18n/generated/rust/windows/api.rs": "a209c3a8bc6a063cbc1f4c2710ee51e88a71bf6b17050830d67cfefb0d75fede",
   "crates/observer-model/i18n/generated/rust/windows/en-US.ftl": "9f46971bf0bbcf97e9ce25a9cad1429bf7d0d502d9f20b5e6a72442389f97535",
   "crates/observer-model/i18n/locales.rs": "faea122dfa1092a49b3d72a3c574016ea507d6a3a2191fa0bc0c3fbbc303ba39",
   "i18n/arguments.ts": "5445cf663d4faa17f4909160567c5ffc996b6e2978b16deff46e59080f989912",
@@ -693,7 +693,7 @@
   "i18n/catalog/meta/windows.ui.yousaidthismarkdoesntmatch.json": "b927eadc6ab39412aef03900e91a1dd40342364aeb2aee320f57ec62264712fb",
   "i18n/catalog/source-lock.json": "48dbf6122e58aa6a48712cce02aabfea4e4e8e9e31c9591d91b86b54e07f61d0",
   "i18n/catalog/source/en-US.ftl": "71bf7d48f6c534044461408b6ffdc7d6df827bc9933db0edf81ad422b00ee229",
-  "i18n/compiler.json": "4c9283c371ed5c31f4a58b6079ef839dec188a1f4db41a8ad6f83ee9bca9f3bb",
+  "i18n/compiler.json": "05202230cc4bd4469ad67d31eff793136e4eb6c1984b54369b5c6f98c3991544",
   "i18n/generated/cases.json": "5dd9eb3920820d319808787be84a1a7cc5ae03a49f1e9565989f9048b076f127",
   "i18n/generated/esm/vendor/fluent-bundle/ast.d.ts": "45d3d5cdac629749c44d3107cc0ff9c1f3e186e2bb2c99014f8d1fe62e520e07",
   "i18n/generated/esm/vendor/fluent-bundle/ast.js": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881",
