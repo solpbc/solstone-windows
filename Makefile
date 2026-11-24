@@ -44,7 +44,7 @@ TRANSPARENCY_ACTIVATED ?= 0
 
 .PHONY: install ui-deps-update rust-toolchain preflight-toolchain preflight-cargo-deny \
 	        provision-cargo-deny provision-advisory-cargo-home preflight-release-tools build test ui-test \
-	        test-scripts gate-minisign ci ci-full check-windows-target audit contract purity-check rust-notices-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer publish-origin publish publish-r2 \
+	        test-scripts gate-minisign ci ci-full i18n-dev check-windows-target audit contract purity-check rust-notices-check check-observer-contract check-rust-release-manifest check-release-advisory-config package prove-rust-release-native publish-transparency resign-transparency-pointer publish-origin publish publish-r2 \
 	        publish-winget publish-scoop publish-packages check-channels \
 	        pull-releases require-win-remote-host sync-win-host win-host-ci \
 	        smoke screenshots journal-live brand-sync help
@@ -186,6 +186,9 @@ ci-full:
 	$(MAKE) ci
 	$(MAKE) check-release-advisory-config
 	$(MAKE) win-host-ci
+
+i18n-dev:
+	node scripts/i18n.mjs --channel development
 
 # Verify the signed advisory packet and self-contained bundle, then check the
 # locked graph against the contained database with network access disabled.
