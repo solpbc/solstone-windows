@@ -1328,15 +1328,21 @@ pub fn run(
                                     })
                                 }
                                 platform_win::SystemNotification::Suspending => {
+                                    crate::import::on_system_suspending();
                                     Some(EngineCommand::Pause {
                                         reason: PauseReason::SystemSuspending,
                                         duration_secs: None,
                                     })
                                 }
+                                platform_win::SystemNotification::ResumedAutomatic => {
+                                    crate::import::on_system_resumed();
+                                    None
+                                }
                                 // Ends the lock/suspend pause only; an owner's
                                 // pause holds until the owner resumes.
                                 platform_win::SystemNotification::SessionUnlocked
                                 | platform_win::SystemNotification::Resumed => {
+                                    crate::import::on_system_resumed();
                                     if platform_win::is_session_eligible() {
                                         Some(EngineCommand::SystemResume)
                                     } else {

@@ -4,6 +4,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- while an import was on its way to your journal, your PC could fall asleep from sitting idle and cut the transfer off. the solstone app now asks windows to stay awake while an import is going to your journal. if you put your PC to sleep, the transfer stops and starts again when your PC wakes.
+
 ## [2.0.58] - 2026-11-24
 
 ### Changed

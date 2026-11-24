@@ -25,10 +25,22 @@ pub use pl_transport_win::import_store::{Document, Row};
 
 static SERVICE: OnceLock<Arc<Service>> = OnceLock::new();
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct PowerState {
+    suspended: bool,
+    suspend_epoch: u64,
+}
+
+enum DeliveryStep<T> {
+    Completed(T),
+    PausedForSleep,
+}
+
 struct Service {
     store: Mutex<Option<Store>>,
     intake_lock: tokio::sync::Mutex<()>,
     wake: Notify,
+    power: watch::Sender<PowerState>,
     changes: watch::Sender<()>,
     identity: Mutex<Option<(String, String)>>,
     auth_blocked: Mutex<Option<String>>,
@@ -152,6 +164,84 @@ pub fn trigger_reconcile() {
     }
 }
 
+/// Pause active import delivery and release any awake hold when Windows suspends.
+pub fn on_system_suspending() {
+    if let Some(service) = SERVICE.get() {
+        mark_suspending(&service.power);
+    }
+}
+
+/// Resume paused import delivery promptly after Windows wakes from sleep.
+pub fn on_system_resumed() {
+    if let Some(service) = SERVICE.get() {
+        mark_resumed(&service.power);
+        service.reconcile_requested.store(true, Ordering::Release);
+        service.wake.notify_one();
+    }
+}
+
+fn mark_suspending(power: &watch::Sender<PowerState>) {
+    power.send_modify(|state| {
+        state.suspended = true;
+        state.suspend_epoch = state.suspend_epoch.wrapping_add(1);
+    });
+}
+
+fn mark_resumed(power: &watch::Sender<PowerState>) {
+    power.send_modify(|state| {
+        state.suspended = false;
+    });
+}
+
+/// Run one item's upload while holding an OS awake guard, cancelling the work
+/// and dropping the guard on any exit path or system-suspend transition.
+async fn run_while_awake<H, F, Fut, T>(
+    power_rx: &mut watch::Receiver<PowerState>,
+    acquire_hold: F,
+    work: Fut,
+) -> DeliveryStep<T>
+where
+    F: FnOnce() -> H,
+    Fut: std::future::Future<Output = T>,
+{
+    let start = *power_rx.borrow_and_update();
+    if start.suspended {
+        return DeliveryStep::PausedForSleep;
+    }
+    let _hold = acquire_hold();
+    let after_acquire = *power_rx.borrow();
+    if after_acquire.suspended || after_acquire.suspend_epoch != start.suspend_epoch {
+        return DeliveryStep::PausedForSleep;
+    }
+    let start_epoch = start.suspend_epoch;
+    tokio::select! {
+        biased;
+        _ = power_rx.wait_for(|state| state.suspended || state.suspend_epoch != start_epoch) => {
+            DeliveryStep::PausedForSleep
+        }
+        outcome = work => DeliveryStep::Completed(outcome),
+    }
+}
+
+async fn wait_for_next_pass(
+    power_rx: &mut watch::Receiver<PowerState>,
+    wake: &Notify,
+    poll_interval: Duration,
+) {
+    if power_rx.borrow().suspended {
+        let _ = power_rx.wait_for(|state| !state.suspended).await;
+        return;
+    }
+    let suspended = tokio::select! {
+        _ = wake.notified() => false,
+        _ = tokio::time::sleep(poll_interval) => false,
+        res = power_rx.wait_for(|state| state.suspended) => res.is_ok(),
+    };
+    if suspended {
+        let _ = power_rx.wait_for(|state| !state.suspended).await;
+    }
+}
+
 pub fn start(app: tauri::AppHandle, counters: Option<source_counters::SharedCounters>) {
     let root = platform_win::local_data_root().join("import");
     let store = match Store::open(root) {
@@ -161,11 +251,13 @@ pub fn start(app: tauri::AppHandle, counters: Option<source_counters::SharedCoun
             None
         }
     };
+    let (power, _) = watch::channel(PowerState::default());
     let (changes, _) = watch::channel(());
     let service = Arc::new(Service {
         store: Mutex::new(store),
         intake_lock: tokio::sync::Mutex::new(()),
         wake: Notify::new(),
+        power,
         changes,
         identity: Mutex::new(None),
         auth_blocked: Mutex::new(None),
@@ -174,16 +266,23 @@ pub fn start(app: tauri::AppHandle, counters: Option<source_counters::SharedCoun
         reconcile_requested: AtomicBool::new(true),
     });
     let _ = SERVICE.set(service.clone());
+    let wake_on_network = Arc::downgrade(&service);
+    platform_win::on_network_available(Arc::new(move || {
+        if let Some(service) = wake_on_network.upgrade() {
+            if !service.power.borrow().suspended {
+                service.reconcile_requested.store(true, Ordering::Release);
+                service.wake.notify_one();
+            }
+        }
+    }));
+    let mut power_rx = service.power.subscribe();
     tauri::async_runtime::spawn(async move {
         loop {
-            if let Err(error) = deliver_pass(&app, &service).await {
+            if let Err(error) = deliver_pass(&app, &service, &mut power_rx).await {
                 tracing::warn!(target: "import", %error, "import delivery retained its local copy");
             }
             publish(&app, &service);
-            tokio::select! {
-                _ = service.wake.notified() => {},
-                _ = tokio::time::sleep(Duration::from_secs(30)) => {},
-            }
+            wait_for_next_pass(&mut power_rx, &service.wake, Duration::from_secs(30)).await;
         }
     });
 }
@@ -208,7 +307,7 @@ async fn reconcile_reviews(
         store.review_candidates(journal)
     };
     for (item_id, import_id) in candidates {
-        if !same_client(app, client).await {
+        if service.power.borrow().suspended || !same_client(app, client).await {
             break;
         }
         match client.import_status(&import_id).await {
@@ -247,7 +346,14 @@ async fn reconcile_reviews(
     Ok(())
 }
 
-async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Result<()> {
+async fn deliver_pass(
+    app: &tauri::AppHandle,
+    service: &Service,
+    power_rx: &mut watch::Receiver<PowerState>,
+) -> std::io::Result<()> {
+    if power_rx.borrow().suspended {
+        return Ok(());
+    }
     let sync = current_sync(app);
     let Some(client) = client(app).await else {
         return Ok(());
@@ -305,6 +411,9 @@ async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Res
         }
     }
 
+    if power_rx.borrow().suspended {
+        return Ok(());
+    }
     let mut client = client;
     let mut sync = current_sync(app);
     if !sync.journal_version_fresh
@@ -376,7 +485,7 @@ async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Res
         items.into_iter().map(|item| item.id.clone()).collect()
     };
     for id in ids {
-        if !same_client(app, &client).await {
+        if power_rx.borrow().suspended || !same_client(app, &client).await {
             break;
         }
         let (mut item, payload) = {
@@ -398,7 +507,16 @@ async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Res
             (item, store.payload(&id))
         };
         publish(app, service);
-        let result: std::io::Result<Option<Result<ImportReply, pl_transport_win::RouteError>>> =
+        let step: DeliveryStep<
+            std::io::Result<Option<Result<ImportReply, pl_transport_win::RouteError>>>,
+        > = run_while_awake(
+            power_rx,
+            || {
+                platform_win::power_hold::PowerHold::acquire(&message(
+                    "windows.import.rowsending",
+                    &[],
+                ))
+            },
             async {
                 if item.progress_for(&journal).is_none() {
                     let reply = client
@@ -440,8 +558,30 @@ async fn deliver_pass(app: &tauri::AppHandle, service: &Service) -> std::io::Res
                         .start_import(item.progress_for(&journal).expect("saved progress"))
                         .await,
                 ))
+            },
+        )
+        .await;
+        let result = match step {
+            DeliveryStep::Completed(result) => result,
+            DeliveryStep::PausedForSleep => {
+                {
+                    let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(store) = guard.as_mut() {
+                        store.active = None;
+                    }
+                }
+                tracing::info!(
+                    target: "import",
+                    item = %id,
+                    "import delivery paused for system sleep; will resume on wake"
+                );
+                publish(app, service);
+                if !power_rx.borrow().suspended {
+                    service.wake.notify_one();
+                }
+                break;
             }
-            .await;
+        };
         {
             let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
             let Some(store) = guard.as_mut() else {
@@ -652,6 +792,7 @@ async fn intake(
         }
     }
     publish(app, service);
+    mark_resumed(&service.power);
     service.wake.notify_one();
     Some((accepted, declined))
 }
@@ -705,6 +846,7 @@ pub fn retry(app: &tauri::AppHandle, id: &str) -> std::io::Result<()> {
             store.retry(id)?;
         }
         publish(app, service);
+        mark_resumed(&service.power);
         service.wake.notify_one();
     }
     Ok(())
@@ -721,6 +863,7 @@ pub fn send_again(app: &tauri::AppHandle, id: &str) -> std::io::Result<()> {
             store.send_again(id)?;
         }
         publish(app, service);
+        mark_resumed(&service.power);
         service.wake.notify_one();
     }
     Ok(())
@@ -861,11 +1004,13 @@ mod tests {
     #[test]
     fn pending_delivery_probe_ignores_empty_review_refused_missing_and_confirming_remove_items() {
         let root = tempfile::tempdir().unwrap();
+        let (power, _) = watch::channel(PowerState::default());
         let (changes, _) = watch::channel(());
         let mut service = Service {
             store: Mutex::new(None),
             intake_lock: tokio::sync::Mutex::new(()),
             wake: Notify::new(),
+            power,
             changes,
             identity: Mutex::new(None),
             auth_blocked: Mutex::new(None),
@@ -963,5 +1108,200 @@ mod tests {
             .prepare_remove(&id)
             .unwrap();
         assert!(!has_pending_delivery_items(&service, "one"));
+    }
+
+    struct ProbeHold {
+        active: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ProbeHold {
+        fn acquire(active: &Arc<std::sync::atomic::AtomicUsize>) -> Self {
+            active.fetch_add(1, Ordering::AcqRel);
+            Self {
+                active: active.clone(),
+            }
+        }
+    }
+
+    impl Drop for ProbeHold {
+        fn drop(&mut self) {
+            self.active.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    #[tokio::test]
+    async fn active_delivery_acquires_power_hold_and_releases_on_normal_and_error_exits() {
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (power_tx, mut power_rx) = watch::channel(PowerState::default());
+
+        let active_in_ok = active.clone();
+        let ok_step = run_while_awake(&mut power_rx, || ProbeHold::acquire(&active), async move {
+            assert_eq!(active_in_ok.load(Ordering::Acquire), 1);
+            Ok::<&str, &str>("delivered")
+        })
+        .await;
+        assert!(matches!(ok_step, DeliveryStep::Completed(Ok("delivered"))));
+        assert_eq!(active.load(Ordering::Acquire), 0);
+
+        let active_in_err = active.clone();
+        let err_step = run_while_awake(&mut power_rx, || ProbeHold::acquire(&active), async move {
+            assert_eq!(active_in_err.load(Ordering::Acquire), 1);
+            Err::<&str, &str>("transient")
+        })
+        .await;
+        assert!(matches!(
+            err_step,
+            DeliveryStep::Completed(Err("transient"))
+        ));
+        assert_eq!(active.load(Ordering::Acquire), 0);
+
+        drop(power_tx);
+    }
+
+    #[tokio::test]
+    async fn system_suspend_pauses_active_delivery_releases_hold_and_resumes_on_wake() {
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (power_tx, mut power_rx) = watch::channel(PowerState::default());
+        let wake = Arc::new(Notify::new());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+
+        struct DropSignal(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for DropSignal {
+            fn drop(&mut self) {
+                if let Some(tx) = self.0.take() {
+                    let _ = tx.send(());
+                }
+            }
+        }
+
+        let active_for_task = active.clone();
+        let task = tokio::spawn(async move {
+            let step = run_while_awake(
+                &mut power_rx,
+                || ProbeHold::acquire(&active_for_task),
+                async move {
+                    let _drop_guard = DropSignal(Some(dropped_tx));
+                    let _ = started_tx.send(());
+                    std::future::pending::<()>().await;
+                },
+            )
+            .await;
+            (step, power_rx)
+        });
+
+        started_rx.await.unwrap();
+        assert_eq!(active.load(Ordering::Acquire), 1);
+
+        mark_suspending(&power_tx);
+        let (step, mut power_rx) = task.await.unwrap();
+        assert!(matches!(step, DeliveryStep::PausedForSleep));
+        dropped_rx.await.unwrap();
+        assert_eq!(active.load(Ordering::Acquire), 0);
+
+        // Starting another attempt while still suspended never acquires a hold.
+        let skipped = run_while_awake(&mut power_rx, || ProbeHold::acquire(&active), async {
+            panic!("work must not run while suspended");
+        })
+        .await;
+        assert!(matches!(skipped, DeliveryStep::PausedForSleep));
+        assert_eq!(active.load(Ordering::Acquire), 0);
+
+        // Even with a pending wake permit, the wait stays parked until resume.
+        wake.notify_one();
+        let wake_for_wait = wake.clone();
+        let waiter = tokio::spawn(async move {
+            wait_for_next_pass(&mut power_rx, &wake_for_wait, Duration::from_secs(30)).await;
+            power_rx
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!waiter.is_finished());
+
+        mark_resumed(&power_tx);
+        let mut power_rx = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("waiter should wake immediately on resume")
+            .unwrap();
+
+        // After wake, a new delivery acquires the hold and completes cleanly.
+        let active_after = active.clone();
+        let resumed = run_while_awake(&mut power_rx, || ProbeHold::acquire(&active), async move {
+            assert_eq!(active_after.load(Ordering::Acquire), 1);
+            42u32
+        })
+        .await;
+        assert!(matches!(resumed, DeliveryStep::Completed(42)));
+        assert_eq!(active.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn back_to_back_suspend_and_resume_still_cancels_stale_in_flight_delivery() {
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (power_tx, mut power_rx) = watch::channel(PowerState::default());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+
+        let active_for_task = active.clone();
+        let task = tokio::spawn(async move {
+            run_while_awake(
+                &mut power_rx,
+                || ProbeHold::acquire(&active_for_task),
+                async move {
+                    let _ = started_tx.send(());
+                    std::future::pending::<()>().await;
+                },
+            )
+            .await
+        });
+
+        started_rx.await.unwrap();
+        assert_eq!(active.load(Ordering::Acquire), 1);
+
+        // Simulates Suspending + ResumedAutomatic drained in the same pump batch.
+        mark_suspending(&power_tx);
+        mark_resumed(&power_tx);
+
+        let step = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("stale in-flight upload must cancel across a suspend epoch")
+            .unwrap();
+        assert!(matches!(step, DeliveryStep::PausedForSleep));
+        assert_eq!(active.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn resumed_while_already_awake_does_not_abort_fresh_delivery() {
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (power_tx, mut power_rx) = watch::channel(PowerState::default());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+
+        let active_for_task = active.clone();
+        let task = tokio::spawn(async move {
+            run_while_awake(
+                &mut power_rx,
+                || ProbeHold::acquire(&active_for_task),
+                async move {
+                    let _ = started_tx.send(());
+                    finish_rx.await.unwrap();
+                    "finished"
+                },
+            )
+            .await
+        });
+
+        started_rx.await.unwrap();
+        assert_eq!(active.load(Ordering::Acquire), 1);
+
+        // Simulates PBT_APMRESUMESUSPEND or SessionUnlocked arriving after a
+        // fresh post-wake delivery already began on PBT_APMRESUMEAUTOMATIC.
+        mark_resumed(&power_tx);
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished());
+        assert_eq!(active.load(Ordering::Acquire), 1);
+
+        finish_tx.send(()).unwrap();
+        let step = task.await.unwrap();
+        assert!(matches!(step, DeliveryStep::Completed("finished")));
+        assert_eq!(active.load(Ordering::Acquire), 0);
     }
 }

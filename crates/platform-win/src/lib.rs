@@ -55,6 +55,8 @@ pub mod local_port;
 pub mod log_save;
 #[allow(unsafe_code)]
 pub mod notice;
+/// RAII handle-based Windows power request guard for active import delivery.
+pub mod power_hold;
 pub mod scheme;
 /// Windows' Screenshots folder, the folder listing and WIC conversion.
 #[allow(unsafe_code)]
@@ -539,12 +541,22 @@ pub fn on_mains_power() -> bool {
     }
 }
 
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn connectivity_became_available(prev: i32, next: i32, unknown: i32, none: i32) -> bool {
+    prev != unknown && next != none && next != unknown && next != prev
+}
+
 /// False only while Windows reports that this PC has no network at all. Any
 /// other reading, including none yet or one Windows cannot give, is true.
 #[cfg(not(windows))]
 pub fn network_available() -> bool {
     true
 }
+
+/// Register a lightweight, non-blocking wake callback invoked whenever Windows
+/// reports network connectivity becoming available or changing while available.
+#[cfg(not(windows))]
+pub fn on_network_available(_callback: std::sync::Arc<dyn Fn() + Send + Sync>) {}
 
 /// False only while Windows reports that this PC has no network at all. Any
 /// other reading, including none yet or one Windows cannot give, is true.
@@ -555,11 +567,18 @@ pub fn network_available() -> bool {
     network_hint::available()
 }
 
+/// Register a lightweight, non-blocking wake callback invoked whenever Windows
+/// reports network connectivity becoming available or changing while available.
+#[cfg(windows)]
+pub fn on_network_available(callback: std::sync::Arc<dyn Fn() + Send + Sync>) {
+    network_hint::on_available(callback);
+}
+
 #[cfg(windows)]
 #[allow(unsafe_code)]
 mod network_hint {
     use std::sync::atomic::{AtomicI32, Ordering};
-    use std::sync::Once;
+    use std::sync::{Arc, Mutex, Once, OnceLock};
 
     use windows::Win32::Foundation::{BOOLEAN, HANDLE, NO_ERROR};
     use windows::Win32::NetworkManagement::IpHelper::NotifyNetworkConnectivityHintChange;
@@ -568,22 +587,45 @@ mod network_hint {
         NL_NETWORK_CONNECTIVITY_HINT,
     };
 
+    type WakeCallback = Arc<dyn Fn() + Send + Sync>;
+
     static LEVEL: AtomicI32 = AtomicI32::new(NetworkConnectivityLevelHintUnknown.0);
     static SUBSCRIBE: Once = Once::new();
+    static CALLBACKS: OnceLock<Mutex<Vec<WakeCallback>>> = OnceLock::new();
+
+    fn callbacks() -> &'static Mutex<Vec<WakeCallback>> {
+        CALLBACKS.get_or_init(|| Mutex::new(Vec::new()))
+    }
 
     unsafe extern "system" fn changed(
         _context: *const core::ffi::c_void,
         hint: NL_NETWORK_CONNECTIVITY_HINT,
     ) {
-        LEVEL.store(hint.ConnectivityLevel.0, Ordering::Relaxed);
+        let next = hint.ConnectivityLevel.0;
+        let prev = LEVEL.swap(next, Ordering::AcqRel);
+        if super::connectivity_became_available(
+            prev,
+            next,
+            NetworkConnectivityLevelHintUnknown.0,
+            NetworkConnectivityLevelHintNone.0,
+        ) {
+            let listeners = callbacks()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            for listener in listeners {
+                listener();
+            }
+        }
     }
 
-    pub(super) fn available() -> bool {
+    fn ensure_subscribed() {
         SUBSCRIBE.call_once(|| {
             let mut handle = HANDLE::default();
-            // SAFETY: `changed` matches the callback signature and only stores
-            // an atomic; `handle` is a valid out-pointer. The subscription is
-            // kept for the life of the process and never cancelled.
+            // SAFETY: `changed` matches the callback signature and only updates
+            // atomic state + registered wake callbacks; `handle` is a valid
+            // out-pointer. The subscription is kept for the life of the process
+            // and never cancelled.
             let status = unsafe {
                 NotifyNetworkConnectivityHintChange(
                     Some(changed),
@@ -600,7 +642,19 @@ mod network_hint {
                 );
             }
         });
-        LEVEL.load(Ordering::Relaxed) != NetworkConnectivityLevelHintNone.0
+    }
+
+    pub(super) fn on_available(callback: WakeCallback) {
+        callbacks()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(callback);
+        ensure_subscribed();
+    }
+
+    pub(super) fn available() -> bool {
+        ensure_subscribed();
+        LEVEL.load(Ordering::Acquire) != NetworkConnectivityLevelHintNone.0
     }
 }
 
@@ -798,7 +852,11 @@ pub enum SystemNotification {
     SessionUnlocked,
     DisplayChanged,
     Suspending,
+    /// Interactive wake (`PBT_APMRESUMESUSPEND`).
     Resumed,
+    /// Automatic wake (`PBT_APMRESUMEAUTOMATIC`), sent on every wake from S3 or
+    /// Modern Standby before (or without) user presence.
+    ResumedAutomatic,
     /// The owner pressed the configured global pause/resume hotkey. The shell maps
     /// this to a pause/resume toggle.
     HotkeyPressed,
@@ -845,10 +903,13 @@ mod notification_pump {
     use observer_hotkey::{HotkeyConfig, HotkeyRegistration};
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{
-        GetLastError, ERROR_CLASS_ALREADY_EXISTS, ERROR_HOTKEY_ALREADY_REGISTERED, HINSTANCE, HWND,
-        LPARAM, LRESULT, WPARAM,
+        GetLastError, ERROR_CLASS_ALREADY_EXISTS, ERROR_HOTKEY_ALREADY_REGISTERED, HANDLE,
+        HINSTANCE, HWND, LPARAM, LRESULT, WPARAM,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::System::Power::{
+        RegisterSuspendResumeNotification, UnregisterSuspendResumeNotification, HPOWERNOTIFY,
+    };
     use windows::Win32::System::RemoteDesktop::{
         WTSRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
     };
@@ -859,10 +920,11 @@ mod notification_pump {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, MsgWaitForMultipleObjectsEx,
-        PeekMessageW, PostThreadMessageW, RegisterClassW, TranslateMessage, MSG,
-        MWMO_INPUTAVAILABLE, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PM_REMOVE, QS_ALLINPUT,
-        WINDOW_STYLE, WM_APP, WM_DISPLAYCHANGE, WM_HOTKEY, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE,
-        WNDCLASSW, WS_EX_TOOLWINDOW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+        PeekMessageW, PostThreadMessageW, RegisterClassW, TranslateMessage,
+        DEVICE_NOTIFY_WINDOW_HANDLE, MSG, MWMO_INPUTAVAILABLE, PBT_APMRESUMEAUTOMATIC,
+        PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PM_REMOVE, QS_ALLINPUT, WINDOW_STYLE, WM_APP,
+        WM_DISPLAYCHANGE, WM_HOTKEY, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WNDCLASSW,
+        WS_EX_TOOLWINDOW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
     };
 
     use super::{SystemNotification, HOTKEY_ID};
@@ -874,6 +936,7 @@ mod notification_pump {
     struct WindowSetup {
         hwnd: HWND,
         degraded: bool,
+        power_notify: Option<HPOWERNOTIFY>,
     }
 
     fn queue() -> &'static Mutex<Vec<SystemNotification>> {
@@ -907,20 +970,43 @@ mod notification_pump {
             .unwrap_or_default()
         };
         let mut degraded = false;
+        let mut power_notify = None;
         if hwnd.is_invalid() {
             tracing::error!(target: "pump", "CreateWindowExW failed; pump degraded");
             degraded = true;
-        } else if let Err(err) =
-            unsafe { WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) }
-        {
-            tracing::error!(
-                target: "pump",
-                %err,
-                "WTSRegisterSessionNotification failed; lock/unlock will not arrive"
-            );
-            degraded = true;
+        } else {
+            if let Err(err) =
+                unsafe { WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) }
+            {
+                tracing::error!(
+                    target: "pump",
+                    %err,
+                    "WTSRegisterSessionNotification failed; lock/unlock will not arrive"
+                );
+                degraded = true;
+            }
+            // Modern Standby (S0ix) delivers WM_POWERBROADCAST suspend/resume
+            // notices only to windows explicitly registered here. Failure is
+            // logged without marking `degraded` so the lock-screen privacy gate
+            // is unaffected.
+            match unsafe {
+                RegisterSuspendResumeNotification(HANDLE(hwnd.0), DEVICE_NOTIFY_WINDOW_HANDLE)
+            } {
+                Ok(handle) => power_notify = Some(handle),
+                Err(err) => {
+                    tracing::warn!(
+                        target: "pump",
+                        %err,
+                        "RegisterSuspendResumeNotification failed; Modern Standby sleep/wake notices may not arrive"
+                    );
+                }
+            }
         }
-        WindowSetup { hwnd, degraded }
+        WindowSetup {
+            hwnd,
+            degraded,
+            power_notify,
+        }
     }
 
     unsafe extern "system" fn wnd_proc(
@@ -940,6 +1026,9 @@ mod notification_pump {
             WM_POWERBROADCAST if wparam.0 == PBT_APMSUSPEND as usize => {
                 Some(SystemNotification::Suspending)
             }
+            WM_POWERBROADCAST if wparam.0 == PBT_APMRESUMEAUTOMATIC as usize => {
+                Some(SystemNotification::ResumedAutomatic)
+            }
             WM_POWERBROADCAST if wparam.0 == PBT_APMRESUMESUSPEND as usize => {
                 Some(SystemNotification::Resumed)
             }
@@ -950,7 +1039,11 @@ mod notification_pump {
         };
         if let Some(notification) = notification {
             queue().lock().unwrap().push(notification);
-            return LRESULT(0);
+            return if msg == WM_POWERBROADCAST {
+                LRESULT(1)
+            } else {
+                LRESULT(0)
+            };
         }
         DefWindowProcW(hwnd, msg, wparam, lparam)
     }
@@ -1013,6 +1106,7 @@ mod notification_pump {
     pub struct NotificationPump {
         hwnd: HWND,
         degraded: bool,
+        power_notify: Option<HPOWERNOTIFY>,
         hotkey: Option<HotkeyBinding>,
         thread: u32,
     }
@@ -1053,6 +1147,7 @@ mod notification_pump {
             Self {
                 hwnd: setup.hwnd,
                 degraded: setup.degraded,
+                power_notify: setup.power_notify,
                 hotkey: None,
                 thread: unsafe { GetCurrentThreadId() },
             }
@@ -1070,6 +1165,7 @@ mod notification_pump {
             Self {
                 hwnd: setup.hwnd,
                 degraded: setup.degraded,
+                power_notify: setup.power_notify,
                 hotkey: Some(HotkeyBinding {
                     desired,
                     outcome,
@@ -1127,6 +1223,7 @@ mod notification_pump {
                 WindowSetup {
                     hwnd: built.hwnd,
                     degraded: register_degraded || built.degraded,
+                    power_notify: built.power_notify,
                 }
             }
         }
@@ -1185,6 +1282,11 @@ mod notification_pump {
 
     impl Drop for NotificationPump {
         fn drop(&mut self) {
+            if let Some(handle) = self.power_notify.take() {
+                unsafe {
+                    let _ = UnregisterSuspendResumeNotification(handle);
+                }
+            }
             if let Some(binding) = &self.hotkey {
                 if binding.registered {
                     unsafe {
@@ -1198,10 +1300,14 @@ mod notification_pump {
     #[cfg(all(test, windows))]
     mod tests {
         use super::*;
-        use windows::Win32::UI::WindowsAndMessaging::{GetParent, IsWindowVisible};
+        use windows::Win32::UI::WindowsAndMessaging::{GetParent, IsWindowVisible, SendMessageW};
+
+        // Serialize tests that inspect the process-global notification `QUEUE`.
+        static QUEUE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
         #[test]
         fn pump_window_is_hidden_top_level() {
+            let _serial = QUEUE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let pump = NotificationPump::new();
 
             assert!(!pump.hwnd.is_invalid());
@@ -1210,16 +1316,20 @@ mod notification_pump {
                 .is_invalid());
             assert!(!unsafe { IsWindowVisible(pump.hwnd).as_bool() });
             assert!(!pump.is_degraded());
+            assert!(pump.power_notify.is_some());
         }
 
         #[test]
         fn build_window_degrades_on_unregistered_class() {
+            let _serial = QUEUE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let setup = build_window(&wide_z("SolstonePumpNeverRegisteredXYZ"));
             assert!(setup.degraded);
+            assert!(setup.power_notify.is_none());
 
             let mut pump = NotificationPump {
                 hwnd: setup.hwnd,
                 degraded: setup.degraded,
+                power_notify: setup.power_notify,
                 hotkey: None,
                 thread: unsafe { GetCurrentThreadId() },
             };
@@ -1228,7 +1338,54 @@ mod notification_pump {
         }
 
         #[test]
+        fn pump_registers_suspend_resume_and_delivers_power_broadcasts() {
+            let _serial = QUEUE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pump = NotificationPump::new();
+            assert!(pump.power_notify.is_some());
+            // Drain anything queued before this test started.
+            let _ = pump.poll();
+
+            let r_suspend = unsafe {
+                SendMessageW(
+                    pump.hwnd,
+                    WM_POWERBROADCAST,
+                    WPARAM(PBT_APMSUSPEND as usize),
+                    LPARAM(0),
+                )
+            };
+            let r_auto = unsafe {
+                SendMessageW(
+                    pump.hwnd,
+                    WM_POWERBROADCAST,
+                    WPARAM(PBT_APMRESUMEAUTOMATIC as usize),
+                    LPARAM(0),
+                )
+            };
+            let r_interactive = unsafe {
+                SendMessageW(
+                    pump.hwnd,
+                    WM_POWERBROADCAST,
+                    WPARAM(PBT_APMRESUMESUSPEND as usize),
+                    LPARAM(0),
+                )
+            };
+            assert_eq!(r_suspend, LRESULT(1));
+            assert_eq!(r_auto, LRESULT(1));
+            assert_eq!(r_interactive, LRESULT(1));
+
+            assert_eq!(
+                pump.poll(),
+                vec![
+                    SystemNotification::Suspending,
+                    SystemNotification::ResumedAutomatic,
+                    SystemNotification::Resumed,
+                ]
+            );
+        }
+
+        #[test]
         fn a_drained_pump_sleeps_until_it_is_woken() {
+            let _serial = QUEUE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let mut pump = NotificationPump::new();
             let waker = pump.waker();
             pump.poll();
@@ -3183,5 +3340,38 @@ mod tests {
         assert!(sealed_dir.join(".uploaded").exists());
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn connectivity_transition_fires_only_when_network_becomes_or_changes_available() {
+        const UNKNOWN: i32 = 0;
+        const NONE: i32 = 1;
+        const LOCAL: i32 = 2;
+        const INTERNET: i32 = 3;
+
+        // Initial reading from Unknown never spurs a spurious wake.
+        assert!(!connectivity_became_available(
+            UNKNOWN, INTERNET, UNKNOWN, NONE
+        ));
+        assert!(!connectivity_became_available(UNKNOWN, NONE, UNKNOWN, NONE));
+
+        // Dropping offline or staying unchanged does not fire.
+        assert!(!connectivity_became_available(
+            INTERNET, NONE, UNKNOWN, NONE
+        ));
+        assert!(!connectivity_became_available(
+            INTERNET, INTERNET, UNKNOWN, NONE
+        ));
+        assert!(!connectivity_became_available(NONE, NONE, UNKNOWN, NONE));
+
+        // Coming back online or changing between available levels fires.
+        assert!(connectivity_became_available(NONE, INTERNET, UNKNOWN, NONE));
+        assert!(connectivity_became_available(NONE, LOCAL, UNKNOWN, NONE));
+        assert!(connectivity_became_available(
+            LOCAL, INTERNET, UNKNOWN, NONE
+        ));
+        assert!(connectivity_became_available(
+            INTERNET, LOCAL, UNKNOWN, NONE
+        ));
     }
 }

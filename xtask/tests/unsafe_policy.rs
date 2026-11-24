@@ -180,11 +180,21 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         owner: None,
     },
     // One subscription to the connectivity hint, kept for the process; the
-    // callback only stores the level in an atomic.
+    // callback stores the level in an atomic and notifies non-blocking wake listeners.
     ApprovedNode {
         path: "crates/platform-win/src/lib.rs",
         kind: ApprovedKind::Mod,
         name: "network_hint",
+        owner: None,
+    },
+    // Handle-based PowerCreateRequest / PowerSetRequest / PowerClearRequest /
+    // CloseHandle for active import delivery. REASON_CONTEXT borrows an owned
+    // NUL-terminated UTF-16 buffer only for PowerCreateRequest; the handle is
+    // process-scoped (Send) and cleared/closed once in release/Drop.
+    ApprovedNode {
+        path: "crates/platform-win/src/power_hold.rs",
+        kind: ApprovedKind::Mod,
+        name: "imp",
         owner: None,
     },
     // Query Windows.Networking.Connectivity for connection cost / metered status.
