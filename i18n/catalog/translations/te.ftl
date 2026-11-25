@@ -47,7 +47,7 @@ windows.desktop.shared.about.opensourcelocalfirst = ఓపెన్ సోర్
 
 windows.desktop.shared.about.pendingsettingstab = journal
 
-windows.desktop.shared.about.setupwelcomebody1 = solstone యాప్ మీరు దానితో పంచుకున్నదాన్ని స్వీకరిస్తుంది, అంతా మీ జర్నల్‌లోకి వెళ్తుంది.
+windows.desktop.shared.about.setupwelcomebody1 = solstone యాప్ మీరు పంచుకున్నదాన్ని స్వీకరిస్తుంది, మరియు అంతా మీ జర్నల్‌లోకి వెళుతుంది.
 
 windows.desktop.shared.about.textcontent = కాపీ చేయండి
 
@@ -63,7 +63,7 @@ windows.desktop.shared.app.justnow = ఇప్పుడే
 
 windows.desktop.shared.app.microphonemodeoff = ఆఫ్
 
-windows.desktop.shared.app.notpaired = పెయిర్ అయి లేదు
+windows.desktop.shared.app.notpaired = పెయిర్ కాలేదు
 
 windows.desktop.shared.app.offlinetitle = మీ జర్నల్‌తో కనెక్ట్ కాలేదు
 
@@ -75,11 +75,11 @@ windows.desktop.shared.copy.audiosourcesystem = సిస్టమ్ ఆడి�
 
 windows.desktop.shared.copy.checkagain = మళ్ళీ సరిచూడండి
 
-windows.desktop.shared.copy.choosedevice = ఒక పరికరం ఎంచుకోండి
+windows.desktop.shared.copy.choosedevice = ఒక పరికరాన్ని ఎంచుకోండి
 
 windows.desktop.shared.copy.decidingtitle = మీ ఎంపిక సేవ్ అవుతోంది
 
-windows.desktop.shared.copy.decisionrefusedbody = మీ జర్నల్ ఈ ఎంపికను అమలు చేయలేకపోయింది. మీ ప్రస్తుత కనెక్షన్ ఇంకా పనిచేస్తుంది.
+windows.desktop.shared.copy.decisionrefusedbody = మీ జర్నల్ ఈ ఎంపికను అమలు చేయలేకపోయింది. మీ ప్రస్తుత కనెక్షన్ ఇంకా పని చేస్తోంది.
 
 windows.desktop.shared.copy.decisionrefusedtitle = ఎంపికకు శ్రద్ధ కావాలి
 
@@ -87,13 +87,13 @@ windows.desktop.shared.copy.decisionunknownbody = మీ జర్నల్ ఇ�
 
 windows.desktop.shared.copy.decisionunknowntitle = మీ ఎంపికను సరిచూస్తోంది
 
-windows.desktop.shared.copy.deferchoice = ఇప్పుడు వద్దు
+windows.desktop.shared.copy.deferchoice = ఇప్పుడు కాదు
 
 windows.desktop.shared.copy.journalmarkconfirmbutton = అవును, ఇది నా జర్నల్
 
 windows.desktop.shared.copy.journalmarkconfirmquestion = ఇది మీ జర్నల్‌తో సరిపోతుందా?
 
-windows.desktop.shared.copy.journalmarkmismatchbutton = ఇది సరిపోలేదు
+windows.desktop.shared.copy.journalmarkmismatchbutton = అది సరిపోదు
 
 windows.desktop.shared.copy.journalmarkunverifiedcancelbutton = పెయిరింగ్ రద్దు చేయండి
 
@@ -101,15 +101,15 @@ windows.desktop.shared.copy.journalmarkunverifiedcontinuebutton = అయిన�
 
 windows.desktop.shared.copy.journalmarkunverifiedtitle = ధృవీకరించలేకపోయింది
 
-windows.desktop.shared.copy.keepboth = రెండూ ఉంచుకోండి
+windows.desktop.shared.copy.keepboth = రెండూ ఉంచండి
 
-windows.desktop.shared.copy.listunavailablebody = మీ జర్నల్‌లోని పరికరాలను లోడ్ చేయలేకపోయింది. మీ జర్నల్‌తో కనెక్ట్ అయినప్పుడు మళ్ళీ ప్రయత్నించండి.
+windows.desktop.shared.copy.listunavailablebody = మీ జర్నల్‌లోని పరికరాలను లోడ్ చేయలేకపోయింది. మీ జర్నల్ కనెక్ట్ అవ్వగలిగినప్పుడు మళ్ళీ ప్రయత్నించండి.
 
 windows.desktop.shared.copy.listunavailabletitle = పరికరాలు అందుబాటులో లేవు
 
 windows.desktop.shared.copy.offlinebody = పంపడానికి వేచి ఉన్నది ఈ PC‌లో ఉంటుంది. మీ జర్నల్‌తో కనెక్ట్ అయినప్పుడు మళ్ళీ ప్రయత్నించండి.
 
-windows.desktop.shared.copy.pickerempty = ఇతర పెయిర్ అయిన పరికరాలు లేవు
+windows.desktop.shared.copy.pickerempty = పెయిర్ అయిన ఇతర పరికరాలు లేవు
 
 windows.desktop.shared.copy.replaceconfirmbody = ఈ PC తన పేరు మరియు చరిత్ర కొనసాగిస్తుంది. ఎంచుకున్న పరికరం మీ జర్నల్‌కు యాక్సెస్ కోల్పోతుంది.
 
@@ -119,9 +119,9 @@ windows.desktop.shared.copy.replaceconfirmtitlefallback = ఎంచుకున�
 
 windows.desktop.shared.copy.replacedevice = పరికరాన్ని భర్తీ చేయండి
 
-windows.desktop.shared.copy.replaceofferbody = రెండూ ఉంచుకోవచ్చు, లేదా దీని స్థానంలో ఒక పరికరం ఎంచుకోండి.
+windows.desktop.shared.copy.replaceofferbody = మీరు రెండూ ఉంచవచ్చు, లేదా ఈ పరికరం భర్తీ చేయాల్సిన పరికరాన్ని ఎంచుకోండి.
 
-windows.desktop.shared.copy.replaceoffertitle = ఇది మీ పరికరాల్లో ఒకదాని స్థానంలో వస్తోందా?
+windows.desktop.shared.copy.replaceoffertitle = ఇది మీ పరికరాల్లో ఒకదాన్ని భర్తీ చేస్తోందా?
 
 windows.desktop.shared.copy.settingsjournalopen = జర్నల్ తెరవండి
 
@@ -145,9 +145,9 @@ windows.desktop.shared.copy.setupjournalcardheading = మీ జర్నల్
 
 windows.desktop.shared.copy.setupmicrophoneheadline = మీ సంభాషణలను పంచుకోండి
 
-windows.desktop.shared.copy.setupopenyourjournal = మీ జర్నల్ తెరవండి
+windows.desktop.shared.copy.setupopenyourjournal = మీ జర్నల్‌ను తెరవండి
 
-windows.desktop.shared.copy.setupscreenframecaption = మీ స్క్రీన్, ఒక క్షణం క్రితం
+windows.desktop.shared.copy.setupscreenframecaption = మీ స్క్రీన్, కాసేపు క్రితం
 
 windows.desktop.shared.copy.setupwelcomebody2 = మీ జర్నల్ ఎప్పుడూ ప్రైవేట్, మీదే.
 
@@ -169,7 +169,7 @@ windows.desktop.shared.copy.storageunavailablebody = ఈ PC తన సేవ్ 
 
 windows.desktop.shared.copy.storageunavailabletitle = సేవ్ అయిన కనెక్షన్ అందుబాటులో లేదు
 
-windows.desktop.shared.copy.targetmissingbody = ఆ పరికరం ఇక మీ జర్నల్ జాబితాలో లేదు. ఇంకో పరికరం ఎంచుకోండి, లేదా రెండూ ఉంచుకోండి.
+windows.desktop.shared.copy.targetmissingbody = ఆ పరికరం ఇక మీ జర్నల్ జాబితాలో లేదు. మరొక పరికరాన్ని ఎంచుకోండి, లేదా రెండూ ఉంచండి.
 
 windows.desktop.shared.copy.targetmissingtitle = పరికరం ఇక అందుబాటులో లేదు
 
@@ -201,7 +201,7 @@ windows.desktop.shared.setup.cancel = రద్దు చేయండి
 
 windows.desktop.shared.setup.pair = పెయిరింగ్ చేయండి
 
-windows.desktop.shared.setup.startatlogin = లాగిన్ అయినప్పుడు స్టార్ట్ అవ్వండి
+windows.desktop.shared.setup.startatlogin = లాగిన్‌లో స్టార్ట్ చేయండి
 
 windows.desktop.shared.setup.wizardpausefailure = పాజ్ చేయండి
 
@@ -215,9 +215,9 @@ windows.desktop.shared.updates.checknow = ఇప్పుడు సరిచూ�
 
 windows.desktop.shared.updates.dismiss = వదిలివేయండి
 
-windows.desktop.shared.updates.download = డౌన్‌లోడ్ చేయండి
+windows.desktop.shared.updates.download = డౌన్‌లోడ్
 
-windows.desktop.shared.updates.downloadupdatesinthebackground = అప్‌డేట్‌లను నేపథ్యంలో డౌన్‌లోడ్ చేయండి
+windows.desktop.shared.updates.downloadupdatesinthebackground = అప్‌డేట్‌లను బ్యాక్‌గ్రౌండ్‌లో డౌన్‌లోడ్ చేయండి
 
 windows.desktop.shared.updates.everyday = ప్రతి రోజు
 
@@ -231,7 +231,7 @@ windows.desktop.shared.updates.nevercheckedforupdates = అప్‌డేట్
 
 windows.desktop.shared.updates.textcontent = పూర్తి నోట్‌లను ఆన్‌లైన్‌లో చదవండి
 
-windows.desktop.shared.updates.whatsnew = కొత్తది ఏమిటి
+windows.desktop.shared.updates.whatsnew = కొత్తవి ఏమిటి
 
 windows.exclusions.activity = { $count ->
     [one] { $display } ఫ్రేమ్ ఈ సెషన్‌లో మీ జర్నల్ నుండి మినహాయించబడింది
@@ -248,15 +248,15 @@ windows.health.attentioncount = { $count ->
    *[other] { $display } కు శ్రద్ధ కావాలి
 }
 
-windows.import.allhistory = మీ జర్నల్‌లోని ఇంపోర్ట్ చరిత్ర అంతా
+windows.import.allhistory = మీ జర్నల్‌లో ఇంపోర్ట్ చరిత్ర అంతా
 
 windows.import.expiredword = గడువు అయింది
 
 windows.import.holdoffline = మీ జర్నల్ మళ్ళీ కనెక్ట్ అవ్వడానికి వేచి ఉంది.
 
-windows.import.intro = మీరు ఇక్కడ ఎంచుకునే, లేదా ఈ విండోపై డ్రాప్ చేసే, ఏ ఫైల్‌నైనా చేర్చుతుంది. అది ఏమిటో మీ జర్నల్ గుర్తిస్తుంది.
+windows.import.intro = మీరు ఇక్కడ ఎంచుకునే లేదా ఈ విండోపై డ్రాప్ చేసే ఏ ఫైల్‌నైనా చేరుస్తుంది. అది ఏమిటో మీ జర్నల్ తేల్చుతుంది.
 
-windows.import.morehelper = గైడ్‌లు, ఆప్షన్‌లు, మరియు మీ జర్నల్‌లోని ఇంపోర్ట్ చరిత్ర
+windows.import.morehelper = మీ జర్నల్‌లో గైడ్‌లు, ఆప్షన్‌లు, ఇంపోర్ట్ చరిత్ర
 
 windows.import.readytoreviewword = సమీక్షించడానికి సిద్ధంగా ఉంది
 
@@ -264,7 +264,7 @@ windows.import.recenta11y = { $name }, మీ జర్నల్‌లో, { $re
 
 windows.import.recentmeta = మీ జర్నల్‌లో · { $relative }
 
-windows.import.removereadybody = ఇది ఈ పరికరంలోని కాపీని తీసివేస్తుంది. మీ జర్నల్‌లో వేచి ఉన్న కాపీ, మీరు దాన్ని వదిలే వరకు లేదా అది గడువు అయ్యే వరకు, అక్కడే ఉంటుంది.
+windows.import.removereadybody = ఇది ఈ పరికరంలోని కాపీని తీసివేస్తుంది. మీ జర్నల్‌లో వేచి ఉన్న కాపీ, మీరు దాన్ని వదిలే వరకు లేదా అది గడువు అయే వరకు, అక్కడే ఉంటుంది.
 
 windows.import.reviewaction = మీ జర్నల్‌లో సమీక్షించండి
 
@@ -272,17 +272,17 @@ windows.import.reviewactiona11y = మీ జర్నల్‌లో { $name } �
 
 windows.import.reviewdetail = మీ జర్నల్‌లో సేవ్ అయింది. ప్రారంభించడానికి ప్రివ్యూ చూసి నిర్ధారించండి.
 
-windows.import.reviewdetailbody = మీ జర్నల్‌లో సేవ్ అయింది. వేచి ఉన్న కాపీని మీ జర్నల్ తీసివేసేలోపు, ఒక గంటలోపు సమీక్షించండి.
+windows.import.reviewdetailbody = మీ జర్నల్‌లో సేవ్ అయింది. వేచి ఉన్న కాపీని మీ జర్నల్ తీసివేసే ముందు ఒక గంటలోపు సమీక్షించండి.
 
-windows.import.reviewexpired = మీ జర్నల్‌లో వేచి ఉన్న కాపీ గడువు అయింది. ఫైల్ ఇంకా ఈ పరికరంలో ఉంది.
+windows.import.reviewexpired = మీ జర్నల్‌లో వేచి ఉన్న కాపీ గడువు అయింది. ఈ పరికరం ఫైల్‌ను ఇంకా ఉంచుకుంటోంది.
 
-windows.import.rowsending = మీ జర్నల్‌కు పంపుతోంది…
+windows.import.rowsending = మీ జర్నల్‌కు పంపిస్తోంది…
 
 windows.import.sectionreview = మీ సమీక్ష కోసం వేచి ఉంది
 
-windows.import.sendagainaction = సమీక్ష కోసం మళ్ళీ పంపండి
+windows.import.sendagainaction = సమీక్షకు మళ్ళీ పంపండి
 
-windows.import.sendagainactiona11y = సమీక్ష కోసం { $name } మళ్ళీ పంపండి
+windows.import.sendagainactiona11y = సమీక్షకు { $name } మళ్ళీ పంపండి
 
 windows.import.statusattentionheadline = ఇంపోర్ట్‌లకు మీరు కావాలి
 
@@ -354,7 +354,7 @@ windows.notice.yourjournalisbackinreach = మీ జర్నల్ మళ్ళ
 
 windows.notice.yourjournalisoutofreach = మీ జర్నల్‌తో కనెక్ట్ కాలేదు
 
-windows.obsidian.chooseobsidianvault = మీ Obsidian వాల్ట్ ఎంచుకోండి
+windows.obsidian.chooseobsidianvault = మీ Obsidian వాల్ట్‌ను ఎంచుకోండి
 
 windows.obsidian.vault = వాల్ట్
 
@@ -429,7 +429,7 @@ windows.screenshots.unreadablecount = { $count ->
    *[other] { $display } స్క్రీన్‌షాట్‌లు చదవలేకపోయింది.
 }
 
-windows.sharedsources.also = కూడా ఆన్
+windows.sharedsources.also = వీటిలో కూడా
 
 windows.sharedsources.labelage = { $label } · { $relative }
 
@@ -439,7 +439,7 @@ windows.sharedsources.labelstateage = { $label } · { $state } · { $relative }
 
 windows.sharedsources.many = ఇతర { $count } పరికరాల నుండి
 
-windows.sharedsources.one = ఇంకో పరికరం నుండి
+windows.sharedsources.one = మరో పరికరం నుండి
 
 windows.sharedsources.stateage = { $state } · { $relative }
 
@@ -503,7 +503,7 @@ windows.tray.updateavailable = అప్‌డేట్ అందుబాటు
 
 windows.tray.updatecheckfailed = అప్‌డేట్ సరిచూపు విఫలమైంది
 
-windows.tray.updateready = అప్‌డేట్ సిద్ధంగా ఉంది · మూసివేసి మళ్ళీ తెరిచినప్పుడు ఇన్‌స్టాల్ అవుతుంది
+windows.tray.updateready = అప్‌డేట్ సిద్ధం · మీరు క్విట్ చేసి మళ్ళీ తెరిచినప్పుడు ఇన్‌స్టాల్ అవుతుంది
 
 windows.ui.accesswasdenied = యాక్సెస్ నిరాకరించబడింది.
 
@@ -531,7 +531,7 @@ windows.ui.addto = { $value } కు చేర్చండి
 
 windows.ui.aglobalshortcuttopauseandresume = ఎక్కడి నుండైనా తీసుకోలును పాజ్ చేసి కొనసాగించడానికి ఒక గ్లోబల్ షార్ట్‌కట్.
 
-windows.ui.allcaughtup = అన్నీ తాజాగా ఉన్నాయి
+windows.ui.allcaughtup = తాజాగా ఉంది
 
 windows.ui.allofit = అంతా
 
@@ -586,7 +586,7 @@ windows.ui.arg0tb = { $arg0 } TB
 
 windows.ui.arg0x211b8ba1 = { $arg0 }%
 
-windows.ui.ascreenshotalreadyinyourjournalstaysthereifyoude = మీ జర్నల్‌లో ఇప్పటికే ఉన్న స్క్రీన్‌షాట్, ఫోల్డర్ నుండి తొలగించినా అక్కడే ఉంటుంది.
+windows.ui.ascreenshotalreadyinyourjournalstaysthereifyoude = మీరు ఫోల్డర్ నుండి తొలగించినా, మీ జర్నల్‌లో ఇప్పటికే ఉన్న స్క్రీన్‌షాట్ అక్కడే ఉంటుంది.
 
 windows.ui.ascreenshotthatsonlycopiedtotheclipboardisntsave = క్లిప్‌బోర్డ్‌కు మాత్రమే కాపీ అయిన స్క్రీన్‌షాట్ సేవ్ కాదు, కాబట్టి అది రాదు.
 
@@ -626,7 +626,7 @@ windows.ui.checkingyourjournal = మీ జర్నల్‌ను సరిచ
 
 windows.ui.chooseafolder = ఒక ఫోల్డర్ ఎంచుకోండి.
 
-windows.ui.chooseafolderxdbec742d = ఒక ఫోల్డర్ ఎంచుకోండి…
+windows.ui.chooseafolderxdbec742d = ఫోల్డర్‌ను ఎంచుకోండి…
 
 windows.ui.chooseanapptoexclude = మినహాయించడానికి ఒక యాప్ ఎంచుకోండి
 
@@ -634,9 +634,9 @@ windows.ui.choosearunningapp = నడుస్తున్న యాప్ ఎ�
 
 windows.ui.choosefiles = ఫైల్‌లు ఎంచుకోండి…
 
-windows.ui.choosefolder = ఒక ఫోల్డర్ ఎంచుకోండి
+windows.ui.choosefolder = ఒక ఫోల్డర్‌ను ఎంచుకోండి
 
-windows.ui.choosehowfarbacktostartthenbringthemin = ఎంత వెనుక నుండి మొదలుపెట్టాలో ఎంచుకోండి, తర్వాత వాటిని తీసుకురండి.
+windows.ui.choosehowfarbacktostartthenbringthemin = ఎంత వెనక్కి మొదలు పెట్టాలో ఎంచుకుని, వాటిని తీసుకురండి.
 
 windows.ui.choosethefolderyourscreenshotssaveto = మీ స్క్రీన్‌షాట్‌లు సేవ్ అయ్యే ఫోల్డర్ ఎంచుకోండి
 
@@ -670,7 +670,7 @@ windows.ui.connectingx3d6df245 = కనెక్ట్ అవుతోంది
 
 windows.ui.connection = కనెక్షన్
 
-windows.ui.connecttoyourjournal = మీ జర్నల్‌తో కనెక్ట్ చేయండి
+windows.ui.connecttoyourjournal = మీ జర్నల్‌తో కనెక్ట్ అవ్వండి
 
 windows.ui.connectyourjournal = మీ జర్నల్‌ను కనెక్ట్ చేయండి
 
@@ -700,7 +700,7 @@ windows.ui.couldntcheckforupdates = అప్‌డేట్‌లు సరి�
 
 windows.ui.couldntcheckforupdatessolstonewas = అప్‌డేట్‌లు సరిచూడలేకపోయింది. solstone { $v } ముందు దొరికింది
 
-windows.ui.couldntcountyourscreenshots = స్క్రీన్‌షాట్‌లు లెక్కించలేకపోయింది.
+windows.ui.couldntcountyourscreenshots = మీ స్క్రీన్‌షాట్‌లను లెక్కించలేకపోయింది.
 
 windows.ui.couldntdownloadsolstone = solstone { $value } డౌన్‌లోడ్ చేయలేకపోయింది
 
@@ -722,7 +722,7 @@ windows.ui.couldntopenyourjournaltryagain = మీ జర్నల్ తెర�
 
 windows.ui.couldntreachyourjournaloveryour = మీ ప్రైవేట్ నెట్‌వర్క్ మీద మీ జర్నల్‌తో కనెక్ట్ కాలేదు. మీ జర్నల్ ఉన్న అదే వై-ఫైలో చేరి, మీ జర్నల్ నుండి కొత్త పెయిరింగ్ లింక్‌తో మళ్ళీ ప్రయత్నించండి.
 
-windows.ui.couldntreadimportsonthisdevicenothinghasbeenremo = ఈ పరికరంలో ఇంపోర్ట్‌లు చదవలేకపోయింది. ఏమీ తీసివేయబడలేదు. మళ్ళీ ప్రయత్నించడానికి solstone యాప్ రీస్టార్ట్ చేయండి.
+windows.ui.couldntreadimportsonthisdevicenothinghasbeenremo = ఈ పరికరంలోని ఇంపోర్ట్‌లను చదవలేకపోయింది. ఏమీ తీసివేయబడలేదు. మళ్ళీ ప్రయత్నించడానికి solstone యాప్‌ను రీస్టార్ట్ చేయండి.
 
 windows.ui.couldntreadyoursavedsourcechoices = సేవ్ అయిన మూల ఎంపికలు చదవలేకపోయింది. మూలాలు ఆఫ్‌లో ఉన్నాయి. సెట్టింగ్‌లలో మీ మూలాలు మళ్ళీ ఎంచుకోండి.
 
@@ -732,7 +732,7 @@ windows.ui.couldntremovethistryagain = దీన్ని తీసివేయ�
 
 windows.ui.couldntturntryagain = దీన్ని ఆన్ చేయలేకపోయింది. మళ్ళీ ప్రయత్నించండి.
 
-windows.ui.couldntverifyjournalsonothing = మీ జర్నల్ ధృవీకరించలేకపోయింది, కాబట్టి ఏమీ కనెక్ట్ కాలేదు. మళ్ళీ ప్రయత్నించండి, లేదా పెయిరింగ్ లింక్ పేస్ట్ చేయండి.
+windows.ui.couldntverifyjournalsonothing = మీ జర్నల్‌ను ధృవీకరించలేకపోయింది, కాబట్టి ఏదీ కనెక్ట్ కాలేదు. మళ్ళీ ప్రయత్నించండి, లేదా పెయిరింగ్ లింక్‌ను పేస్ట్ చేయండి.
 
 windows.ui.dayago = { $count ->
     [one] { $count } రోజు క్రితం
@@ -803,11 +803,11 @@ windows.ui.foundjournalpc = ఈ PC‌లో మీ జర్నల్ దొర�
 
 windows.ui.from = { $value } నుండి
 
-windows.ui.frombeforetoday = ఈ రోజు కంటే ముందు నుండి
+windows.ui.frombeforetoday = ఈ రోజుకు ముందు నుండి
 
-windows.ui.gettingready = సిద్ధం అవుతోంది…
+windows.ui.gettingready = సిద్ధమవుతోంది…
 
-windows.ui.gettingreadyconnectingtoyourjournal = సిద్ధం అవుతోంది. మీ జర్నల్‌తో కనెక్ట్ అవుతోంది.
+windows.ui.gettingreadyconnectingtoyourjournal = సిద్ధమవుతోంది. మీ జర్నల్‌కు కనెక్ట్ అవుతోంది.
 
 windows.ui.gettingthisdeviceready = ఈ PC సిద్ధం అవుతోంది
 
@@ -842,11 +842,11 @@ windows.ui.ifyouhaventyetaddthe = ఇంకా చేర్చకపోతే, �
 
 windows.ui.import = ఇంపోర్ట్
 
-windows.ui.importswaitonthisdeviceuntilyouconnectajournal = మీరు జర్నల్‌ను కనెక్ట్ చేసే వరకు ఇంపోర్ట్‌లు ఈ పరికరంలో వేచి ఉంటాయి.
+windows.ui.importswaitonthisdeviceuntilyouconnectajournal = మీరు ఒక జర్నల్‌ను కనెక్ట్ చేసే వరకు ఇంపోర్ట్‌లు ఈ పరికరంలో వేచి ఉంటాయి.
 
-windows.ui.importswaituntilyouconfirmyourjournalsmark = మీరు జర్నల్ మార్క్‌ను నిర్ధారించే వరకు ఇంపోర్ట్‌లు వేచి ఉంటాయి.
+windows.ui.importswaituntilyouconfirmyourjournalsmark = మీరు మీ జర్నల్ మార్క్‌ను నిర్ధారించే వరకు ఇంపోర్ట్‌లు వేచి ఉంటాయి.
 
-windows.ui.importswaituntilyourjournalisupdated = మీ జర్నల్ అప్‌డేట్ అయ్యే వరకు ఇంపోర్ట్‌లు వేచి ఉంటాయి.
+windows.ui.importswaituntilyourjournalisupdated = మీ జర్నల్ అప్‌డేట్ అయే వరకు ఇంపోర్ట్‌లు వేచి ఉంటాయి.
 
 windows.ui.inputgain = ఇన్‌పుట్ గెయిన్
 
@@ -860,7 +860,7 @@ windows.ui.inyourjournalchoosepairadeviceandpastethelinkher = మీ జర్�
 
 windows.ui.itinstallsthenexttimethesolstoneappstartsincludi = solstone యాప్ తర్వాత స్టార్ట్ అయినప్పుడు ఇన్‌స్టాల్ అవుతుంది, windows లో సైన్ ఇన్ చేసినప్పుడు కూడా
 
-windows.ui.itslargerthanyourjournaltakes = మీ జర్నల్ స్వీకరించే దానికంటే ఇది పెద్దది
+windows.ui.itslargerthanyourjournaltakes = ఇది మీ జర్నల్ స్వీకరించే దానికంటే పెద్దది
 
 windows.ui.january = జనవరి
 
@@ -876,7 +876,7 @@ windows.ui.journalupdateneeded = జర్నల్ అప్‌డేట్ క
 
 windows.ui.journalversion = జర్నల్ వెర్షన్
 
-windows.ui.july = జులై
+windows.ui.july = జూలై
 
 windows.ui.june = జూన్
 
@@ -947,7 +947,7 @@ windows.ui.nocredentialaccess = క్రెడెన్షియల్ యా�
 
 windows.ui.noexclusionsactive = మినహాయింపులు ఏవీ యాక్టివ్‌గా లేవు
 
-windows.ui.noidentitypresented = గుర్తింపు చూపబడలేదు
+windows.ui.noidentitypresented = గుర్తింపు చూపించలేదు
 
 windows.ui.noinputdevice = ఇన్‌పుట్ పరికరం లేదు
 
@@ -985,11 +985,11 @@ windows.ui.notcheckedforupdatesyet = అప్‌డేట్‌ల కోసం
 
 windows.ui.notesjournal = మీ జర్నల్‌లో { $value2 } నోట్‌లలో { $value }
 
-windows.ui.notgoingtoyourjournalrightnoweachonesayswhy = ఇప్పుడు మీ జర్నల్‌లోకి వెళ్ళడం లేదు. ఒక్కోటి ఎందుకో చెబుతుంది.
+windows.ui.notgoingtoyourjournalrightnoweachonesayswhy = ఇప్పుడు మీ జర్నల్‌కు వెళ్లడం లేదు. ప్రతి ఒక్కటీ ఎందుకో చెబుతుంది.
 
 windows.ui.nothingexcludedyet = ఇంకా ఏదీ మినహాయించబడలేదు
 
-windows.ui.nothingfrombeforetoday = ఈ రోజు కంటే ముందు నుండి ఏమీ లేదు
+windows.ui.nothingfrombeforetoday = ఈ రోజుకు ముందు నుండి ఏమీ లేదు
 
 windows.ui.nothingwassavedonthisdevice = ఈ పరికరంలో ఏమీ సేవ్ కాలేదు.
 
@@ -1015,9 +1015,9 @@ windows.ui.offline = ఆఫ్‌లైన్
 
 windows.ui.offlinearg0waiting = ఆఫ్‌లైన్ · { $arg0 } వేచి ఉంది
 
-windows.ui.onlywhatthesolstoneappcantellisascreenshotcomesi = solstone యాప్ స్క్రీన్‌షాట్ అని గుర్తించేది మాత్రమే వస్తుంది.
+windows.ui.onlywhatthesolstoneappcantellisascreenshotcomesi = solstone యాప్ స్క్రీన్‌షాట్ అని గుర్తించగలిగింది మాత్రమే లోపలికి వస్తుంది.
 
-windows.ui.onthesitesyouallowthesolstoneextensiontakesinthe = మీరు అనుమతించిన సైట్‌లలో, solstone ఎక్స్‌టెన్షన్ పేజీ వచనాన్ని మరియు సుమారు లేఅవుట్‌ను స్వీకరిస్తుంది, అంతా మీ జర్నల్‌లోకి వెళ్తుంది.
+windows.ui.onthesitesyouallowthesolstoneextensiontakesinthe = మీరు అనుమతించిన సైట్‌లలో, solstone ఎక్స్‌టెన్షన్ పేజీ వచనాన్ని మరియు సుమారు లేఅవుట్‌ను స్వీకరిస్తుంది, మరియు అంతా మీ జర్నల్‌లోకి వెళుతుంది.
 
 windows.ui.onthisdevice = ఈ పరికరంలో
 
@@ -1027,7 +1027,7 @@ windows.ui.opennavigation = నావిగేషన్ తెరవండి
 
 windows.ui.opensettings = సెట్టింగ్‌లు తెరవండి
 
-windows.ui.opensoundsettings = ధ్వని సెట్టింగ్‌లు తెరవండి
+windows.ui.opensoundsettings = సౌండ్ సెట్టింగ్‌లు తెరవండి
 
 windows.ui.openwindowssettings = windows సెట్టింగ్‌లు తెరవండి
 
@@ -1081,7 +1081,7 @@ windows.ui.placeholder = మీ జర్నల్ నుండి పెయి�
 
 windows.ui.placeholder2 = ఒక కీవర్డ్, ఉదా. banking
 
-windows.ui.presented = చూపబడింది
+windows.ui.presented = చూపించబడింది
 
 windows.ui.pressyourshortcut = మీ షార్ట్‌కట్ నొక్కండి…
 
@@ -1093,7 +1093,7 @@ windows.ui.privatewindows = అంతరంగిక విండోలు
 
 windows.ui.progresstext = దశ { $stepnum } / { $totalsteps }
 
-windows.ui.quitsolstone = solstone మూసివేయండి
+windows.ui.quitsolstone = solstone నుండి నిష్క్రమించండి
 
 windows.ui.readytosetupword = సెటప్ చేయడానికి సిద్ధంగా ఉంది
 
@@ -1129,7 +1129,7 @@ windows.ui.screenshots = స్క్రీన్‌షాట్‌లు
 
 windows.ui.screenshotsalreadyinyourjournalarentbroughtinaga = మీ జర్నల్‌లో ఇప్పటికే ఉన్న స్క్రీన్‌షాట్‌లు మళ్ళీ తీసుకురాబడవు.
 
-windows.ui.screenshotsyoutakewhileitspauseddontcomein = పాజ్ అయి ఉన్నప్పుడు మీరు తీసిన స్క్రీన్‌షాట్‌లు రావు.
+windows.ui.screenshotsyoutakewhileitspauseddontcomein = ఇది పాజ్ అయి ఉన్నప్పుడు మీరు తీసే స్క్రీన్‌షాట్‌లు లోపలికి రావు.
 
 windows.ui.segmentsthathavenotreachedyourjournal = మీ జర్నల్‌కు ఇంకా చేరని సెగ్మెంట్‌లు ఎప్పుడూ తొలగించబడవు.
 
@@ -1137,7 +1137,7 @@ windows.ui.selecteddevice = ఎంచుకున్న పరికరం
 
 windows.ui.sendingtoyourjournal = మీ జర్నల్‌కు పంపుతోంది.
 
-windows.ui.sendingword = పంపుతోంది
+windows.ui.sendingword = పంపిస్తోంది
 
 windows.ui.september = సెప్టెంబర్
 
@@ -1191,11 +1191,11 @@ windows.ui.somethingansweredpcthroughrelayisn = రిలే ద్వారా 
 
 windows.ui.somethingotherthanyourjournalansweredcompare = మీ జర్నల్ బదులు ఏదో సమాధానం ఇచ్చింది
 
-windows.ui.somethingyouwereaddingdidntfinishsavingadditagai = మీరు చేర్చుతున్నది సేవ్ పూర్తి కాలేదు. దాన్ని మళ్ళీ చేర్చండి.
+windows.ui.somethingyouwereaddingdidntfinishsavingadditagai = మీరు చేర్చేది సేవ్ అయిపోలేదు. మళ్ళీ చేర్చండి.
 
 windows.ui.sourcesetupisunfinished = మూల సెటప్ పూర్తి కాలేదు
 
-windows.ui.startfromtoday = ఈ రోజు నుండి మొదలుపెట్టండి
+windows.ui.startfromtoday = ఈ రోజు నుండి ప్రారంభించండి
 
 windows.ui.state = స్టేట్
 
@@ -1221,7 +1221,7 @@ windows.ui.text6 = { $status }: { $reason }
 
 windows.ui.textcontent = ఇంకో పెయిరింగ్ లింక్ వచ్చింది: దాన్ని వాడండి లేదా వదిలివేయండి.
 
-windows.ui.textcontent2 = పెయిరింగ్…
+windows.ui.textcontent2 = పెయిర్ అవుతోంది…
 
 windows.ui.textcontent4 = షార్ట్‌కట్ తుడిచివేయండి
 
@@ -1233,7 +1233,7 @@ windows.ui.thatcomboisinusebyanother = ఆ కాంబోను ఇంకో �
 
 windows.ui.thatdidnotfinish = అది పూర్తి కాలేదు
 
-windows.ui.thatfolderisntobsidianvault = ఆ ఫోల్డర్ Obsidian వాల్ట్ కాదు, కాబట్టి ఏమీ పంపబడలేదు.
+windows.ui.thatfolderisntobsidianvault = ఆ ఫోల్డర్ Obsidian వాల్ట్ కాదు, కాబట్టి ఏదీ పంపలేదు.
 
 windows.ui.thatfoldersnamecant = ఆ ఫోల్డర్ పేరు మీ జర్నల్‌లో వాల్ట్ పేరు కాదు. ఫోల్డర్ పేరు మార్చి మళ్ళీ ప్రయత్నించండి.
 
@@ -1241,7 +1241,7 @@ windows.ui.thatpairinglinkisntonethe = ఆ పెయిరింగ్ లిం
 
 windows.ui.thearg0folderisntonthispcanymore = { $arg0 } ఫోల్డర్ ఇక ఈ PC‌లో లేదు.
 
-windows.ui.thecopyisalreadygonesothisonlyclearsitfromhere = కాపీ ఇప్పటికే పోయింది, కాబట్టి ఇది దాన్ని ఇక్కడి నుండి మాత్రమే తుడిచివేస్తుంది.
+windows.ui.thecopyisalreadygonesothisonlyclearsitfromhere = కాపీ ఇప్పటికే పోయింది, కాబట్టి ఇది దాన్ని ఇక్కడి నుండి మాత్రమే తీసివేస్తుంది.
 
 windows.ui.thecopyonthisdeviceismissing = ఈ పరికరంలోని కాపీ లేదు
 
@@ -1257,7 +1257,7 @@ windows.ui.thelastyear = గత సంవత్సరం
 
 windows.ui.thepairingwindowclosedgetanew = పెయిరింగ్ విండో మూసుకుంది. మీ జర్నల్ నుండి కొత్త పెయిరింగ్ లింక్ తెచ్చుకుని, మళ్ళీ ప్రయత్నించండి.
 
-windows.ui.thereisntenoughroomonthisdevice = ఈ పరికరంలో చోటు చాలదు
+windows.ui.thereisntenoughroomonthisdevice = ఈ పరికరంలో చోటు సరిపోదు
 
 windows.ui.theserulesareactivenowbutcouldn = ఈ నియమాలు ఇప్పుడు యాక్టివ్‌గా ఉన్నాయి, కానీ సేవ్ కాలేదు, కాబట్టి రీస్టార్ట్ తర్వాత ఉండకపోవచ్చు.
 
@@ -1275,9 +1275,9 @@ windows.ui.thisconnectioncouldnotfinishtryagain = ఈ కనెక్షన్ �
 
 windows.ui.thisconnectioncouldnotfinishtryagain2 = ఈ కనెక్షన్ పూర్తి కాలేదు. మళ్ళీ ప్రయత్నించండి.
 
-windows.ui.thiscouldntbereadadditagain = ఇది చదవలేకపోయింది. దాన్ని మళ్ళీ చేర్చండి
+windows.ui.thiscouldntbereadadditagain = దీన్ని చదవలేకపోయింది. మళ్ళీ చేర్చండి
 
-windows.ui.thisdevicecantconvertthisphoto = ఈ పరికరం ఈ ఫోటో కన్వర్ట్ చేయలేదు
+windows.ui.thisdevicecantconvertthisphoto = ఈ పరికరం ఈ ఫోటోను కన్వర్ట్ చేయలేకపోయింది
 
 windows.ui.thisdevicecouldntopenitssaved = ఈ PC మీ జర్నల్‌తో సేవ్ అయిన కనెక్షన్ తెరవలేకపోయింది. పంపడానికి వేచి ఉన్నది ఇంకా ఇక్కడే ఉంది. మళ్ళీ కనెక్ట్ చేయడానికి మళ్ళీ పెయిరింగ్ చేయండి.
 
@@ -1291,7 +1291,7 @@ windows.ui.thislinkcouldnotbedismissedtry = ఈ లింక్ వదిలి�
 
 windows.ui.thislinkcouldnotbeusedtry = ఈ లింక్ వాడలేకపోయింది. మళ్ళీ ప్రయత్నించండి.
 
-windows.ui.thislistappliestoactivitytoo = ఈ జాబితా కార్యకలాపానికి కూడా వర్తిస్తుంది
+windows.ui.thislistappliestoactivitytoo = ఈ జాబితా స్క్రీన్ కార్యకలాపానికి కూడా వర్తిస్తుంది
 
 windows.ui.thisonlytakesamoment = ఇది ఒక క్షణం మాత్రమే
 
@@ -1311,7 +1311,7 @@ windows.ui.thissetuplinkcouldnotbeused = ఈ సెటప్ లింక్ వ
 
 windows.ui.thisstepcouldnotfinishtryagain = ఈ దశ పూర్తి కాలేదు. మళ్ళీ ప్రయత్నించండి.
 
-windows.ui.thisstepcouldntfinishtryagain = ఈ దశ పూర్తి కాలేదు. మళ్ళీ ప్రయత్నించండి.
+windows.ui.thisstepcouldntfinishtryagain = ఈ అడుగు పూర్తి కాలేకపోయింది. మళ్ళీ ప్రయత్నించండి.
 
 windows.ui.titlekeywords = శీర్షిక కీవర్డ్‌లు
 
@@ -1345,7 +1345,7 @@ windows.ui.untiliresume = నేను కొనసాగించే వరక�
 
 windows.ui.usethislink = ఈ లింక్ వాడండి
 
-windows.ui.usevault = ఈ వాల్ట్ వాడండి
+windows.ui.usevault = ఈ వాల్ట్‌ను వాడండి
 
 windows.ui.value15minutes = 15 నిమిషాలు
 
@@ -1367,7 +1367,7 @@ windows.ui.waitingforajournalupdateyourscreenshotswaitonthi = జర్నల్
 
 windows.ui.waitingforyouranswer = మీ సమాధానం కోసం వేచి ఉంది
 
-windows.ui.waitingforyoutoconfirmyourjournalsmark = మీ జర్నల్ మార్క్‌ను నిర్ధారించడానికి వేచి ఉంది
+windows.ui.waitingforyoutoconfirmyourjournalsmark = మీ జర్నల్ మార్క్‌ను మీరు నిర్ధారించేందుకు వేచి ఉంది
 
 windows.ui.waitingjournalupdate = జర్నల్ అప్‌డేట్ కోసం వేచి ఉంది
 
@@ -1375,7 +1375,7 @@ windows.ui.waitingreachjournal = మీ జర్నల్‌కు చేరడ
 
 windows.ui.waitingsync = { $value } సింక్ కోసం వేచి ఉంది
 
-windows.ui.waitingtogotoyourjournal = మీ జర్నల్‌లోకి వెళ్ళడానికి వేచి ఉంది
+windows.ui.waitingtogotoyourjournal = మీ జర్నల్‌కు వెళ్లేందుకు వేచి ఉంది
 
 windows.ui.waitingtogotoyourjournalx5d789db5 = మీ జర్నల్‌లోకి వెళ్ళడానికి వేచి ఉంది.
 
@@ -1385,7 +1385,7 @@ windows.ui.waitingword = వేచి ఉంది
 
 windows.ui.whatanswered = ఏది సమాధానం ఇచ్చింది
 
-windows.ui.whatsalreadyinyourjournalstayswhenyoupauseorturn = మీరు పాజ్ చేసినా లేదా దీన్ని ఆఫ్ చేసినా, మీ జర్నల్‌లో ఇప్పటికే ఉన్నది అక్కడే ఉంటుంది.
+windows.ui.whatsalreadyinyourjournalstayswhenyoupauseorturn = మీరు పాజ్ చేసినా, లేదా దీన్ని ఆఫ్ చేసినా, మీ జర్నల్‌లో ఇప్పటికే ఉన్నది అలాగే ఉంటుంది.
 
 windows.ui.whatyousharestaysonthispc = మీరు పంచుకున్నది, మీ సొంత పరికరాల్లో మీ జర్నల్‌లోకి వెళ్ళే వరకు, ఈ PC‌లో ఉంటుంది. మీ జర్నల్ ఎప్పుడూ ప్రైవేట్, మీదే.
 
@@ -1411,13 +1411,13 @@ windows.ui.youcanturneachsourceonor = మూలాల్లో ఒక్కో �
 
 windows.ui.youchoosewhichsourcesareon = ఏ మూలాలు ఆన్‌లో ఉండాలో మీరు ఎంచుకుంటారు.
 
-windows.ui.youllseehowmanyscreenshotstherearebeforeanycomei = ఏదీ రాకముందు, స్క్రీన్‌షాట్‌లు ఎన్ని ఉన్నాయో మీరు చూస్తారు.
+windows.ui.youllseehowmanyscreenshotstherearebeforeanycomei = ఏవీ లోపలికి రాకముందే, స్క్రీన్‌షాట్‌లు ఎన్ని ఉన్నాయో మీరు చూస్తారు.
 
 windows.ui.your = మీ
 
 windows.ui.yourjournal = మీ · జర్నల్
 
-windows.ui.yourjournalcanttakethiskindoffile = మీ జర్నల్ ఈ రకం ఫైల్ స్వీకరించలేదు
+windows.ui.yourjournalcanttakethiskindoffile = మీ జర్నల్ ఈ రకం ఫైల్‌ను స్వీకరించలేకపోతోంది
 
 windows.ui.yourjournalcouldntacceptthis = మీ జర్నల్ దీన్ని అంగీకరించలేకపోయింది.
 
@@ -1433,7 +1433,7 @@ windows.ui.yourjournalshowsthissamemarkbeside = మీ జర్నల్ పె
 
 windows.ui.yourjournalsmarkunavailablerightnow = మీ జర్నల్ మార్క్, ఇప్పుడు అందుబాటులో లేదు
 
-windows.ui.yourjournalstoppedacceptingthisdeviceimportswait = మీ జర్నల్ ఈ పరికరాన్ని అంగీకరించడం ఆగింది. మీరు మళ్ళీ పెయిరింగ్ చేసే వరకు ఇంపోర్ట్‌లు ఇక్కడ వేచి ఉంటాయి.
+windows.ui.yourjournalstoppedacceptingthisdeviceimportswait = మీ జర్నల్ ఈ పరికరాన్ని అంగీకరించడం ఆపింది. మీరు మళ్ళీ పెయిరింగ్ చేసే వరకు ఇంపోర్ట్‌లు ఇక్కడ వేచి ఉంటాయి.
 
 windows.ui.yourshortcut = మీ షార్ట్‌కట్
 
