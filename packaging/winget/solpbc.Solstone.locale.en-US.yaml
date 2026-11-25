@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.58
+PackageVersion: 2.0.59
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -22,10 +22,8 @@ Tags:
   - self-determination
   - solstone
 ReleaseNotes: |-
-  Changed
-  - in settings, the size under "stored on this PC" now reads in capital units, like "2.4 GB". a few messages that used a dash now read as whole sentences.
   Fixed
-  - when audio stops before any sound is saved, the solstone app now discards that piece instead of creating an empty audio file, so none goes into your journal.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.58
+  - while an import was on its way to your journal, your PC could fall asleep from sitting idle and cut the transfer off. the solstone app now asks windows to stay awake while an import is going to your journal. if you put your PC to sleep, the transfer stops and starts again when your PC wakes.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.59
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0
