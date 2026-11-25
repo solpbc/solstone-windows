@@ -32,6 +32,7 @@ import {
   derivedComputerSoundWanted,
   durationTotal,
   greeting,
+  formatTransferSize,
   importTileView,
   isValidImportId,
   journalFacts,
@@ -53,6 +54,7 @@ import {
   type CounterDocument,
   type CounterSourceName,
   type ImportRowState,
+  type ImportUploadPhase,
   type JournalPillInput,
   type Pane,
   type ShelfRow,
@@ -1064,6 +1066,11 @@ interface ImportRow {
   review_expired?: boolean;
   added?: number;
   size?: number;
+  bytes_sent?: number | null;
+  bytes_total?: number | null;
+  resumable?: boolean;
+  phase?: ImportUploadPhase | null;
+  can_cancel?: boolean;
 }
 interface ImportDocument {
   recent: string;
@@ -6164,7 +6171,8 @@ function deskStatusRows(): DeskStatusRow[] {
     ? (latestImport.ready_to_review ??
         importRows.filter((r) => r.state === "ready_to_review").length)
     : 0;
-  const hasSending = importRows.some((r) => r.state === "sending");
+  const sendingRow = importRows.find((r) => r.state === "sending");
+  const pausedRow = importRows.find((r) => r.state === "paused");
   const hasWaiting = Boolean(
     latestImport &&
       (latestImport.waiting > 0 || importRows.some((r) => r.state === "waiting")),
@@ -6189,13 +6197,40 @@ function deskStatusRows(): DeskStatusRow[] {
       relative: "",
       hasFacts: true,
     });
-  } else if (hasSending) {
+  } else if (sendingRow) {
+    const sendingTotal =
+      sendingRow.resumable && sendingRow.phase === "checking"
+        ? t("windows.import.tilechecking")
+        : sendingRow.resumable &&
+            typeof sendingRow.bytes_total === "number" &&
+            sendingRow.bytes_total > 0
+          ? t("windows.import.tilesendingbytes", {
+              sent: formatTransferSize(sendingRow.bytes_sent ?? 0),
+              total: formatTransferSize(sendingRow.bytes_total),
+            })
+          : t("windows.import.rowsending");
     rows.push({
       id: "import",
       name: t("windows.ui.import"),
       nothingYet: false,
-      total: t("windows.import.rowsending"),
+      total: sendingTotal,
       relative: "",
+      hasFacts: true,
+    });
+  } else if (pausedRow) {
+    const pausedTotal =
+      typeof pausedRow.bytes_total === "number" && pausedRow.bytes_total > 0
+        ? t("windows.import.tilesendingbytes", {
+            sent: formatTransferSize(pausedRow.bytes_sent ?? 0),
+            total: formatTransferSize(pausedRow.bytes_total),
+          })
+        : stateWord("paused");
+    rows.push({
+      id: "import",
+      name: t("windows.ui.import"),
+      nothingYet: false,
+      total: pausedTotal,
+      relative: stateWord("paused"),
       hasFacts: true,
     });
   } else if (hasWaiting) {
@@ -6615,12 +6650,15 @@ async function askRemoveImport(row: ImportRow, trigger?: HTMLElement | null): Pr
   cancel.focus();
 }
 
-type ImportRowActionKind = "review" | "sendAgain" | "retry" | "remove";
+type ImportRowActionKind = "review" | "sendAgain" | "retry" | "cancel" | "remove";
 
 interface ImportRowNodeState {
   li: HTMLLIElement;
+  head: HTMLDivElement;
   nameEl: HTMLElement;
   badgeEl: HTMLSpanElement;
+  progressTrack: HTMLDivElement;
+  progressBar: HTMLDivElement;
   detailEl: HTMLParagraphElement;
   actionsEl: HTMLDivElement;
   buttons: Partial<Record<ImportRowActionKind, HTMLButtonElement>>;
@@ -6652,7 +6690,9 @@ const importPageState = new WeakMap<HTMLDivElement, ImportPageNodes>();
 function deriveImportHoldReason(dump: HealthDump, doc: ImportDocument | null): string | null {
   if (!doc) return null;
   if (doc.hold_reason) return doc.hold_reason;
-  const hasPending = doc.rows.some((r) => r.state === "waiting" || r.state === "sending");
+  const hasPending = doc.rows.some(
+    (r) => r.state === "waiting" || r.state === "sending" || r.state === "paused",
+  );
   if (!hasPending) return null;
   const phase = dump.sync.pairing.phase;
   if (phase === "not_paired" || phase === "pairing") {
@@ -6710,12 +6750,20 @@ function reconcileImportRowItem(
     const badgeEl = document.createElement("span");
     badgeEl.className = "desk-import-badge";
     head.append(nameEl, badgeEl);
+    const progressTrack = document.createElement("div");
+    progressTrack.className = "desk-import-progress";
+    progressTrack.setAttribute("role", "progressbar");
+    progressTrack.setAttribute("aria-valuemin", "0");
+    progressTrack.setAttribute("aria-valuemax", "100");
+    const progressBar = document.createElement("div");
+    progressBar.className = "desk-import-progress-bar";
+    progressTrack.append(progressBar);
     const detailEl = document.createElement("p");
     detailEl.className = "desk-import-detail";
     const actionsEl = document.createElement("div");
     actionsEl.className = "desk-actions";
     li.append(head, detailEl);
-    item = { li, nameEl, badgeEl, detailEl, actionsEl, buttons: {}, row };
+    item = { li, head, nameEl, badgeEl, progressTrack, progressBar, detailEl, actionsEl, buttons: {}, row };
     nodes.rowNodes.set(row.id, item);
   }
   item.row = row;
@@ -6734,19 +6782,69 @@ function reconcileImportRowItem(
   if (item.badgeEl.dataset.state !== badgeKey) item.badgeEl.dataset.state = badgeKey;
   if (item.badgeEl.textContent !== badgeLabel) item.badgeEl.textContent = badgeLabel;
 
-  const detailText =
-    row.state === "ready_to_review"
-      ? row.reason ??
-        (row.review_kind === "body_confirmation_required"
-          ? t("windows.import.reviewdetailbody")
-          : t("windows.import.reviewdetail"))
-      : row.state === "review_expired"
-        ? row.reason ?? t("windows.import.reviewexpired")
-        : row.state === "refused"
-          ? row.reason ?? t("windows.ui.yourjournalcouldntacceptthis")
-          : row.state === "sending"
-            ? t("windows.import.rowsending")
-            : t("windows.ui.waitingtogotoyourjournal");
+  const hasResumableProgress =
+    (row.state === "sending" || row.state === "paused") &&
+    Boolean(row.resumable) &&
+    typeof row.bytes_total === "number" &&
+    Number.isFinite(row.bytes_total) &&
+    row.bytes_total > 0;
+  const totalBytes = hasResumableProgress ? (row.bytes_total as number) : 0;
+  const sentBytes = hasResumableProgress
+    ? Math.min(totalBytes, Math.max(0, Number(row.bytes_sent ?? 0)))
+    : 0;
+  const percent = hasResumableProgress
+    ? row.phase === "checking"
+      ? 100
+      : Math.min(100, Math.floor((sentBytes / totalBytes) * 100))
+    : 0;
+
+  if (hasResumableProgress) {
+    const isPausedBar = row.state === "paused" || row.phase === "paused";
+    item.progressTrack.classList.toggle("is-paused", isPausedBar);
+    const pctStr = String(percent);
+    if (item.progressTrack.getAttribute("aria-valuenow") !== pctStr) {
+      item.progressTrack.setAttribute("aria-valuenow", pctStr);
+    }
+    const widthVal = `${percent}%`;
+    if (item.progressBar.style.width !== widthVal) {
+      item.progressBar.style.width = widthVal;
+    }
+  }
+
+  let detailText: string;
+  if (row.state === "ready_to_review") {
+    detailText =
+      row.reason ??
+      (row.review_kind === "body_confirmation_required"
+        ? t("windows.import.reviewdetailbody")
+        : t("windows.import.reviewdetail"));
+  } else if (row.state === "review_expired") {
+    detailText = row.reason ?? t("windows.import.reviewexpired");
+  } else if (row.state === "refused") {
+    detailText = row.reason ?? t("windows.ui.yourjournalcouldntacceptthis");
+  } else if (row.state === "sending") {
+    if (hasResumableProgress) {
+      detailText =
+        row.phase === "checking"
+          ? t("windows.import.rowchecking")
+          : t("windows.import.rowprogress", {
+              sent: formatTransferSize(sentBytes),
+              total: formatTransferSize(totalBytes),
+              percent: String(percent),
+            });
+    } else {
+      detailText = t("windows.import.rowsending");
+    }
+  } else if (row.state === "paused") {
+    detailText = hasResumableProgress
+      ? t("windows.import.rowpaused", {
+          sent: formatTransferSize(sentBytes),
+          total: formatTransferSize(totalBytes),
+        })
+      : t("windows.ui.waitingtogotoyourjournal");
+  } else {
+    detailText = t("windows.ui.waitingtogotoyourjournal");
+  }
   if (item.detailEl.textContent !== detailText) item.detailEl.textContent = detailText;
 
   const desiredButtons: HTMLButtonElement[] = [];
@@ -6802,7 +6900,35 @@ function reconcileImportRowItem(
       },
     );
     desiredButtons.push(removeBtn);
-  } else if (row.state !== "sending") {
+  } else if (row.state === "sending") {
+    if (row.can_cancel) {
+      const cancelBtn = getOrCreateImportRowButton(
+        item,
+        "cancel",
+        t("windows.import.cancelaction"),
+        t("windows.import.cancelactiona11y", { name: row.name }),
+        "desk-connect desk-import-secondary",
+        () => {
+          void importAction("import_cancel", { id: item!.row.id });
+        },
+      );
+      cancelBtn.disabled = false;
+      desiredButtons.push(cancelBtn);
+    }
+  } else if (row.state === "paused") {
+    const cancelBtn = getOrCreateImportRowButton(
+      item,
+      "cancel",
+      t("windows.import.cancelaction"),
+      t("windows.import.cancelactiona11y", { name: row.name }),
+      "desk-connect desk-import-secondary",
+      () => {
+        void importAction("import_cancel", { id: item!.row.id });
+      },
+    );
+    cancelBtn.disabled = false;
+    desiredButtons.push(cancelBtn);
+  } else {
     if (row.state === "refused" && row.retryable) {
       const retryBtn = getOrCreateImportRowButton(
         item,
@@ -6830,14 +6956,14 @@ function reconcileImportRowItem(
     desiredButtons.push(removeBtn);
   }
 
+  const desiredRowChildren: HTMLElement[] = [item.head];
+  if (hasResumableProgress) desiredRowChildren.push(item.progressTrack);
+  desiredRowChildren.push(item.detailEl);
   if (desiredButtons.length > 0) {
     syncChildrenOrder(item.actionsEl, desiredButtons);
-    if (item.actionsEl.parentElement !== item.li) {
-      item.li.append(item.actionsEl);
-    }
-  } else if (item.actionsEl.parentElement === item.li) {
-    item.actionsEl.remove();
+    desiredRowChildren.push(item.actionsEl);
   }
+  syncChildrenOrder(item.li, desiredRowChildren);
 
   return item.li;
 }
@@ -6994,7 +7120,11 @@ function patchImportPage(body: HTMLDivElement, dump: HealthDump): void {
     (r) => r.state === "ready_to_review" || r.state === "review_expired",
   );
   const deviceRows = sortedRows.filter(
-    (r) => r.state === "refused" || r.state === "sending" || r.state === "waiting",
+    (r) =>
+      r.state === "refused" ||
+      r.state === "sending" ||
+      r.state === "paused" ||
+      r.state === "waiting",
   );
 
   // Prune cached row states no longer present in the document.

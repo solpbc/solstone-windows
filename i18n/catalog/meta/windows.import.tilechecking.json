@@ -1,0 +1,16 @@
+{
+  "description": "Import tile sub-line while verifying a finished resumable upload",
+  "context": "Windows app home deck import tile sub-line during final file verification before staging.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "1c85e9355218d43ec2eae188f7da35d97fbf1493a49f328496be835a7cd3d564",
+  "risk": "routine",
+  "auto_merge": true
+}

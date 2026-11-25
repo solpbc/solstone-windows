@@ -3810,6 +3810,194 @@
         "entry": "render(locale, MessageId, named_args)",
         "enum_argument": null,
         "format_passes": 1,
+        "gettext_lookup_key": "windows.import.cancelaction\u0004m77696e646f77732e696d706f72742e63616e63656c616374696f6e",
+        "gettext_plural_key": "m77696e646f77732e696d706f72742e63616e63656c616374696f6e_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.import.cancelaction",
+        "resource_key": "m77696e646f77732e696d706f72742e63616e63656c616374696f6e",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "cancel",
+      "folder": null,
+      "inputs": {},
+      "locale": "en-US",
+      "logical_expected": "cancel",
+      "message_id": "windows.import.cancelaction",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.import.cancelaction\", &[])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e696d706f72742e63616e63656c616374696f6e",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [
+          {
+            "name": "name",
+            "type": "string",
+            "value": "sample"
+          }
+        ],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.import.cancelactiona11y\u0004m77696e646f77732e696d706f72742e63616e63656c616374696f6e61313179",
+        "gettext_plural_key": "m77696e646f77732e696d706f72742e63616e63656c616374696f6e61313179_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.import.cancelactiona11y",
+        "resource_key": "m77696e646f77732e696d706f72742e63616e63656c616374696f6e61313179",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "cancel ⁨sample⁩",
+      "folder": null,
+      "inputs": {
+        "name": "sample"
+      },
+      "locale": "en-US",
+      "logical_expected": "cancel ⁨sample⁩",
+      "message_id": "windows.import.cancelactiona11y",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.import.cancelactiona11y\", &[(\"name\", Value::String(\"sample\"))])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e696d706f72742e63616e63656c616374696f6e61313179",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.import.errorchecksum\u0004m77696e646f77732e696d706f72742e6572726f72636865636b73756d",
+        "gettext_plural_key": "m77696e646f77732e696d706f72742e6572726f72636865636b73756d_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.import.errorchecksum",
+        "resource_key": "m77696e646f77732e696d706f72742e6572726f72636865636b73756d",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "the file didn't arrive intact. try sending it again.",
+      "folder": null,
+      "inputs": {},
+      "locale": "en-US",
+      "logical_expected": "the file didn't arrive intact. try sending it again.",
+      "message_id": "windows.import.errorchecksum",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.import.errorchecksum\", &[])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e696d706f72742e6572726f72636865636b73756d",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.import.errorexpired\u0004m77696e646f77732e696d706f72742e6572726f7265787069726564",
+        "gettext_plural_key": "m77696e646f77732e696d706f72742e6572726f7265787069726564_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.import.errorexpired",
+        "resource_key": "m77696e646f77732e696d706f72742e6572726f7265787069726564",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "this unfinished import is no longer open in your journal. try again to start over.",
+      "folder": null,
+      "inputs": {},
+      "locale": "en-US",
+      "logical_expected": "this unfinished import is no longer open in your journal. try again to start over.",
+      "message_id": "windows.import.errorexpired",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.import.errorexpired\", &[])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e696d706f72742e6572726f7265787069726564",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.import.errornospace\u0004m77696e646f77732e696d706f72742e6572726f726e6f7370616365",
+        "gettext_plural_key": "m77696e646f77732e696d706f72742e6572726f726e6f7370616365_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.import.errornospace",
+        "resource_key": "m77696e646f77732e696d706f72742e6572726f726e6f7370616365",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "not enough room where your journal lives for this file, or too many unfinished imports are waiting there. free up space or finish other imports, then try again.",
+      "folder": null,
+      "inputs": {},
+      "locale": "en-US",
+      "logical_expected": "not enough room where your journal lives for this file, or too many unfinished imports are waiting there. free up space or finish other imports, then try again.",
+      "message_id": "windows.import.errornospace",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.import.errornospace\", &[])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e696d706f72742e6572726f726e6f7370616365",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.import.errorunreadable\u0004m77696e646f77732e696d706f72742e6572726f72756e7265616461626c65",
+        "gettext_plural_key": "m77696e646f77732e696d706f72742e6572726f72756e7265616461626c65_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.import.errorunreadable",
+        "resource_key": "m77696e646f77732e696d706f72742e6572726f72756e7265616461626c65",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "the waiting copy on this PC could no longer be read. remove it and choose the file again.",
+      "folder": null,
+      "inputs": {},
+      "locale": "en-US",
+      "logical_expected": "the waiting copy on this PC could no longer be read. remove it and choose the file again.",
+      "message_id": "windows.import.errorunreadable",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.import.errorunreadable\", &[])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e696d706f72742e6572726f72756e7265616461626c65",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
         "gettext_lookup_key": "windows.import.expiredword\u0004m77696e646f77732e696d706f72742e65787069726564776f7264",
         "gettext_plural_key": "m77696e646f77732e696d706f72742e65787069726564776f7264_plural",
         "gettext_unsigned_quantity": null,
@@ -4230,6 +4418,130 @@
         "entry": "render(locale, MessageId, named_args)",
         "enum_argument": null,
         "format_passes": 1,
+        "gettext_lookup_key": "windows.import.rowchecking\u0004m77696e646f77732e696d706f72742e726f77636865636b696e67",
+        "gettext_plural_key": "m77696e646f77732e696d706f72742e726f77636865636b696e67_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.import.rowchecking",
+        "resource_key": "m77696e646f77732e696d706f72742e726f77636865636b696e67",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "checking the complete file",
+      "folder": null,
+      "inputs": {},
+      "locale": "en-US",
+      "logical_expected": "checking the complete file",
+      "message_id": "windows.import.rowchecking",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.import.rowchecking\", &[])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e696d706f72742e726f77636865636b696e67",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [
+          {
+            "name": "sent",
+            "type": "string",
+            "value": "sample"
+          },
+          {
+            "name": "total",
+            "type": "string",
+            "value": "sample"
+          }
+        ],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.import.rowpaused\u0004m77696e646f77732e696d706f72742e726f77706175736564",
+        "gettext_plural_key": "m77696e646f77732e696d706f72742e726f77706175736564_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.import.rowpaused",
+        "resource_key": "m77696e646f77732e696d706f72742e726f77706175736564",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "paused at ⁨sample⁩ of ⁨sample⁩. it picks up from here when it can continue.",
+      "folder": null,
+      "inputs": {
+        "sent": "sample",
+        "total": "sample"
+      },
+      "locale": "en-US",
+      "logical_expected": "paused at ⁨sample⁩ of ⁨sample⁩. it picks up from here when it can continue.",
+      "message_id": "windows.import.rowpaused",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.import.rowpaused\", &[(\"sent\", Value::String(\"sample\")), (\"total\", Value::String(\"sample\"))])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e696d706f72742e726f77706175736564",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [
+          {
+            "name": "sent",
+            "type": "string",
+            "value": "sample"
+          },
+          {
+            "name": "total",
+            "type": "string",
+            "value": "sample"
+          },
+          {
+            "name": "percent",
+            "type": "string",
+            "value": "sample"
+          }
+        ],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.import.rowprogress\u0004m77696e646f77732e696d706f72742e726f7770726f6772657373",
+        "gettext_plural_key": "m77696e646f77732e696d706f72742e726f7770726f6772657373_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.import.rowprogress",
+        "resource_key": "m77696e646f77732e696d706f72742e726f7770726f6772657373",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "⁨sample⁩ of ⁨sample⁩ (⁨sample⁩%)",
+      "folder": null,
+      "inputs": {
+        "percent": "sample",
+        "sent": "sample",
+        "total": "sample"
+      },
+      "locale": "en-US",
+      "logical_expected": "⁨sample⁩ of ⁨sample⁩ (⁨sample⁩%)",
+      "message_id": "windows.import.rowprogress",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.import.rowprogress\", &[(\"percent\", Value::String(\"sample\")), (\"sent\", Value::String(\"sample\")), (\"total\", Value::String(\"sample\"))])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e696d706f72742e726f7770726f6772657373",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
         "gettext_lookup_key": "windows.import.rowsending\u0004m77696e646f77732e696d706f72742e726f7773656e64696e67",
         "gettext_plural_key": "m77696e646f77732e696d706f72742e726f7773656e64696e67_plural",
         "gettext_unsigned_quantity": null,
@@ -4531,6 +4843,36 @@
     {
       "bundle": "windows",
       "call_contract": {
+        "arguments": [],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.import.tilechecking\u0004m77696e646f77732e696d706f72742e74696c65636865636b696e67",
+        "gettext_plural_key": "m77696e646f77732e696d706f72742e74696c65636865636b696e67_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.import.tilechecking",
+        "resource_key": "m77696e646f77732e696d706f72742e74696c65636865636b696e67",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "checking file",
+      "folder": null,
+      "inputs": {},
+      "locale": "en-US",
+      "logical_expected": "checking file",
+      "message_id": "windows.import.tilechecking",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.import.tilechecking\", &[])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e696d706f72742e74696c65636865636b696e67",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
         "arguments": [
           {
             "name": "display",
@@ -4564,6 +4906,100 @@
       "own_reader_call": "render(\"en-US\", \"windows.import.tilereadycount\", &[(\"display\", Value::String(\"sample\"))])",
       "platform_reader": "pending",
       "resource_key": "m77696e646f77732e696d706f72742e74696c657265616479636f756e74",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [
+          {
+            "name": "sent",
+            "type": "string",
+            "value": "sample"
+          },
+          {
+            "name": "total",
+            "type": "string",
+            "value": "sample"
+          }
+        ],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.import.tilesendingbytes\u0004m77696e646f77732e696d706f72742e74696c6573656e64696e676279746573",
+        "gettext_plural_key": "m77696e646f77732e696d706f72742e74696c6573656e64696e676279746573_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.import.tilesendingbytes",
+        "resource_key": "m77696e646f77732e696d706f72742e74696c6573656e64696e676279746573",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "⁨sample⁩ of ⁨sample⁩",
+      "folder": null,
+      "inputs": {
+        "sent": "sample",
+        "total": "sample"
+      },
+      "locale": "en-US",
+      "logical_expected": "⁨sample⁩ of ⁨sample⁩",
+      "message_id": "windows.import.tilesendingbytes",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.import.tilesendingbytes\", &[(\"sent\", Value::String(\"sample\")), (\"total\", Value::String(\"sample\"))])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e696d706f72742e74696c6573656e64696e676279746573",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
+        "arguments": [
+          {
+            "name": "sent",
+            "type": "string",
+            "value": "sample"
+          },
+          {
+            "name": "total",
+            "type": "string",
+            "value": "sample"
+          },
+          {
+            "name": "display",
+            "type": "string",
+            "value": "sample"
+          }
+        ],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.import.tilesendingbytesmore\u0004m77696e646f77732e696d706f72742e74696c6573656e64696e6762797465736d6f7265",
+        "gettext_plural_key": "m77696e646f77732e696d706f72742e74696c6573656e64696e6762797465736d6f7265_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.import.tilesendingbytesmore",
+        "resource_key": "m77696e646f77732e696d706f72742e74696c6573656e64696e6762797465736d6f7265",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "⁨sample⁩ of ⁨sample⁩ · ⁨sample⁩ more waiting",
+      "folder": null,
+      "inputs": {
+        "display": "sample",
+        "sent": "sample",
+        "total": "sample"
+      },
+      "locale": "en-US",
+      "logical_expected": "⁨sample⁩ of ⁨sample⁩ · ⁨sample⁩ more waiting",
+      "message_id": "windows.import.tilesendingbytesmore",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.import.tilesendingbytesmore\", &[(\"display\", Value::String(\"sample\")), (\"sent\", Value::String(\"sample\")), (\"total\", Value::String(\"sample\"))])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e696d706f72742e74696c6573656e64696e6762797465736d6f7265",
       "target": "rust"
     },
     {

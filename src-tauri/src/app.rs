@@ -640,6 +640,7 @@ pub fn run(
             crate::ipc::import_send_again,
             crate::ipc::import_reconcile,
             crate::ipc::import_remove,
+            crate::ipc::import_cancel,
             crate::ipc::import_prepare_remove,
             crate::ipc::import_cancel_remove,
             crate::ipc::import_retry,

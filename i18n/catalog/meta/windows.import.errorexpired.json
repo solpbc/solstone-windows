@@ -1,0 +1,16 @@
+{
+  "description": "Actionable error when a partial resumable upload is no longer open on the journal",
+  "context": "Windows app import pane refusal detail after HTTP 404 upload_not_found.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "53eea0eff52ff75356165ecb30459215ec08708799af162269ee026e81aaf3d0",
+  "risk": "routine",
+  "auto_merge": true
+}

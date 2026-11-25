@@ -306,6 +306,17 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
     ]
   ],
   "windows.import.allhistory": [],
+  "windows.import.cancelaction": [],
+  "windows.import.cancelactiona11y": [
+    [
+      "name",
+      "string"
+    ]
+  ],
+  "windows.import.errorchecksum": [],
+  "windows.import.errorexpired": [],
+  "windows.import.errornospace": [],
+  "windows.import.errorunreadable": [],
   "windows.import.expiredword": [],
   "windows.import.holdoffline": [],
   "windows.import.intro": [],
@@ -338,6 +349,31 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
   "windows.import.reviewdetail": [],
   "windows.import.reviewdetailbody": [],
   "windows.import.reviewexpired": [],
+  "windows.import.rowchecking": [],
+  "windows.import.rowpaused": [
+    [
+      "sent",
+      "string"
+    ],
+    [
+      "total",
+      "string"
+    ]
+  ],
+  "windows.import.rowprogress": [
+    [
+      "sent",
+      "string"
+    ],
+    [
+      "total",
+      "string"
+    ],
+    [
+      "percent",
+      "string"
+    ]
+  ],
   "windows.import.rowsending": [],
   "windows.import.sectionreview": [],
   "windows.import.sendagainaction": [],
@@ -370,7 +406,32 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
       "string"
     ]
   ],
+  "windows.import.tilechecking": [],
   "windows.import.tilereadycount": [
+    [
+      "display",
+      "string"
+    ]
+  ],
+  "windows.import.tilesendingbytes": [
+    [
+      "sent",
+      "string"
+    ],
+    [
+      "total",
+      "string"
+    ]
+  ],
+  "windows.import.tilesendingbytesmore": [
+    [
+      "sent",
+      "string"
+    ],
+    [
+      "total",
+      "string"
+    ],
     [
       "display",
       "string"

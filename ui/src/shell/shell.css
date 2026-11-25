@@ -976,6 +976,35 @@ html:has(.desk-shell[data-width="phone"]) #setup-sun .sunarc-twilight {
   background: var(--desk-accent);
 }
 
+.desk-import-badge[data-state="paused"] {
+  color: var(--desk-subtle);
+}
+
+.desk-import-badge[data-state="paused"]::before {
+  border-color: var(--desk-subtle);
+  background: transparent;
+}
+
+.desk-import-progress {
+  margin-top: 6px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--desk-hairline);
+  overflow: hidden;
+}
+
+.desk-import-progress-bar {
+  height: 100%;
+  width: 0;
+  border-radius: inherit;
+  background: var(--desk-accent);
+  transition: width 160ms ease;
+}
+
+.desk-import-progress.is-paused .desk-import-progress-bar {
+  background: var(--desk-subtle);
+}
+
 .desk-import-badge[data-state="waiting"] {
   color: var(--desk-subtle);
 }

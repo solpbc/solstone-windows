@@ -1,0 +1,16 @@
+{
+  "description": "Action button label to cancel an active or paused resumable import",
+  "context": "Windows app import pane row secondary action button.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "2fb1b0b4511f744f1f8617c9484ba0385da245221e9a958f185c1f0a1c255879",
+  "risk": "routine",
+  "auto_merge": true
+}

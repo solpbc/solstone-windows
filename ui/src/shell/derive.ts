@@ -732,16 +732,33 @@ export function isValidImportId(value: string | null | undefined): value is stri
   return typeof value === "string" && /^[0-9]{8}_[0-9]{6}$/.test(value);
 }
 
+/** Format byte counts identically to the journal transfer strip (`workspace.html`). */
+export function formatTransferSize(bytes: number): string {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  if (n < 1024) return `${Math.round(n)} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+export type ImportUploadPhase = "sending" | "paused" | "checking";
+
 export type ImportRowState =
   | "ready_to_review"
   | "review_expired"
   | "refused"
   | "sending"
+  | "paused"
   | "waiting";
 
 export type ImportTileRow = {
   name: string;
   state: ImportRowState;
+  bytes_sent?: number | null;
+  bytes_total?: number | null;
+  resumable?: boolean;
+  phase?: ImportUploadPhase | null;
 };
 
 export type ImportTileInput = {
@@ -755,15 +772,22 @@ export type ImportTileInput = {
 };
 
 export type ImportTileView = {
-  word: "" | "waiting" | "sending" | "ready to review" | "needs attention";
+  word: "" | "waiting" | "paused" | "sending" | "ready to review" | "needs attention";
   sub: string;
   ariaLabel?: string;
 };
 
+function isResumableRow(row: ImportTileRow): boolean {
+  return Boolean(
+    row.resumable ||
+      (typeof row.bytes_total === "number" && Number.isFinite(row.bytes_total) && row.bytes_total > 0),
+  );
+}
+
 /**
  * Pure home `import` tile derivation.
  * Quiet when idle (`word: ""`, `sub: "files"`).
- * Active/held follows worst-signal-wins: `needs attention` > `ready to review` > `sending` > `waiting`.
+ * Active/held follows worst-signal-wins: `needs attention` > `ready to review` > `sending` > `paused` > `waiting`.
  */
 export function importTileView(input: ImportTileInput): ImportTileView {
   const attentionRows = input.rows.filter(
@@ -771,19 +795,21 @@ export function importTileView(input: ImportTileInput): ImportTileView {
   );
   const reviewRows = input.rows.filter((r) => r.state === "ready_to_review");
   const sendingRows = input.rows.filter((r) => r.state === "sending");
+  const pausedRows = input.rows.filter((r) => r.state === "paused");
   const waitingRows = input.rows.filter((r) => r.state === "waiting");
 
   if (attentionRows.length > 0 || input.needsAttention) {
     const word = "needs attention" as const;
+    const heldPending = pausedRows.length + waitingRows.length;
     let sub: string;
     if (attentionRows.length === 1) {
       sub = attentionRows[0].name;
     } else if (attentionRows.length > 1) {
       sub = quantity("items", attentionRows.length);
-    } else if (waitingRows.length === 1) {
-      sub = waitingRows[0].name;
-    } else if (waitingRows.length > 1) {
-      sub = quantity("items", waitingRows.length);
+    } else if (heldPending === 1) {
+      sub = (pausedRows[0] ?? waitingRows[0]).name;
+    } else if (heldPending > 1) {
+      sub = quantity("items", heldPending);
     } else {
       sub = t("windows.ui.files");
     }
@@ -811,14 +837,55 @@ export function importTileView(input: ImportTileInput): ImportTileView {
 
   if (sendingRows.length > 0) {
     const word = "sending" as const;
-    const totalActive = sendingRows.length + waitingRows.length;
+    const head = sendingRows[0];
+    let sub: string;
+    if (isResumableRow(head)) {
+      if (head.phase === "checking") {
+        sub = t("windows.import.tilechecking");
+      } else {
+        const sent = formatTransferSize(head.bytes_sent ?? 0);
+        const total = formatTransferSize(head.bytes_total ?? 0);
+        const queued = sendingRows.length - 1 + pausedRows.length + waitingRows.length;
+        sub =
+          queued > 0
+            ? t("windows.import.tilesendingbytesmore", {
+                sent,
+                total,
+                display: number(queued, { useGrouping: false }),
+              })
+            : t("windows.import.tilesendingbytes", { sent, total });
+      }
+    } else {
+      const totalActive = sendingRows.length + pausedRows.length + waitingRows.length;
+      sub =
+        totalActive === 1
+          ? head.name
+          : t("windows.import.tilesendingcount", {
+              count: totalActive,
+              display: number(totalActive, { useGrouping: false }),
+            });
+    }
+    return {
+      word,
+      sub,
+      ariaLabel: t("windows.import.tilea11y", { state: stateWord(word), sub }),
+    };
+  }
+
+  if (pausedRows.length > 0) {
+    const word = "paused" as const;
+    const head = pausedRows[0];
+    const sent = formatTransferSize(head.bytes_sent ?? 0);
+    const total = formatTransferSize(head.bytes_total ?? 0);
+    const queued = pausedRows.length - 1 + waitingRows.length;
     const sub =
-      totalActive === 1
-        ? sendingRows[0].name
-        : t("windows.import.tilesendingcount", {
-            count: totalActive,
-            display: number(totalActive, { useGrouping: false }),
-          });
+      queued > 0
+        ? t("windows.import.tilesendingbytesmore", {
+            sent,
+            total,
+            display: number(queued, { useGrouping: false }),
+          })
+        : t("windows.import.tilesendingbytes", { sent, total });
     return {
       word,
       sub,
@@ -857,8 +924,10 @@ function importRowRank(state: string): number {
       return 2;
     case "sending":
       return 3;
-    default:
+    case "paused":
       return 4;
+    default:
+      return 5;
   }
 }
 

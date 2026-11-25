@@ -767,6 +767,43 @@ const MESSAGES = {
     arguments: [
     ],
   },
+  "windows.import.cancelaction": {
+    resourceKey: "m77696e646f77732e696d706f72742e63616e63656c616374696f6e",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.cancelactiona11y": {
+    resourceKey: "m77696e646f77732e696d706f72742e63616e63656c616374696f6e61313179",
+    formatIntent: "text",
+    arguments: [
+      { name: "name", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.import.errorchecksum": {
+    resourceKey: "m77696e646f77732e696d706f72742e6572726f72636865636b73756d",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.errorexpired": {
+    resourceKey: "m77696e646f77732e696d706f72742e6572726f7265787069726564",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.errornospace": {
+    resourceKey: "m77696e646f77732e696d706f72742e6572726f726e6f7370616365",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.errorunreadable": {
+    resourceKey: "m77696e646f77732e696d706f72742e6572726f72756e7265616461626c65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
   "windows.import.expiredword": {
     resourceKey: "m77696e646f77732e696d706f72742e65787069726564776f7264",
     formatIntent: "text",
@@ -849,6 +886,29 @@ const MESSAGES = {
     arguments: [
     ],
   },
+  "windows.import.rowchecking": {
+    resourceKey: "m77696e646f77732e696d706f72742e726f77636865636b696e67",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.import.rowpaused": {
+    resourceKey: "m77696e646f77732e696d706f72742e726f77706175736564",
+    formatIntent: "text",
+    arguments: [
+      { name: "sent", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "total", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.import.rowprogress": {
+    resourceKey: "m77696e646f77732e696d706f72742e726f7770726f6772657373",
+    formatIntent: "text",
+    arguments: [
+      { name: "sent", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "total", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "percent", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
   "windows.import.rowsending": {
     resourceKey: "m77696e646f77732e696d706f72742e726f7773656e64696e67",
     formatIntent: "text",
@@ -909,10 +969,33 @@ const MESSAGES = {
       { name: "sub", type: "string", min: null, max: null, numericStyle: "ungrouped" },
     ],
   },
+  "windows.import.tilechecking": {
+    resourceKey: "m77696e646f77732e696d706f72742e74696c65636865636b696e67",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
   "windows.import.tilereadycount": {
     resourceKey: "m77696e646f77732e696d706f72742e74696c657265616479636f756e74",
     formatIntent: "text",
     arguments: [
+      { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.import.tilesendingbytes": {
+    resourceKey: "m77696e646f77732e696d706f72742e74696c6573656e64696e676279746573",
+    formatIntent: "text",
+    arguments: [
+      { name: "sent", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "total", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.import.tilesendingbytesmore": {
+    resourceKey: "m77696e646f77732e696d706f72742e74696c6573656e64696e6762797465736d6f7265",
+    formatIntent: "text",
+    arguments: [
+      { name: "sent", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "total", type: "string", min: null, max: null, numericStyle: "ungrouped" },
       { name: "display", type: "string", min: null, max: null, numericStyle: "ungrouped" },
     ],
   },

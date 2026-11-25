@@ -1,0 +1,25 @@
+{
+  "description": "Import tile sub-line showing confirmed bytes sent for one resumable file",
+  "context": "Windows app home deck import tile sub-line paired with sending or paused state word.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "sent",
+      "type": "string"
+    },
+    {
+      "name": "total",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "4109c26cdeaa8541837e789ee748c920de77c1a6e75a8f58989d843f459b88ef",
+  "risk": "routine",
+  "auto_merge": true
+}

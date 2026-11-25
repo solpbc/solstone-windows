@@ -1913,6 +1913,16 @@ pub fn import_remove(
 }
 
 #[tauri::command]
+pub fn import_cancel(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<(), String> {
+    crate::logs::require_settings(&window)?;
+    crate::import::cancel_upload(&app, &id).map_err(|_| "import_cancel_failed".into())
+}
+
+#[tauri::command]
 pub fn import_retry(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,

@@ -11,6 +11,7 @@ import { automationContract } from "../src/lib/contract";
 import * as app from "../src/main";
 import {
   counterFacts,
+  formatTransferSize,
   importTileView,
   isValidImportId,
   journalPill,
@@ -732,5 +733,222 @@ describe("import OX WebView2 UI, focus, and accessibility", () => {
 
     window.dispatchEvent(new Event("focus"));
     expect(invokeMock).toHaveBeenCalledWith("import_reconcile");
+  });
+
+  it("derives resumable tile progress, checking, paused non-fault, and row sort rank", () => {
+    expect(formatTransferSize(0)).toBe("0 B");
+    expect(formatTransferSize(1024 * 512)).toBe("512 KB");
+    expect(formatTransferSize(16 * 1024 * 1024)).toBe("16.0 MB");
+    expect(formatTransferSize(4 * 1024 * 1024 * 1024)).toBe("4.0 GB");
+
+    const gib = 1024 * 1024 * 1024;
+    expect(
+      importTileView({
+        rows: [
+          {
+            name: "archive.zip",
+            state: "sending",
+            resumable: true,
+            phase: "sending",
+            bytes_sent: Math.round(1.2 * gib),
+            bytes_total: 4 * gib,
+          },
+        ],
+        waitingForJournal: false,
+        needsAttention: false,
+      }),
+    ).toEqual({
+      word: "sending",
+      sub: "1.2 GB of 4.0 GB",
+      ariaLabel: "import, sending. 1.2 GB of 4.0 GB.",
+    });
+
+    expect(
+      importTileView({
+        rows: [
+          {
+            name: "archive.zip",
+            state: "sending",
+            resumable: true,
+            phase: "sending",
+            bytes_sent: gib,
+            bytes_total: 4 * gib,
+          },
+          { name: "next.pdf", state: "waiting" },
+          { name: "later.pdf", state: "waiting" },
+        ],
+        waitingForJournal: false,
+        needsAttention: false,
+      }),
+    ).toEqual({
+      word: "sending",
+      sub: "1.0 GB of 4.0 GB · 2 more waiting",
+      ariaLabel: "import, sending. 1.0 GB of 4.0 GB · 2 more waiting.",
+    });
+
+    expect(
+      importTileView({
+        rows: [
+          {
+            name: "archive.zip",
+            state: "sending",
+            resumable: true,
+            phase: "checking",
+            bytes_sent: 4 * gib,
+            bytes_total: 4 * gib,
+          },
+        ],
+        waitingForJournal: false,
+        needsAttention: false,
+      }),
+    ).toEqual({
+      word: "sending",
+      sub: "checking file",
+      ariaLabel: "import, sending. checking file.",
+    });
+
+    expect(
+      importTileView({
+        rows: [
+          {
+            name: "archive.zip",
+            state: "paused",
+            resumable: true,
+            phase: "paused",
+            bytes_sent: 2 * gib,
+            bytes_total: 4 * gib,
+          },
+        ],
+        waitingForJournal: true,
+        needsAttention: false,
+      }),
+    ).toEqual({
+      word: "paused",
+      sub: "2.0 GB of 4.0 GB",
+      ariaLabel: "import, paused. 2.0 GB of 4.0 GB.",
+    });
+
+    const sorted = sortImportRows([
+      { id: "w", state: "waiting", added: 10 },
+      { id: "p", state: "paused", added: 5 },
+      { id: "s", state: "sending", added: 1 },
+      { id: "f", state: "refused", added: 1 },
+    ]);
+    expect(sorted.map((r) => r.id)).toEqual(["f", "s", "p", "w"]);
+  });
+
+  it("renders resumable progress bar, checking, paused non-fault, and cancel preserving DOM focus", () => {
+    const dump = deskDump({ imports_waiting: 1 });
+    app.__test__.setHealth(dump);
+    const total = 4 * 1024 * 1024 * 1024;
+    const first = 1024 * 1024 * 1024;
+    const second = 2 * 1024 * 1024 * 1024;
+
+    app.__test__.setImport(
+      importDoc({
+        waiting: 1,
+        rows: [
+          row({
+            id: "big1",
+            name: "takeout.zip",
+            state: "sending",
+            size: total,
+            bytes_sent: first,
+            bytes_total: total,
+            resumable: true,
+            phase: "sending",
+            can_cancel: true,
+          }),
+        ],
+      }),
+    );
+    app.__test__.openDeskSource("import");
+
+    const rowLi = document.querySelector<HTMLLIElement>('li[data-import-id="big1"]')!;
+    const bar = rowLi.querySelector<HTMLElement>(".desk-import-progress")!;
+    const cancelBtn = byId("settings.import.row.big1.cancel") as HTMLButtonElement;
+    expect(bar.getAttribute("aria-valuenow")).toBe("25");
+    expect(rowLi.querySelector(".desk-import-detail")?.textContent).toBe("1.0 GB of 4.0 GB (25%)");
+    expect(cancelBtn).not.toBeNull();
+
+    // Progress updates preserve DOM node identity and active button focus.
+    cancelBtn.focus();
+    app.__test__.setImport(
+      importDoc({
+        waiting: 1,
+        rows: [
+          row({
+            id: "big1",
+            name: "takeout.zip",
+            state: "sending",
+            size: total,
+            bytes_sent: second,
+            bytes_total: total,
+            resumable: true,
+            phase: "sending",
+            can_cancel: true,
+          }),
+        ],
+      }),
+    );
+    app.__test__.renderSettings(dump);
+    expect(document.querySelector('li[data-import-id="big1"]')).toBe(rowLi);
+    expect(document.activeElement).toBe(cancelBtn);
+    expect(bar.getAttribute("aria-valuenow")).toBe("50");
+    expect(rowLi.querySelector(".desk-import-detail")?.textContent).toBe("2.0 GB of 4.0 GB (50%)");
+
+    // Clicking cancel invokes import_cancel with the item id.
+    invokeMock.mockClear();
+    cancelBtn.click();
+    expect(invokeMock).toHaveBeenCalledWith("import_cancel", { id: "big1" });
+
+    // Paused state renders paused badge + bar + non-fault detail + cancel.
+    app.__test__.setImport(
+      importDoc({
+        waiting: 1,
+        needs_owner: false,
+        rows: [
+          row({
+            id: "big1",
+            name: "takeout.zip",
+            state: "paused",
+            size: total,
+            bytes_sent: second,
+            bytes_total: total,
+            resumable: true,
+            phase: "paused",
+            can_cancel: true,
+          }),
+        ],
+      }),
+    );
+    app.__test__.renderSettings(dump);
+    expect(rowLi.querySelector(".desk-import-badge")?.getAttribute("data-state")).toBe("paused");
+    expect(bar.classList.contains("is-paused")).toBe(true);
+    expect(byId("settings.import.row.big1.cancel")).not.toBeNull();
+
+    // Checking phase fills bar to 100% and hides cancel while finalizing checksum.
+    app.__test__.setImport(
+      importDoc({
+        waiting: 1,
+        rows: [
+          row({
+            id: "big1",
+            name: "takeout.zip",
+            state: "sending",
+            size: total,
+            bytes_sent: total,
+            bytes_total: total,
+            resumable: true,
+            phase: "checking",
+            can_cancel: false,
+          }),
+        ],
+      }),
+    );
+    app.__test__.renderSettings(dump);
+    expect(bar.getAttribute("aria-valuenow")).toBe("100");
+    expect(rowLi.querySelector(".desk-import-detail")?.textContent).toBe("checking the complete file");
+    expect(byId("settings.import.row.big1.cancel")).toBeNull();
   });
 });

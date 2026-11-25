@@ -1,0 +1,21 @@
+{
+  "description": "Screen-reader label for cancelling a named resumable import",
+  "context": "Windows app import pane row cancel button aria-label.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "name",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "cc1c702f5fe7c3dd2a3d600ba0b39c5d173218f4f65f084a3bae07ab30ce9c85",
+  "risk": "routine",
+  "auto_merge": true
+}

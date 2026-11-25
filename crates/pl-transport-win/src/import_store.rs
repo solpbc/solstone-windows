@@ -793,7 +793,11 @@ pub fn build_document(
                 None
             };
             let bytes_sent = if is_resumable {
-                Some(upload.map_or(0, |u| u.next_offset.min(item.size)))
+                if phase == Some(UploadPhase::Checking.as_str()) {
+                    Some(item.size)
+                } else {
+                    Some(upload.map_or(0, |u| u.next_offset.min(item.size)))
+                }
             } else {
                 None
             };
@@ -1061,14 +1065,20 @@ pub fn handoff_status_json(
     let upload = item.upload_for(journal);
     if store.active.as_deref() == Some(id) {
         if store.active_resumable || upload.is_some() {
+            let phase = store.active_phase.unwrap_or(UploadPhase::Sending);
+            let bytes_sent = if phase == UploadPhase::Checking {
+                item.size
+            } else {
+                upload.map_or(0, |u| u.next_offset.min(item.size))
+            };
             return json!({
                 "state": "uploading",
                 "size": item.size,
                 "size_bytes": item.size,
-                "bytes_sent": upload.map_or(0, |u| u.next_offset.min(item.size)),
+                "bytes_sent": bytes_sent,
                 "bytes_total": item.size,
                 "resumable": true,
-                "phase": store.active_phase.unwrap_or(UploadPhase::Sending).as_str(),
+                "phase": phase.as_str(),
                 "device_noun": "PC",
             });
         }

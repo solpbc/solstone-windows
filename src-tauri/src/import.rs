@@ -3,7 +3,7 @@
 
 //! File import is a sibling custody loop; closing its page never stops it.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -11,10 +11,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use observer_model::i18n::message;
 use observer_model::{PairingPhase, SyncSnapshot};
-use pl_transport_win::import_client::{Handoff, ImportFile, ImportReply, ReconcileReply};
+use pl_transport_win::import_client::{
+    hash_file_sha256, read_file_chunk, Handoff, ImportFile, ImportReply, ReconcileReply,
+    ResumableConfig, ResumableProbe, ResumableUploadSession, RetryLadder, UploadChunkReply,
+    UploadCommitReply, UploadCreateReply, UploadStatusReply,
+};
 use pl_transport_win::import_store::{
-    self, Intake, IntakeRefusal, ReconcileOutcome, Refusal, ReviewState, SavedProgress, Store,
-    VersionGate,
+    self, Intake, IntakeRefusal, ReconcileOutcome, Refusal, ResumableUploadState, ReviewState,
+    SavedProgress, Store, UploadPhase, VersionGate,
 };
 use pl_transport_win::ObserverClient;
 use serde::Serialize;
@@ -24,6 +28,12 @@ use tokio::sync::{watch, Notify};
 pub use pl_transport_win::import_store::{Document, Row};
 
 static SERVICE: OnceLock<Arc<Service>> = OnceLock::new();
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(30);
+const MAX_CHUNK_CHECKSUM_RETRIES: usize = 3;
+/// Conservative size threshold used only when the capability probe itself fails transiently
+/// before the journal answers `/app/import/api/sources`, so large files pause instead of
+/// falling back to single-POST `/save` while offline.
+const PROBE_UNAVAILABLE_PAUSE_THRESHOLD_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct PowerState {
@@ -31,9 +41,16 @@ struct PowerState {
     suspend_epoch: u64,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 enum DeliveryStep<T> {
     Completed(T),
     PausedForSleep,
+}
+
+enum ActiveStep<T> {
+    Completed(T),
+    PausedForSleep,
+    Cancelled,
 }
 
 struct Service {
@@ -41,9 +58,16 @@ struct Service {
     intake_lock: tokio::sync::Mutex<()>,
     wake: Notify,
     power: watch::Sender<PowerState>,
+    cancel: watch::Sender<BTreeSet<String>>,
     changes: watch::Sender<()>,
     identity: Mutex<Option<(String, String)>>,
     auth_blocked: Mutex<Option<String>>,
+    /// Cached capability probe keyed by `(pairing_binding, journal_version)`.
+    resumable_probe: Mutex<Option<(String, String, Option<ResumableConfig>)>>,
+    /// Per-item retry backoff ladders for resumable uploads.
+    retry_ladders: Mutex<BTreeMap<String, RetryLadder>>,
+    /// Optional shorter next-pass wait scheduled by a paused resumable upload's retry ladder.
+    next_backoff: Mutex<Option<Duration>>,
     /// Items delivered this run and the journal row each became, so a journal
     /// page that handed one over can link to it.
     receipts: Mutex<VecDeque<(String, Option<String>)>>,
@@ -175,9 +199,70 @@ pub fn on_system_suspending() {
 pub fn on_system_resumed() {
     if let Some(service) = SERVICE.get() {
         mark_resumed(&service.power);
+        reset_all_retry_ladders(service);
         service.reconcile_requested.store(true, Ordering::Release);
         service.wake.notify_one();
     }
+}
+
+fn next_retry_delay(service: &Service, id: &str) -> Duration {
+    let mut ladders = service
+        .retry_ladders
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    ladders.entry(id.to_owned()).or_default().next_delay()
+}
+
+fn reset_retry_ladder(service: &Service, id: &str) {
+    let mut ladders = service
+        .retry_ladders
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    ladders.remove(id);
+}
+
+fn reset_all_retry_ladders(service: &Service) {
+    service
+        .retry_ladders
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clear();
+    *service
+        .next_backoff
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = None;
+}
+
+fn schedule_backoff(service: &Service, delay: Duration) {
+    let mut slot = service
+        .next_backoff
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    *slot = Some(match *slot {
+        Some(existing) => existing.min(delay),
+        None => delay,
+    });
+}
+
+fn take_next_wait(service: &Service) -> Duration {
+    service
+        .next_backoff
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+        .unwrap_or(DEFAULT_POLL_INTERVAL)
+}
+
+fn mark_item_cancelled(cancel: &watch::Sender<BTreeSet<String>>, id: &str) {
+    cancel.send_modify(|set| {
+        set.insert(id.to_owned());
+    });
+}
+
+fn clear_item_cancelled(cancel: &watch::Sender<BTreeSet<String>>, id: &str) {
+    cancel.send_modify(|set| {
+        set.remove(id);
+    });
 }
 
 fn mark_suspending(power: &watch::Sender<PowerState>) {
@@ -195,6 +280,7 @@ fn mark_resumed(power: &watch::Sender<PowerState>) {
 
 /// Run one item's upload while holding an OS awake guard, cancelling the work
 /// and dropping the guard on any exit path or system-suspend transition.
+#[cfg_attr(not(test), allow(dead_code))]
 async fn run_while_awake<H, F, Fut, T>(
     power_rx: &mut watch::Receiver<PowerState>,
     acquire_hold: F,
@@ -220,6 +306,45 @@ where
             DeliveryStep::PausedForSleep
         }
         outcome = work => DeliveryStep::Completed(outcome),
+    }
+}
+
+/// Run one item's upload while holding an OS awake guard, aborting immediately
+/// and dropping the guard on system suspend or owner cancellation of `item_id`.
+async fn run_while_awake_or_cancel<H, F, Fut, T>(
+    power_rx: &mut watch::Receiver<PowerState>,
+    cancel_rx: &mut watch::Receiver<BTreeSet<String>>,
+    item_id: &str,
+    acquire_hold: F,
+    work: Fut,
+) -> ActiveStep<T>
+where
+    F: FnOnce() -> H,
+    Fut: std::future::Future<Output = T>,
+{
+    if cancel_rx.borrow_and_update().contains(item_id) {
+        return ActiveStep::Cancelled;
+    }
+    let start = *power_rx.borrow_and_update();
+    if start.suspended {
+        return ActiveStep::PausedForSleep;
+    }
+    let _hold = acquire_hold();
+    if cancel_rx.borrow().contains(item_id) {
+        return ActiveStep::Cancelled;
+    }
+    let after_acquire = *power_rx.borrow();
+    if after_acquire.suspended || after_acquire.suspend_epoch != start.suspend_epoch {
+        return ActiveStep::PausedForSleep;
+    }
+    let start_epoch = start.suspend_epoch;
+    tokio::select! {
+        biased;
+        _ = cancel_rx.wait_for(|set| set.contains(item_id)) => ActiveStep::Cancelled,
+        _ = power_rx.wait_for(|state| state.suspended || state.suspend_epoch != start_epoch) => {
+            ActiveStep::PausedForSleep
+        }
+        outcome = work => ActiveStep::Completed(outcome),
     }
 }
 
@@ -252,15 +377,20 @@ pub fn start(app: tauri::AppHandle, counters: Option<source_counters::SharedCoun
         }
     };
     let (power, _) = watch::channel(PowerState::default());
+    let (cancel, _) = watch::channel(BTreeSet::new());
     let (changes, _) = watch::channel(());
     let service = Arc::new(Service {
         store: Mutex::new(store),
         intake_lock: tokio::sync::Mutex::new(()),
         wake: Notify::new(),
         power,
+        cancel,
         changes,
         identity: Mutex::new(None),
         auth_blocked: Mutex::new(None),
+        resumable_probe: Mutex::new(None),
+        retry_ladders: Mutex::new(BTreeMap::new()),
+        next_backoff: Mutex::new(None),
         receipts: Mutex::new(VecDeque::new()),
         counters,
         reconcile_requested: AtomicBool::new(true),
@@ -270,19 +400,22 @@ pub fn start(app: tauri::AppHandle, counters: Option<source_counters::SharedCoun
     platform_win::on_network_available(Arc::new(move || {
         if let Some(service) = wake_on_network.upgrade() {
             if !service.power.borrow().suspended {
+                reset_all_retry_ladders(&service);
                 service.reconcile_requested.store(true, Ordering::Release);
                 service.wake.notify_one();
             }
         }
     }));
     let mut power_rx = service.power.subscribe();
+    let mut cancel_rx = service.cancel.subscribe();
     tauri::async_runtime::spawn(async move {
         loop {
-            if let Err(error) = deliver_pass(&app, &service, &mut power_rx).await {
+            if let Err(error) = deliver_pass(&app, &service, &mut power_rx, &mut cancel_rx).await {
                 tracing::warn!(target: "import", %error, "import delivery retained its local copy");
             }
             publish(&app, &service);
-            wait_for_next_pass(&mut power_rx, &service.wake, Duration::from_secs(30)).await;
+            let wait = take_next_wait(&service);
+            wait_for_next_pass(&mut power_rx, &service.wake, wait).await;
         }
     });
 }
@@ -346,10 +479,576 @@ async fn reconcile_reviews(
     Ok(())
 }
 
+enum CachedProbe {
+    Supported(ResumableConfig),
+    Unsupported,
+    AuthStop,
+    Transient,
+}
+
+async fn probe_resumable_cached(
+    service: &Service,
+    client: &ObserverClient,
+    binding: &str,
+    version: &str,
+) -> CachedProbe {
+    if let Some((cached_binding, cached_version, cached)) = service
+        .resumable_probe
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .cloned()
+    {
+        if cached_binding == binding && cached_version == version {
+            return match cached {
+                Some(cfg) => CachedProbe::Supported(cfg),
+                None => CachedProbe::Unsupported,
+            };
+        }
+    }
+    match client.probe_resumable_import().await {
+        Ok(ResumableProbe::Supported(cfg)) => {
+            *service
+                .resumable_probe
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) =
+                Some((binding.to_owned(), version.to_owned(), Some(cfg)));
+            CachedProbe::Supported(cfg)
+        }
+        Ok(ResumableProbe::Unsupported) => {
+            *service
+                .resumable_probe
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) =
+                Some((binding.to_owned(), version.to_owned(), None));
+            CachedProbe::Unsupported
+        }
+        Ok(ResumableProbe::AuthStop) => CachedProbe::AuthStop,
+        Ok(ResumableProbe::Retry) | Err(_) => CachedProbe::Transient,
+    }
+}
+
+fn cache_resumable_unsupported(service: &Service, binding: &str, version: &str) {
+    *service
+        .resumable_probe
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = Some((binding.to_owned(), version.to_owned(), None));
+}
+
+fn spawn_best_effort_abort(app: &tauri::AppHandle, upload_id: String, expected_journal: String) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(client) = client(&app).await else {
+            return;
+        };
+        if client.credential().instance_id != expected_journal || !client.gate_open() {
+            return;
+        }
+        if let Err(error) = client.abort_upload(&upload_id).await {
+            tracing::warn!(target: "import", %error, upload_id = %upload_id, "best-effort upload abort failed");
+        }
+    });
+}
+
+enum ResumableStageOutcome {
+    Staged(pl_transport_win::import_client::SavedImport),
+    AlreadyDelivered {
+        import_id: Option<String>,
+    },
+    FallbackSinglePost,
+    PausedTransient,
+    PairingChanged,
+    AuthStop,
+    InsufficientSpace,
+    IntegrityFailed {
+        reason_code: &'static str,
+    },
+    Expired,
+    UnreadableLocalCopy,
+    Refused {
+        sentence: String,
+        retryable: bool,
+        reason_code: Option<String>,
+        kind: Option<String>,
+    },
+}
+
+fn persist_item_snapshot(service: &Service, item: &import_store::Item) -> std::io::Result<()> {
+    let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(store) = guard.as_mut() {
+        if store.items.contains_key(&item.id) {
+            store.put(item.clone())?;
+        }
+    }
+    Ok(())
+}
+
+fn set_active_phase(service: &Service, phase: UploadPhase) {
+    let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(store) = guard.as_mut() {
+        store.active_phase = Some(phase);
+    }
+}
+
+async fn stage_resumable_upload(
+    app: &tauri::AppHandle,
+    service: &Service,
+    client: &Arc<ObserverClient>,
+    journal: &str,
+    item: &mut import_store::Item,
+    payload: &std::path::Path,
+    default_chunk_bytes: u64,
+) -> std::io::Result<ResumableStageOutcome> {
+    // 1. Compute whole-file SHA-256 once from the stored custody copy.
+    let sha256 = if let Some(existing) = item.sha256.clone() {
+        existing
+    } else {
+        let path_for_hash = payload.to_path_buf();
+        let hashed = tauri::async_runtime::spawn_blocking(move || hash_file_sha256(&path_for_hash))
+            .await
+            .map_err(std::io::Error::other)?;
+        match hashed {
+            Ok((digest, exact_len)) => {
+                if exact_len == 0 {
+                    return Ok(ResumableStageOutcome::UnreadableLocalCopy);
+                }
+                item.size = exact_len;
+                item.sha256 = Some(digest.clone());
+                persist_item_snapshot(service, item)?;
+                digest
+            }
+            Err(error) => {
+                tracing::warn!(target: "import", %error, item = %item.id, "could not hash custody file");
+                return Ok(ResumableStageOutcome::UnreadableLocalCopy);
+            }
+        }
+    };
+
+    if !same_client(app, client).await {
+        return Ok(ResumableStageOutcome::PairingChanged);
+    }
+
+    let mut session = match ResumableUploadSession::open(client.clone()).await {
+        Ok(session) => session,
+        Err(error) => {
+            tracing::warn!(target: "import", %error, item = %item.id, "could not open resumable upload bridge");
+            return Ok(ResumableStageOutcome::PausedTransient);
+        }
+    };
+
+    // 2. Resync an existing remote upload cursor via GET, or create a new session via POST.
+    let (mut upload_id, mut next_offset, mut chunk_bytes) =
+        if let Some(existing) = item.upload_for(journal).cloned() {
+            match session.get_status(&existing.upload_id).await {
+                Ok(UploadStatusReply::Open {
+                    upload_id,
+                    next_offset,
+                    chunk_bytes,
+                    ..
+                }) => {
+                    let clamped = next_offset.min(item.size);
+                    item.upload = Some(ResumableUploadState {
+                        journal: journal.to_owned(),
+                        upload_id: upload_id.clone(),
+                        next_offset: clamped,
+                        total_bytes: item.size,
+                        chunk_bytes,
+                    });
+                    persist_item_snapshot(service, item)?;
+                    reset_retry_ladder(service, &item.id);
+                    publish(app, service);
+                    (upload_id, clamped, chunk_bytes)
+                }
+                Ok(UploadStatusReply::UploadNotFound) => {
+                    // If all bytes had reached the journal before disconnect, a prior commit
+                    // may have already succeeded whose response was lost; check via POST first.
+                    if existing.next_offset >= item.size {
+                        let import_file = ImportFile {
+                            id: &item.id,
+                            name: &item.name,
+                            content_type: &item.mime,
+                            path: payload,
+                            handoff: item.handoff.as_ref(),
+                        };
+                        match session
+                            .create_upload(&import_file, item.size, &sha256)
+                            .await
+                        {
+                            Ok(UploadCreateReply::AlreadyStaged(saved)) => {
+                                session.close().await;
+                                return Ok(ResumableStageOutcome::Staged(saved));
+                            }
+                            Ok(UploadCreateReply::AlreadyImported { import_id }) => {
+                                session.close().await;
+                                return Ok(ResumableStageOutcome::AlreadyDelivered { import_id });
+                            }
+                            Ok(UploadCreateReply::Open(open)) => {
+                                // Journal had purged the expired session and created a brand-new
+                                // one; abort it and surface the expiry fault cleanly.
+                                let _ = session.abort_upload(&open.upload_id).await;
+                                session.close().await;
+                                return Ok(ResumableStageOutcome::Expired);
+                            }
+                            Ok(UploadCreateReply::AuthStop) => {
+                                session.close().await;
+                                return Ok(ResumableStageOutcome::AuthStop);
+                            }
+                            Ok(UploadCreateReply::Retry) | Err(_) => {
+                                session.close().await;
+                                return Ok(ResumableStageOutcome::PausedTransient);
+                            }
+                            _ => {
+                                session.close().await;
+                                return Ok(ResumableStageOutcome::Expired);
+                            }
+                        }
+                    }
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::Expired);
+                }
+                Ok(UploadStatusReply::AuthStop) => {
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::AuthStop);
+                }
+                Ok(UploadStatusReply::Retry) | Err(_) => {
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::PausedTransient);
+                }
+            }
+        } else {
+            let create_reply = {
+                let import_file = ImportFile {
+                    id: &item.id,
+                    name: &item.name,
+                    content_type: &item.mime,
+                    path: payload,
+                    handoff: item.handoff.as_ref(),
+                };
+                session
+                    .create_upload(&import_file, item.size, &sha256)
+                    .await
+            };
+            match create_reply {
+                Ok(UploadCreateReply::Open(open)) => {
+                    let clamped = open.next_offset.min(item.size);
+                    let chunk = open.chunk_bytes.max(1);
+                    item.upload = Some(ResumableUploadState {
+                        journal: journal.to_owned(),
+                        upload_id: open.upload_id.clone(),
+                        next_offset: clamped,
+                        total_bytes: item.size,
+                        chunk_bytes: chunk,
+                    });
+                    persist_item_snapshot(service, item)?;
+                    reset_retry_ladder(service, &item.id);
+                    publish(app, service);
+                    (open.upload_id, clamped, chunk)
+                }
+                Ok(UploadCreateReply::AlreadyStaged(saved)) => {
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::Staged(saved));
+                }
+                Ok(UploadCreateReply::AlreadyImported { import_id }) => {
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::AlreadyDelivered { import_id });
+                }
+                Ok(UploadCreateReply::Unsupported) => {
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::FallbackSinglePost);
+                }
+                Ok(UploadCreateReply::InsufficientSpace { .. }) => {
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::InsufficientSpace);
+                }
+                Ok(UploadCreateReply::AuthStop) => {
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::AuthStop);
+                }
+                Ok(UploadCreateReply::Retry) | Err(_) => {
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::PausedTransient);
+                }
+                Ok(UploadCreateReply::Refused {
+                    sentence,
+                    retryable,
+                    reason_code,
+                    kind,
+                }) => {
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::Refused {
+                        sentence,
+                        retryable,
+                        reason_code,
+                        kind,
+                    });
+                }
+            }
+        };
+
+    if chunk_bytes == 0 {
+        chunk_bytes = default_chunk_bytes.max(1);
+    }
+
+    // 3. Send chunks sequentially from `next_offset`, then commit.
+    let mut chunk_bad_retries = 0usize;
+    loop {
+        while next_offset < item.size {
+            if !same_client(app, client).await {
+                session.close().await;
+                return Ok(ResumableStageOutcome::PairingChanged);
+            }
+            let len = usize::try_from((item.size - next_offset).min(chunk_bytes))
+                .expect("bounded chunk length");
+            let path_for_chunk = payload.to_path_buf();
+            let read_offset = next_offset;
+            let bytes = match tauri::async_runtime::spawn_blocking(move || {
+                read_file_chunk(&path_for_chunk, read_offset, len)
+            })
+            .await
+            .map_err(std::io::Error::other)?
+            {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    tracing::warn!(target: "import", %error, item = %item.id, offset = read_offset, "custody file became unreadable mid-upload");
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::UnreadableLocalCopy);
+                }
+            };
+
+            match session.put_chunk(&upload_id, next_offset, &bytes).await {
+                Ok(UploadChunkReply::Accepted {
+                    next_offset: confirmed,
+                    ..
+                }) => {
+                    next_offset = confirmed.min(item.size);
+                    chunk_bad_retries = 0;
+                    reset_retry_ladder(service, &item.id);
+                    if let Some(state) = item.upload.as_mut() {
+                        state.next_offset = next_offset;
+                    }
+                    persist_item_snapshot(service, item)?;
+                    publish(app, service);
+                }
+                Ok(UploadChunkReply::OffsetMismatch {
+                    next_offset: Some(server_offset),
+                }) => {
+                    next_offset = server_offset.min(item.size);
+                    chunk_bad_retries = 0;
+                    if let Some(state) = item.upload.as_mut() {
+                        state.next_offset = next_offset;
+                    }
+                    persist_item_snapshot(service, item)?;
+                    publish(app, service);
+                }
+                Ok(UploadChunkReply::OffsetMismatch { next_offset: None }) => {
+                    match session.get_status(&upload_id).await {
+                        Ok(UploadStatusReply::Open {
+                            upload_id: refreshed_id,
+                            next_offset: server_offset,
+                            chunk_bytes: server_chunk,
+                            ..
+                        }) => {
+                            upload_id = refreshed_id;
+                            next_offset = server_offset.min(item.size);
+                            chunk_bytes = server_chunk.max(1);
+                            chunk_bad_retries = 0;
+                            if let Some(state) = item.upload.as_mut() {
+                                state.upload_id = upload_id.clone();
+                                state.next_offset = next_offset;
+                                state.chunk_bytes = chunk_bytes;
+                            }
+                            persist_item_snapshot(service, item)?;
+                            publish(app, service);
+                        }
+                        Ok(UploadStatusReply::UploadNotFound) => {
+                            session.close().await;
+                            return Ok(ResumableStageOutcome::Expired);
+                        }
+                        Ok(UploadStatusReply::AuthStop) => {
+                            session.close().await;
+                            return Ok(ResumableStageOutcome::AuthStop);
+                        }
+                        Ok(UploadStatusReply::Retry) | Err(_) => {
+                            session.close().await;
+                            return Ok(ResumableStageOutcome::PausedTransient);
+                        }
+                    }
+                }
+                Ok(UploadChunkReply::ChunkChecksumMismatch) => {
+                    chunk_bad_retries += 1;
+                    if chunk_bad_retries > MAX_CHUNK_CHECKSUM_RETRIES {
+                        session.close().await;
+                        return Ok(ResumableStageOutcome::IntegrityFailed {
+                            reason_code: "chunk_checksum_mismatch",
+                        });
+                    }
+                }
+                Ok(UploadChunkReply::UploadNotFound) => {
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::Expired);
+                }
+                Ok(UploadChunkReply::InsufficientSpace { .. }) => {
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::InsufficientSpace);
+                }
+                Ok(UploadChunkReply::AuthStop) => {
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::AuthStop);
+                }
+                Ok(UploadChunkReply::Retry) | Err(_) => {
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::PausedTransient);
+                }
+                Ok(UploadChunkReply::Refused {
+                    sentence,
+                    retryable,
+                    reason_code,
+                    kind,
+                }) => {
+                    session.close().await;
+                    return Ok(ResumableStageOutcome::Refused {
+                        sentence,
+                        retryable,
+                        reason_code,
+                        kind,
+                    });
+                }
+            }
+        }
+
+        if !same_client(app, client).await {
+            session.close().await;
+            return Ok(ResumableStageOutcome::PairingChanged);
+        }
+
+        // 4. Commit and verify whole-file SHA-256 on the journal.
+        set_active_phase(service, UploadPhase::Checking);
+        publish(app, service);
+
+        match session.commit_upload(&upload_id, &sha256).await {
+            Ok(UploadCommitReply::Saved(saved)) => {
+                session.close().await;
+                return Ok(ResumableStageOutcome::Staged(saved));
+            }
+            Ok(UploadCommitReply::Incomplete { next_offset: srv }) => {
+                set_active_phase(service, UploadPhase::Sending);
+                if let Some(offset) = srv {
+                    next_offset = offset.min(item.size);
+                    if let Some(state) = item.upload.as_mut() {
+                        state.next_offset = next_offset;
+                    }
+                    persist_item_snapshot(service, item)?;
+                    publish(app, service);
+                    continue;
+                }
+                match session.get_status(&upload_id).await {
+                    Ok(UploadStatusReply::Open {
+                        next_offset: server_offset,
+                        ..
+                    }) => {
+                        next_offset = server_offset.min(item.size);
+                        if let Some(state) = item.upload.as_mut() {
+                            state.next_offset = next_offset;
+                        }
+                        persist_item_snapshot(service, item)?;
+                        publish(app, service);
+                        continue;
+                    }
+                    Ok(UploadStatusReply::UploadNotFound) => {
+                        session.close().await;
+                        return Ok(ResumableStageOutcome::Expired);
+                    }
+                    Ok(UploadStatusReply::AuthStop) => {
+                        session.close().await;
+                        return Ok(ResumableStageOutcome::AuthStop);
+                    }
+                    Ok(UploadStatusReply::Retry) | Err(_) => {
+                        session.close().await;
+                        return Ok(ResumableStageOutcome::PausedTransient);
+                    }
+                }
+            }
+            Ok(UploadCommitReply::WholeFileChecksumMismatch { .. }) => {
+                session.close().await;
+                return Ok(ResumableStageOutcome::IntegrityFailed {
+                    reason_code: "whole_file_checksum_mismatch",
+                });
+            }
+            Ok(UploadCommitReply::UploadNotFound) => {
+                // Recover a lost-response commit via idempotent POST /uploads if already staged.
+                let import_file = ImportFile {
+                    id: &item.id,
+                    name: &item.name,
+                    content_type: &item.mime,
+                    path: payload,
+                    handoff: item.handoff.as_ref(),
+                };
+                match session
+                    .create_upload(&import_file, item.size, &sha256)
+                    .await
+                {
+                    Ok(UploadCreateReply::AlreadyStaged(saved)) => {
+                        session.close().await;
+                        return Ok(ResumableStageOutcome::Staged(saved));
+                    }
+                    Ok(UploadCreateReply::AlreadyImported { import_id }) => {
+                        session.close().await;
+                        return Ok(ResumableStageOutcome::AlreadyDelivered { import_id });
+                    }
+                    Ok(UploadCreateReply::Open(open)) => {
+                        let _ = session.abort_upload(&open.upload_id).await;
+                        session.close().await;
+                        return Ok(ResumableStageOutcome::Expired);
+                    }
+                    Ok(UploadCreateReply::AuthStop) => {
+                        session.close().await;
+                        return Ok(ResumableStageOutcome::AuthStop);
+                    }
+                    Ok(UploadCreateReply::Retry) | Err(_) => {
+                        session.close().await;
+                        return Ok(ResumableStageOutcome::PausedTransient);
+                    }
+                    _ => {
+                        session.close().await;
+                        return Ok(ResumableStageOutcome::Expired);
+                    }
+                }
+            }
+            Ok(UploadCommitReply::InsufficientSpace { .. }) => {
+                session.close().await;
+                return Ok(ResumableStageOutcome::InsufficientSpace);
+            }
+            Ok(UploadCommitReply::AuthStop) => {
+                session.close().await;
+                return Ok(ResumableStageOutcome::AuthStop);
+            }
+            Ok(UploadCommitReply::Retry) | Err(_) => {
+                session.close().await;
+                return Ok(ResumableStageOutcome::PausedTransient);
+            }
+            Ok(UploadCommitReply::Refused {
+                sentence,
+                retryable,
+                reason_code,
+                kind,
+            }) => {
+                session.close().await;
+                return Ok(ResumableStageOutcome::Refused {
+                    sentence,
+                    retryable,
+                    reason_code,
+                    kind,
+                });
+            }
+        }
+    }
+}
+
 async fn deliver_pass(
     app: &tauri::AppHandle,
     service: &Service,
     power_rx: &mut watch::Receiver<PowerState>,
+    cancel_rx: &mut watch::Receiver<BTreeSet<String>>,
 ) -> std::io::Result<()> {
     if power_rx.borrow().suspended {
         return Ok(());
@@ -383,11 +1082,14 @@ async fn deliver_pass(
     }
     let journal = client.credential().instance_id.clone();
 
-    // Re-pairing to a different journal instance resets foreign review holds back to waiting.
+    // Re-pairing to a different journal instance resets foreign review holds and
+    // discards remote upload cursors bound to the prior journal while keeping staged files.
     let reset_foreign = {
         let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(store) = guard.as_mut() {
-            store.reset_foreign_reviews(&journal)?
+            let reviews = store.reset_foreign_reviews(&journal)?;
+            let uploads = store.reset_foreign_uploads(&journal)?;
+            reviews || uploads
         } else {
             false
         }
@@ -484,11 +1186,41 @@ async fn deliver_pass(
         items.sort_by_key(|item| item.added);
         items.into_iter().map(|item| item.id.clone()).collect()
     };
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut probe = probe_resumable_cached(service, &client, &binding, &version).await;
+    if matches!(probe, CachedProbe::AuthStop) {
+        *service
+            .auth_blocked
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(binding.clone());
+        tracing::warn!(target: "import", "journal refused import capability probe");
+        return Ok(());
+    }
     for id in ids {
         if power_rx.borrow().suspended || !same_client(app, &client).await {
             break;
         }
-        let (mut item, payload) = {
+        if cancel_rx.borrow().contains(&id) {
+            let removed_upload = {
+                let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                guard
+                    .as_mut()
+                    .map(|store| store.cancel_upload(&id))
+                    .transpose()?
+                    .flatten()
+            };
+            clear_item_cancelled(&service.cancel, &id);
+            reset_retry_ladder(service, &id);
+            if let Some(u) = removed_upload.filter(|u| u.journal == journal) {
+                spawn_best_effort_abort(app, u.upload_id, journal.clone());
+            }
+            publish(app, service);
+            continue;
+        }
+
+        let (mut item, payload, use_resumable, resumable_chunk_bytes) = {
             let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
             let Some(store) = guard.as_mut() else {
                 break;
@@ -501,16 +1233,324 @@ async fn deliver_pass(
             {
                 continue;
             }
+            let already_staged = item.progress_for(&journal).is_some();
+            let has_open_upload = item.upload_for(&journal).is_some();
+            let (use_resumable, chunk_bytes) = if already_staged {
+                (false, 0)
+            } else {
+                match probe {
+                    CachedProbe::Supported(cfg) if item.size >= cfg.threshold_bytes => {
+                        (true, cfg.chunk_bytes)
+                    }
+                    CachedProbe::Supported(_) if has_open_upload => (
+                        true,
+                        item.upload_for(&journal)
+                            .map_or(4 * 1024 * 1024, |u| u.chunk_bytes),
+                    ),
+                    CachedProbe::Transient
+                        if has_open_upload
+                            || item.size >= PROBE_UNAVAILABLE_PAUSE_THRESHOLD_BYTES =>
+                    {
+                        store.mark_paused(&id);
+                        let delay = next_retry_delay(service, &id);
+                        schedule_backoff(service, delay);
+                        drop(guard);
+                        publish(app, service);
+                        break;
+                    }
+                    _ => (false, 0),
+                }
+            };
             item.may_have_reached = true;
             store.put(item.clone())?;
-            store.active = Some(id.clone());
-            (item, store.payload(&id))
+            store.set_active(
+                id.clone(),
+                use_resumable,
+                use_resumable.then_some(UploadPhase::Sending),
+            );
+            (item, store.payload(&id), use_resumable, chunk_bytes)
         };
         publish(app, service);
-        let step: DeliveryStep<
+
+        if use_resumable {
+            let stage_step = run_while_awake_or_cancel(
+                power_rx,
+                cancel_rx,
+                &id,
+                || {
+                    platform_win::power_hold::PowerHold::acquire(&message(
+                        "windows.import.rowsending",
+                        &[],
+                    ))
+                },
+                stage_resumable_upload(
+                    app,
+                    service,
+                    &client,
+                    &journal,
+                    &mut item,
+                    &payload,
+                    resumable_chunk_bytes,
+                ),
+            )
+            .await;
+
+            match stage_step {
+                ActiveStep::PausedForSleep => {
+                    {
+                        let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                        if let Some(store) = guard.as_mut() {
+                            store.clear_active();
+                            store.mark_paused(&id);
+                        }
+                    }
+                    tracing::info!(
+                        target: "import",
+                        item = %id,
+                        "resumable import paused for system sleep; will resume from confirmed offset on wake"
+                    );
+                    publish(app, service);
+                    if !power_rx.borrow().suspended {
+                        service.wake.notify_one();
+                    }
+                    break;
+                }
+                ActiveStep::Cancelled => {
+                    let removed_upload = {
+                        let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                        guard
+                            .as_mut()
+                            .map(|store| store.cancel_upload(&id))
+                            .transpose()?
+                            .flatten()
+                    };
+                    clear_item_cancelled(&service.cancel, &id);
+                    reset_retry_ladder(service, &id);
+                    if let Some(u) = removed_upload.filter(|u| u.journal == journal) {
+                        spawn_best_effort_abort(app, u.upload_id, journal.clone());
+                    }
+                    publish(app, service);
+                    continue;
+                }
+                ActiveStep::Completed(outcome) => match outcome? {
+                    ResumableStageOutcome::Staged(saved) => {
+                        item.saved = Some(SavedProgress {
+                            journal: journal.clone(),
+                            saved,
+                        });
+                        item.upload = None;
+                        item.refusal = None;
+                        reset_retry_ladder(service, &id);
+                        persist_item_snapshot(service, &item)?;
+                        // Fall through below to `start_import` with `item.saved` populated.
+                    }
+                    ResumableStageOutcome::AlreadyDelivered { import_id } => {
+                        {
+                            let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                            if let Some(store) = guard.as_mut() {
+                                store.clear_active();
+                                store.delivered_at(
+                                    &id,
+                                    &journal,
+                                    import_id.as_deref(),
+                                    now_ms(),
+                                )?;
+                            }
+                        }
+                        reset_retry_ladder(service, &id);
+                        record_handoff_receipt(service, id.clone(), import_id);
+                        publish(app, service);
+                        continue;
+                    }
+                    ResumableStageOutcome::FallbackSinglePost => {
+                        cache_resumable_unsupported(service, &binding, &version);
+                        probe = CachedProbe::Unsupported;
+                        {
+                            let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                            if let Some(store) = guard.as_mut() {
+                                item.upload = None;
+                                store.put(item.clone())?;
+                                store.set_active(id.clone(), false, None);
+                            }
+                        }
+                        publish(app, service);
+                        // Fall through below to legacy single-POST `save_import_file`.
+                    }
+                    ResumableStageOutcome::PausedTransient => {
+                        {
+                            let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                            if let Some(store) = guard.as_mut() {
+                                store.clear_active();
+                                store.mark_paused(&id);
+                            }
+                        }
+                        let delay = next_retry_delay(service, &id);
+                        schedule_backoff(service, delay);
+                        tracing::info!(
+                            target: "import",
+                            item = %id,
+                            backoff_ms = delay.as_millis() as u64,
+                            "resumable import paused on transient error; scheduled backoff"
+                        );
+                        publish(app, service);
+                        break;
+                    }
+                    ResumableStageOutcome::PairingChanged => {
+                        {
+                            let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                            if let Some(store) = guard.as_mut() {
+                                store.clear_active();
+                            }
+                        }
+                        publish(app, service);
+                        break;
+                    }
+                    ResumableStageOutcome::AuthStop => {
+                        {
+                            let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                            if let Some(store) = guard.as_mut() {
+                                store.clear_active();
+                            }
+                        }
+                        *service
+                            .auth_blocked
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner()) = Some(binding.clone());
+                        tracing::warn!(target: "import", "journal refused resumable import authentication");
+                        publish(app, service);
+                        break;
+                    }
+                    ResumableStageOutcome::InsufficientSpace => {
+                        {
+                            let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                            if let Some(store) = guard.as_mut() {
+                                store.clear_active();
+                                store.clear_paused(&id);
+                                item.review = None;
+                                item.refusal = Some(Refusal {
+                                    journal: journal.clone(),
+                                    version: version.clone(),
+                                    sentence: message("windows.import.errornospace", &[]),
+                                    retryable: true,
+                                    reason_code: Some("insufficient_journal_space".into()),
+                                    kind: None,
+                                });
+                                store.put(item)?;
+                            }
+                        }
+                        reset_retry_ladder(service, &id);
+                        publish(app, service);
+                        continue;
+                    }
+                    ResumableStageOutcome::IntegrityFailed { reason_code } => {
+                        {
+                            let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                            if let Some(store) = guard.as_mut() {
+                                store.clear_active();
+                                store.clear_paused(&id);
+                                item.upload = None;
+                                item.sha256 = None;
+                                item.review = None;
+                                item.refusal = Some(Refusal {
+                                    journal: journal.clone(),
+                                    version: version.clone(),
+                                    sentence: message("windows.import.errorchecksum", &[]),
+                                    retryable: true,
+                                    reason_code: Some(reason_code.into()),
+                                    kind: None,
+                                });
+                                store.put(item)?;
+                            }
+                        }
+                        reset_retry_ladder(service, &id);
+                        publish(app, service);
+                        continue;
+                    }
+                    ResumableStageOutcome::Expired => {
+                        {
+                            let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                            if let Some(store) = guard.as_mut() {
+                                store.clear_active();
+                                store.clear_paused(&id);
+                                item.upload = None;
+                                item.review = None;
+                                item.refusal = Some(Refusal {
+                                    journal: journal.clone(),
+                                    version: version.clone(),
+                                    sentence: message("windows.import.errorexpired", &[]),
+                                    retryable: true,
+                                    reason_code: Some("upload_not_found".into()),
+                                    kind: None,
+                                });
+                                store.put(item)?;
+                            }
+                        }
+                        reset_retry_ladder(service, &id);
+                        publish(app, service);
+                        continue;
+                    }
+                    ResumableStageOutcome::UnreadableLocalCopy => {
+                        {
+                            let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                            if let Some(store) = guard.as_mut() {
+                                store.clear_active();
+                                store.clear_paused(&id);
+                                item.upload = None;
+                                item.missing_copy = true;
+                                item.review = None;
+                                item.refusal = Some(Refusal {
+                                    journal: journal.clone(),
+                                    version: version.clone(),
+                                    sentence: message("windows.import.errorunreadable", &[]),
+                                    retryable: false,
+                                    reason_code: None,
+                                    kind: None,
+                                });
+                                store.put(item)?;
+                            }
+                        }
+                        reset_retry_ladder(service, &id);
+                        publish(app, service);
+                        continue;
+                    }
+                    ResumableStageOutcome::Refused {
+                        sentence,
+                        retryable,
+                        reason_code,
+                        kind,
+                    } => {
+                        {
+                            let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                            if let Some(store) = guard.as_mut() {
+                                store.clear_active();
+                                store.clear_paused(&id);
+                                item.upload = None;
+                                item.review = None;
+                                item.refusal = Some(Refusal {
+                                    journal: journal.clone(),
+                                    version: version.clone(),
+                                    sentence,
+                                    retryable,
+                                    reason_code,
+                                    kind,
+                                });
+                                store.put(item)?;
+                            }
+                        }
+                        reset_retry_ladder(service, &id);
+                        publish(app, service);
+                        continue;
+                    }
+                },
+            }
+        }
+
+        let step: ActiveStep<
             std::io::Result<Option<Result<ImportReply, pl_transport_win::RouteError>>>,
-        > = run_while_awake(
+        > = run_while_awake_or_cancel(
             power_rx,
+            cancel_rx,
+            &id,
             || {
                 platform_win::power_hold::PowerHold::acquire(&message(
                     "windows.import.rowsending",
@@ -562,12 +1602,29 @@ async fn deliver_pass(
         )
         .await;
         let result = match step {
-            DeliveryStep::Completed(result) => result,
-            DeliveryStep::PausedForSleep => {
+            ActiveStep::Completed(result) => result,
+            ActiveStep::Cancelled => {
+                let removed_upload = {
+                    let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+                    guard
+                        .as_mut()
+                        .map(|store| store.cancel_upload(&id))
+                        .transpose()?
+                        .flatten()
+                };
+                clear_item_cancelled(&service.cancel, &id);
+                reset_retry_ladder(service, &id);
+                if let Some(u) = removed_upload.filter(|u| u.journal == journal) {
+                    spawn_best_effort_abort(app, u.upload_id, journal.clone());
+                }
+                publish(app, service);
+                continue;
+            }
+            ActiveStep::PausedForSleep => {
                 {
                     let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
                     if let Some(store) = guard.as_mut() {
-                        store.active = None;
+                        store.clear_active();
                     }
                 }
                 tracing::info!(
@@ -587,7 +1644,7 @@ async fn deliver_pass(
             let Some(store) = guard.as_mut() else {
                 break;
             };
-            store.active = None;
+            store.clear_active();
             match result? {
                 Some(Ok(ImportReply::Delivered)) => {
                     let row = item
@@ -822,15 +1879,56 @@ pub fn handoff_status(app: &tauri::AppHandle, id: &str) -> serde_json::Value {
 
 pub fn remove(app: &tauri::AppHandle, id: &str) -> std::io::Result<()> {
     if let Some(service) = SERVICE.get() {
-        if let Some(store) = service
-            .store
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .as_mut()
-        {
-            store.remove(id)?;
+        let sync = current_sync(app);
+        let (journal, _) = current_identity(service, &sync);
+        let removed_upload = {
+            let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+            guard
+                .as_mut()
+                .map(|store| store.remove_returning_upload(id))
+                .transpose()?
+                .flatten()
+                .flatten()
+        };
+        reset_retry_ladder(service, id);
+        if let Some(u) = removed_upload.filter(|u| !journal.is_empty() && u.journal == journal) {
+            spawn_best_effort_abort(app, u.upload_id, journal);
         }
         publish(app, service);
+    }
+    Ok(())
+}
+
+/// Cancel an active or paused resumable transfer immediately, clearing its local
+/// custody copy and sending a best-effort remote abort to reclaim journal space.
+pub fn cancel_upload(app: &tauri::AppHandle, id: &str) -> std::io::Result<()> {
+    if let Some(service) = SERVICE.get() {
+        let sync = current_sync(app);
+        let (journal, _) = current_identity(service, &sync);
+        mark_item_cancelled(&service.cancel, id);
+        let (was_active, removed_upload) = {
+            let mut guard = service.store.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(store) = guard.as_mut() {
+                if store.active.as_deref() == Some(id) {
+                    (true, None)
+                } else {
+                    (false, store.cancel_upload(id)?)
+                }
+            } else {
+                (false, None)
+            }
+        };
+        if !was_active {
+            clear_item_cancelled(&service.cancel, id);
+            reset_retry_ladder(service, id);
+            if let Some(u) = removed_upload.filter(|u| !journal.is_empty() && u.journal == journal)
+            {
+                spawn_best_effort_abort(app, u.upload_id, journal);
+            }
+            publish(app, service);
+        } else {
+            service.wake.notify_one();
+        }
     }
     Ok(())
 }
@@ -845,6 +1943,7 @@ pub fn retry(app: &tauri::AppHandle, id: &str) -> std::io::Result<()> {
         {
             store.retry(id)?;
         }
+        reset_retry_ladder(service, id);
         publish(app, service);
         mark_resumed(&service.power);
         service.wake.notify_one();
@@ -1005,15 +2104,20 @@ mod tests {
     fn pending_delivery_probe_ignores_empty_review_refused_missing_and_confirming_remove_items() {
         let root = tempfile::tempdir().unwrap();
         let (power, _) = watch::channel(PowerState::default());
+        let (cancel, _) = watch::channel(BTreeSet::new());
         let (changes, _) = watch::channel(());
         let mut service = Service {
             store: Mutex::new(None),
             intake_lock: tokio::sync::Mutex::new(()),
             wake: Notify::new(),
             power,
+            cancel,
             changes,
             identity: Mutex::new(None),
             auth_blocked: Mutex::new(None),
+            resumable_probe: Mutex::new(None),
+            retry_ladders: Mutex::new(BTreeMap::new()),
+            next_backoff: Mutex::new(None),
             receipts: Mutex::new(VecDeque::new()),
             counters: None,
             reconcile_requested: AtomicBool::new(false),
@@ -1302,6 +2406,82 @@ mod tests {
         finish_tx.send(()).unwrap();
         let step = task.await.unwrap();
         assert!(matches!(step, DeliveryStep::Completed("finished")));
+        assert_eq!(active.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn owner_cancel_aborts_active_resumable_upload_and_releases_power_hold() {
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (power_tx, mut power_rx) = watch::channel(PowerState::default());
+        let (cancel_tx, mut cancel_rx) = watch::channel(BTreeSet::new());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+
+        let active_for_task = active.clone();
+        let task = tokio::spawn(async move {
+            run_while_awake_or_cancel(
+                &mut power_rx,
+                &mut cancel_rx,
+                "item-target",
+                || ProbeHold::acquire(&active_for_task),
+                async move {
+                    let _ = started_tx.send(());
+                    std::future::pending::<()>().await;
+                },
+            )
+            .await
+        });
+
+        started_rx.await.unwrap();
+        assert_eq!(active.load(Ordering::Acquire), 1);
+
+        // Cancelling a different item leaves the active upload running.
+        mark_item_cancelled(&cancel_tx, "item-other");
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished());
+        assert_eq!(active.load(Ordering::Acquire), 1);
+
+        // Cancelling the active item aborts immediately and drops the OS power hold.
+        mark_item_cancelled(&cancel_tx, "item-target");
+        let step = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("active upload must abort promptly on cancel")
+            .unwrap();
+        assert!(matches!(step, ActiveStep::Cancelled));
+        assert_eq!(active.load(Ordering::Acquire), 0);
+        drop(power_tx);
+    }
+
+    #[tokio::test]
+    async fn suspend_during_chunked_upload_releases_hold_and_preserves_resumability() {
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (power_tx, mut power_rx) = watch::channel(PowerState::default());
+        let (_cancel_tx, mut cancel_rx) = watch::channel(BTreeSet::new());
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+
+        let active_for_task = active.clone();
+        let task = tokio::spawn(async move {
+            run_while_awake_or_cancel(
+                &mut power_rx,
+                &mut cancel_rx,
+                "item-sleep",
+                || ProbeHold::acquire(&active_for_task),
+                async move {
+                    let _ = started_tx.send(());
+                    std::future::pending::<()>().await;
+                },
+            )
+            .await
+        });
+
+        started_rx.await.unwrap();
+        assert_eq!(active.load(Ordering::Acquire), 1);
+
+        mark_suspending(&power_tx);
+        let step = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("chunked upload must pause promptly on suspend")
+            .unwrap();
+        assert!(matches!(step, ActiveStep::PausedForSleep));
         assert_eq!(active.load(Ordering::Acquire), 0);
     }
 }

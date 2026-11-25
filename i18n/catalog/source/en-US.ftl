@@ -1523,3 +1523,27 @@ windows.import.statusreviewsub = open import to review and start.
 windows.import.statusattentionheadline = imports need you
 
 windows.import.statusattentionsub = open import to see why.
+
+windows.import.tilesendingbytes = { $sent } of { $total }
+
+windows.import.tilesendingbytesmore = { $sent } of { $total } · { $display } more waiting
+
+windows.import.tilechecking = checking file
+
+windows.import.rowprogress = { $sent } of { $total } ({ $percent }%)
+
+windows.import.rowchecking = checking the complete file
+
+windows.import.rowpaused = paused at { $sent } of { $total }. it picks up from here when it can continue.
+
+windows.import.cancelaction = cancel
+
+windows.import.cancelactiona11y = cancel { $name }
+
+windows.import.errornospace = not enough room where your journal lives for this file, or too many unfinished imports are waiting there. free up space or finish other imports, then try again.
+
+windows.import.errorchecksum = the file didn't arrive intact. try sending it again.
+
+windows.import.errorexpired = this unfinished import is no longer open in your journal. try again to start over.
+
+windows.import.errorunreadable = the waiting copy on this PC could no longer be read. remove it and choose the file again.

@@ -4,6 +4,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- when you import large files once your journal supports it, they now go into your journal in pieces with live progress on the import tile on the home page, the import page and your journal's import page. if your connection drops, your PC goes to sleep or the app closes mid-transfer, the transfer pauses and picks up from the last piece your journal confirmed without repeating finished pieces. you can cancel an unfinished transfer while it's sending or paused.
+
 ## [2.0.59] - 2026-11-25
 
 ### Fixed

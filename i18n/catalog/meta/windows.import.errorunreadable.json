@@ -1,0 +1,16 @@
+{
+  "description": "Actionable error when the staged local custody copy cannot be read on this PC",
+  "context": "Windows app import pane refusal detail when local custody bytes are missing or unreadable.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "ddf2a5a4a20de73a4d2910535632d1b14b172b9404af55ea2265f308f0eec130",
+  "risk": "routine",
+  "auto_merge": true
+}

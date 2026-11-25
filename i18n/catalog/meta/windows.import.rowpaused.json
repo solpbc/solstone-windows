@@ -1,0 +1,25 @@
+{
+  "description": "Import pane row detail when a resumable transfer is paused mid-file",
+  "context": "Windows app import pane row detail line while a resumable transfer waits to resume from confirmed bytes.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "sent",
+      "type": "string"
+    },
+    {
+      "name": "total",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "373826f3c1357650b031639fb0cb2069d3a80fdbd24d7900e349118a50cb1ca2",
+  "risk": "routine",
+  "auto_merge": true
+}

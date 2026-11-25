@@ -1,0 +1,16 @@
+{
+  "description": "Import pane row detail while verifying a finished resumable transfer",
+  "context": "Windows app import pane row detail line during whole-file integrity verification on commit.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "9a9c57cffa4ed1eb8c63b6b14996cc8ca3d3147057f1e671c6ee27ca64cbdad5",
+  "risk": "routine",
+  "auto_merge": true
+}

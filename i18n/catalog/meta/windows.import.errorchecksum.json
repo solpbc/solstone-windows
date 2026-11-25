@@ -1,0 +1,16 @@
+{
+  "description": "Actionable error when whole-file or chunk integrity verification fails",
+  "context": "Windows app import pane refusal detail after HTTP 422 checksum mismatch.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "90d7865d6707f67e9009e71d0e5249f7aa9ed0affdaf82b95a062153d19ed921",
+  "risk": "routine",
+  "auto_merge": true
+}

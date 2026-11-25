@@ -3746,6 +3746,48 @@
       ]
     },
     {
+      "id": "windows.import.cancelaction",
+      "source": "2fb1b0b4511f744f1f8617c9484ba0385da245221e9a958f185c1f0a1c255879",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.cancelactiona11y",
+      "source": "cc1c702f5fe7c3dd2a3d600ba0b39c5d173218f4f65f084a3bae07ab30ce9c85",
+      "contract": "85053d723b7e1f28ae28297c665d0d09f73ecf55449bd50a1109e25a8c40f725",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.errorchecksum",
+      "source": "90d7865d6707f67e9009e71d0e5249f7aa9ed0affdaf82b95a062153d19ed921",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.errorexpired",
+      "source": "53eea0eff52ff75356165ecb30459215ec08708799af162269ee026e81aaf3d0",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.errornospace",
+      "source": "853da5ad0ab5c651e92d612ce85da4ebe5669da2899fa2d7bbcbaa1247404e13",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.errorunreadable",
+      "source": "ddf2a5a4a20de73a4d2910535632d1b14b172b9404af55ea2265f308f0eec130",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
       "id": "windows.import.expiredword",
       "source": "66955023749c19d861e677c73ac155f49a57546420c7453839ca69f7dda345b6",
       "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
@@ -4162,6 +4204,27 @@
       ]
     },
     {
+      "id": "windows.import.rowchecking",
+      "source": "9a9c57cffa4ed1eb8c63b6b14996cc8ca3d3147057f1e671c6ee27ca64cbdad5",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.rowpaused",
+      "source": "373826f3c1357650b031639fb0cb2069d3a80fdbd24d7900e349118a50cb1ca2",
+      "contract": "5f42f63d5d019fb662deacf111f0ff61b8e0779e67407c9f1c76bd6c7a4d8b75",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.rowprogress",
+      "source": "bb6612bb5d4c4ce2a62cc11bc274472124d229aeb3d4e14b936e678e4931e310",
+      "contract": "0d117e0dee28953aced3dddc70ebbc9be16e4718ef8fa52663edf26330689ad1",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
       "id": "windows.import.rowsending",
       "source": "34597557dc2c2c015053f1c47749a0545cec827bafa7065176c790f2a833ca34",
       "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
@@ -4450,6 +4513,13 @@
       ]
     },
     {
+      "id": "windows.import.tilechecking",
+      "source": "1c85e9355218d43ec2eae188f7da35d97fbf1493a49f328496be835a7cd3d564",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
       "id": "windows.import.tilereadycount",
       "source": "bf39e33edeb711860a562b29760603490f77f2af8e08b45a17f32e23d3b95683",
       "contract": "d52d363b4317a29e996fbf28a9b6e0346b9bdca12d16f5efe948b4558663efb9",
@@ -4480,6 +4550,20 @@
           "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc"
         }
       ]
+    },
+    {
+      "id": "windows.import.tilesendingbytes",
+      "source": "4109c26cdeaa8541837e789ee748c920de77c1a6e75a8f58989d843f459b88ef",
+      "contract": "5f42f63d5d019fb662deacf111f0ff61b8e0779e67407c9f1c76bd6c7a4d8b75",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
+      "id": "windows.import.tilesendingbytesmore",
+      "source": "9a25c83d015531b9ec75474a62b80d746e13930ee2717f9afd3f7220de1a6344",
+      "contract": "7309552f279d10880965245e564c5d0798c7df9db2c62f05287e724e6355139d",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
     },
     {
       "id": "windows.import.tilesendingcount",

@@ -1,0 +1,29 @@
+{
+  "description": "Import tile sub-line showing confirmed bytes sent plus queued file count",
+  "context": "Windows app home deck import tile sub-line when additional imports wait behind an active or paused resumable file.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "sent",
+      "type": "string"
+    },
+    {
+      "name": "total",
+      "type": "string"
+    },
+    {
+      "name": "display",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "9a25c83d015531b9ec75474a62b80d746e13930ee2717f9afd3f7220de1a6344",
+  "risk": "routine",
+  "auto_merge": true
+}

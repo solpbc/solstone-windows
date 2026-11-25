@@ -1,0 +1,16 @@
+{
+  "description": "Actionable error when the journal lacks room or has too many active partial uploads",
+  "context": "Windows app import pane refusal detail after HTTP 507 insufficient_journal_space.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 600,
+  "source_revision": "853da5ad0ab5c651e92d612ce85da4ebe5669da2899fa2d7bbcbaa1247404e13",
+  "risk": "routine",
+  "auto_merge": true
+}
