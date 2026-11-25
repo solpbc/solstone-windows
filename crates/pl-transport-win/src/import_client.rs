@@ -5,18 +5,223 @@
 
 use observer_model::i18n::message;
 
+use std::fs::File;
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use spl_core::http::HttpResponse;
 use tokio::io::AsyncReadExt;
 
 use crate::ordinary_request::OrdinaryRequest;
-use crate::{ObserverClient, RouteError};
+use crate::streamed_request::{self, UploadSession};
+use crate::{ObserverClient, RouteError, TransportError};
 
-pub use crate::streamed_request::REQUEST_BODY_LIMIT;
+pub use crate::streamed_request::{REQUEST_BODY_LIMIT, UPLOAD_BRIDGE_MAX_BODY_BYTES};
 pub const MAX_IMPORT_FILE_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+pub const RESUMABLE_CAPABILITY: &str = "resumable_import_uploads";
+pub const RESUMABLE_RETRY_LADDER_SECS: [u64; 6] = [1, 2, 5, 10, 30, 60];
+
+/// Limits advertised by the journal on `GET /app/import/api/sources` when
+/// `resumable_import_uploads` is enabled.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResumableConfig {
+    pub threshold_bytes: u64,
+    pub chunk_bytes: u64,
+    pub max_file_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResumableProbe {
+    Supported(ResumableConfig),
+    Unsupported,
+    AuthStop,
+    Retry,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UploadOpen {
+    pub upload_id: String,
+    pub next_offset: u64,
+    pub total_bytes: u64,
+    pub chunk_bytes: u64,
+    pub expires_at: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UploadCreateReply {
+    Open(UploadOpen),
+    AlreadyStaged(SavedImport),
+    AlreadyImported {
+        import_id: Option<String>,
+    },
+    /// Older journal without `/app/import/api/uploads` (`404` or `405`).
+    Unsupported,
+    InsufficientSpace {
+        sentence: String,
+        required_bytes: Option<u64>,
+        available_bytes: Option<u64>,
+    },
+    AuthStop,
+    Retry,
+    Refused {
+        sentence: String,
+        retryable: bool,
+        reason_code: Option<String>,
+        kind: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UploadChunkReply {
+    Accepted {
+        next_offset: u64,
+        total_bytes: u64,
+        complete: bool,
+        expires_at: Option<String>,
+    },
+    OffsetMismatch {
+        next_offset: Option<u64>,
+    },
+    ChunkChecksumMismatch,
+    UploadNotFound,
+    InsufficientSpace {
+        sentence: String,
+        required_bytes: Option<u64>,
+        available_bytes: Option<u64>,
+    },
+    AuthStop,
+    Retry,
+    Refused {
+        sentence: String,
+        retryable: bool,
+        reason_code: Option<String>,
+        kind: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UploadStatusReply {
+    Open {
+        upload_id: String,
+        next_offset: u64,
+        total_bytes: u64,
+        chunk_bytes: u64,
+        phase: Option<String>,
+        expires_at: Option<String>,
+    },
+    UploadNotFound,
+    AuthStop,
+    Retry,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UploadCommitReply {
+    Saved(SavedImport),
+    Incomplete {
+        next_offset: Option<u64>,
+    },
+    WholeFileChecksumMismatch {
+        sentence: String,
+    },
+    UploadNotFound,
+    InsufficientSpace {
+        sentence: String,
+        required_bytes: Option<u64>,
+        available_bytes: Option<u64>,
+    },
+    AuthStop,
+    Retry,
+    Refused {
+        sentence: String,
+        retryable: bool,
+        reason_code: Option<String>,
+        kind: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UploadAbortReply {
+    Deleted,
+    NotFound,
+    AuthStop,
+    Retry,
+}
+
+/// Retry backoff ladder (`1s -> 2s -> 5s -> 10s -> 30s -> 60s`, +/-20% jitter).
+#[derive(Clone, Debug, Default)]
+pub struct RetryLadder {
+    step: usize,
+}
+
+impl RetryLadder {
+    pub fn new() -> Self {
+        Self { step: 0 }
+    }
+
+    pub fn reset(&mut self) {
+        self.step = 0;
+    }
+
+    pub fn step(&self) -> usize {
+        self.step
+    }
+
+    /// Compute the next backoff duration using deterministic jitter in `[-1.0, 1.0]`.
+    pub fn next_delay_with_jitter(&mut self, unit_signed: f64) -> Duration {
+        let base_secs =
+            RESUMABLE_RETRY_LADDER_SECS[self.step.min(RESUMABLE_RETRY_LADDER_SECS.len() - 1)];
+        if self.step + 1 < RESUMABLE_RETRY_LADDER_SECS.len() {
+            self.step += 1;
+        }
+        let clamped = unit_signed.clamp(-1.0, 1.0);
+        let factor = 1.0 + 0.2 * clamped;
+        let millis = ((base_secs as f64) * 1000.0 * factor).round().max(1.0) as u64;
+        Duration::from_millis(millis)
+    }
+
+    pub fn next_delay(&mut self) -> Duration {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        // Mix step and sub-second clock into a smooth jitter in [-1.0, 1.0].
+        let mixed = nanos.wrapping_mul(2_654_435_761) ^ ((self.step as u32).wrapping_mul(40_503));
+        let unit = ((mixed % 10_001) as f64 / 5_000.0) - 1.0;
+        self.next_delay_with_jitter(unit)
+    }
+}
+
+pub fn is_valid_upload_id(id: &str) -> bool {
+    streamed_request::is_valid_upload_id(id)
+}
+
+pub fn is_valid_sha256_hex(hex: &str) -> bool {
+    hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    observer_log::sha256_hex(bytes)
+}
+
+/// Stream-hash a stored custody file with bounded 64 KiB memory, returning
+/// `(lowercase_sha256_hex, exact_byte_len)`.
+pub fn hash_file_sha256(path: &Path) -> io::Result<(String, u64)> {
+    let file = File::open(path)?;
+    observer_log::hash_reader_sha256(file)
+}
+
+/// Read one exact chunk slice from disk at `offset` (`len` bytes).
+pub fn read_file_chunk(path: &Path, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut buf = vec![0u8; len];
+    file.read_exact(&mut buf)?;
+    Ok(buf)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SavedImport {
@@ -214,6 +419,215 @@ impl ObserverClient {
             .await?;
         Ok(classify_reconcile(&response))
     }
+
+    /// Probe whether the paired journal advertises `resumable_import_uploads`
+    /// and read its `threshold_bytes`, `chunk_bytes`, and `max_file_bytes` from
+    /// `GET /app/import/api/sources`.
+    pub async fn probe_resumable_import(&self) -> Result<ResumableProbe, RouteError> {
+        let caps = match self.system_capabilities().await {
+            Ok(caps) => caps,
+            Err(TransportError::Rejected {
+                status: 401 | 403, ..
+            }) => {
+                return Ok(ResumableProbe::AuthStop);
+            }
+            Err(error) => return Err(RouteError::Transport(error)),
+        };
+        if !caps.iter().any(|cap| cap == RESUMABLE_CAPABILITY) {
+            return Ok(ResumableProbe::Unsupported);
+        }
+        let headers = self.proxy_headers(&[]);
+        let (response, _) = self
+            .ordinary_request(OrdinaryRequest::ImportSourcesGet, None, &headers, &[])
+            .await?;
+        Ok(classify_sources_resumable(&response))
+    }
+
+    /// Best-effort abort of an open resumable upload when no upload session is active.
+    pub async fn abort_upload(&self, upload_id: &str) -> Result<UploadAbortReply, RouteError> {
+        if !is_valid_upload_id(upload_id) {
+            return Ok(UploadAbortReply::NotFound);
+        }
+        let headers = self.proxy_headers(&[]);
+        let (response, _) = self
+            .ordinary_request(
+                OrdinaryRequest::ImportUploadAbortDelete,
+                Some(upload_id),
+                &headers,
+                &[],
+            )
+            .await?;
+        Ok(classify_upload_abort(&response))
+    }
+}
+
+/// Reusable single-carrier session for `/app/import/api/uploads*`.
+pub struct ResumableUploadSession {
+    session: UploadSession,
+}
+
+impl ResumableUploadSession {
+    pub async fn open(client: Arc<ObserverClient>) -> Result<Self, RouteError> {
+        Ok(Self {
+            session: UploadSession::open(client).await?,
+        })
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.session.is_alive()
+    }
+
+    pub async fn create_upload(
+        &mut self,
+        file: &ImportFile<'_>,
+        total_bytes: u64,
+        sha256: &str,
+    ) -> Result<UploadCreateReply, RouteError> {
+        let body = build_upload_create_body(file, total_bytes, sha256)?;
+        let headers = [("Content-Type".into(), "application/json".into())];
+        let response = self
+            .session
+            .send(
+                "POST",
+                "/app/import/api/uploads",
+                &headers,
+                body.as_slice(),
+                body.len() as u64,
+            )
+            .await?;
+        Ok(classify_upload_create(&response))
+    }
+
+    pub async fn put_chunk(
+        &mut self,
+        upload_id: &str,
+        offset: u64,
+        bytes: &[u8],
+    ) -> Result<UploadChunkReply, RouteError> {
+        if !is_valid_upload_id(upload_id) || bytes.is_empty() {
+            return Err(RouteError::Transport(
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid chunk upload arguments",
+                )
+                .into(),
+            ));
+        }
+        let chunk_sha = sha256_hex(bytes);
+        let target = format!("/app/import/api/uploads/{upload_id}?offset={offset}");
+        let headers = [
+            ("Content-Type".into(), "application/octet-stream".into()),
+            ("X-Chunk-Sha256".into(), chunk_sha),
+        ];
+        let response = self
+            .session
+            .send("PUT", &target, &headers, bytes, bytes.len() as u64)
+            .await?;
+        Ok(classify_upload_chunk(&response))
+    }
+
+    pub async fn get_status(&mut self, upload_id: &str) -> Result<UploadStatusReply, RouteError> {
+        if !is_valid_upload_id(upload_id) {
+            return Ok(UploadStatusReply::UploadNotFound);
+        }
+        let target = format!("/app/import/api/uploads/{upload_id}");
+        let response = self
+            .session
+            .send("GET", &target, &[], [].as_slice(), 0)
+            .await?;
+        Ok(classify_upload_status(&response))
+    }
+
+    pub async fn commit_upload(
+        &mut self,
+        upload_id: &str,
+        sha256: &str,
+    ) -> Result<UploadCommitReply, RouteError> {
+        if !is_valid_upload_id(upload_id) {
+            return Ok(UploadCommitReply::UploadNotFound);
+        }
+        let body = serde_json::to_vec(&serde_json::json!({ "sha256": sha256 }))
+            .map_err(TransportError::from)?;
+        let target = format!("/app/import/api/uploads/{upload_id}/commit");
+        let headers = [("Content-Type".into(), "application/json".into())];
+        let response = self
+            .session
+            .send(
+                "POST",
+                &target,
+                &headers,
+                body.as_slice(),
+                body.len() as u64,
+            )
+            .await?;
+        Ok(classify_upload_commit(&response))
+    }
+
+    pub async fn abort_upload(&mut self, upload_id: &str) -> Result<UploadAbortReply, RouteError> {
+        if !is_valid_upload_id(upload_id) {
+            return Ok(UploadAbortReply::NotFound);
+        }
+        let target = format!("/app/import/api/uploads/{upload_id}");
+        let response = self
+            .session
+            .send("DELETE", &target, &[], [].as_slice(), 0)
+            .await?;
+        Ok(classify_upload_abort(&response))
+    }
+
+    pub async fn close(self) {
+        self.session.close().await;
+    }
+}
+
+pub fn build_upload_create_body(
+    file: &ImportFile<'_>,
+    total_bytes: u64,
+    sha256: &str,
+) -> Result<Vec<u8>, RouteError> {
+    let mut object = serde_json::Map::new();
+    object.insert(
+        "client_item_id".into(),
+        serde_json::Value::String(file.id.into()),
+    );
+    object.insert(
+        "filename".into(),
+        serde_json::Value::String(filename(file.name)),
+    );
+    object.insert(
+        "mime_type".into(),
+        serde_json::Value::String(file.content_type.into()),
+    );
+    object.insert("total_bytes".into(), serde_json::Value::from(total_bytes));
+    if is_valid_sha256_hex(sha256) {
+        object.insert(
+            "sha256".into(),
+            serde_json::Value::String(sha256.to_ascii_lowercase()),
+        );
+    }
+    object.insert(
+        "imported_via".into(),
+        serde_json::Value::String("windows".into()),
+    );
+    object.insert("device_noun".into(), serde_json::Value::String("PC".into()));
+    if let Some(handoff) = file.handoff {
+        object.insert(
+            "area".into(),
+            serde_json::Value::String(handoff.area.clone()),
+        );
+        if !matches!(handoff.area.as_str(), "quick" | "recording") {
+            object.insert(
+                "source_hint".into(),
+                serde_json::Value::String(handoff.area.clone()),
+            );
+        }
+        object.insert(
+            "context".into(),
+            serde_json::Value::Object(handoff.context.clone()),
+        );
+    }
+    serde_json::to_vec(&serde_json::Value::Object(object))
+        .map_err(|e| RouteError::Transport(e.into()))
 }
 
 fn nonempty(value: &serde_json::Value, key: &str) -> Option<String> {
@@ -369,6 +783,347 @@ pub fn classify_reconcile(response: &HttpResponse) -> ReconcileReply {
     } else {
         ReconcileReply::Unchanged
     }
+}
+
+pub fn classify_sources_resumable(response: &HttpResponse) -> ResumableProbe {
+    if matches!(response.status, 401 | 403) {
+        return ResumableProbe::AuthStop;
+    }
+    if matches!(response.status, 404 | 405) {
+        return ResumableProbe::Unsupported;
+    }
+    if response.status >= 500 || response.status == 429 {
+        return ResumableProbe::Retry;
+    }
+    if response.status != 200 {
+        return ResumableProbe::Unsupported;
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&response.body) else {
+        return ResumableProbe::Retry;
+    };
+    let Some(resumable) = value.get("resumable") else {
+        return ResumableProbe::Unsupported;
+    };
+    if resumable.is_null() {
+        return ResumableProbe::Unsupported;
+    }
+    let Some(obj) = resumable.as_object() else {
+        return ResumableProbe::Retry;
+    };
+    let threshold_bytes = obj
+        .get("threshold_bytes")
+        .and_then(serde_json::Value::as_u64);
+    let chunk_bytes = obj.get("chunk_bytes").and_then(serde_json::Value::as_u64);
+    let max_file_bytes = obj
+        .get("max_file_bytes")
+        .and_then(serde_json::Value::as_u64);
+    match (threshold_bytes, chunk_bytes, max_file_bytes) {
+        (Some(threshold), Some(chunk), Some(max_file))
+            if threshold > 0
+                && chunk > 0
+                && chunk <= UPLOAD_BRIDGE_MAX_BODY_BYTES as u64
+                && max_file >= threshold =>
+        {
+            ResumableProbe::Supported(ResumableConfig {
+                threshold_bytes: threshold,
+                chunk_bytes: chunk,
+                max_file_bytes: max_file,
+            })
+        }
+        _ => ResumableProbe::Retry,
+    }
+}
+
+fn parse_saved_import(value: &serde_json::Value) -> Option<SavedImport> {
+    if value.get("status").and_then(serde_json::Value::as_str) != Some("staged") {
+        return None;
+    }
+    let path = nonempty(value, "path")?;
+    let timestamp = nonempty(value, "timestamp")?;
+    Some(SavedImport { path, timestamp })
+}
+
+fn parse_space_fields(value: Option<&serde_json::Value>) -> (String, Option<u64>, Option<u64>) {
+    let sentence = value
+        .and_then(|v| nonempty(v, "error"))
+        .unwrap_or_else(|| message("windows.ui.yourjournalcouldntacceptthis", &[]));
+    let required_bytes = value
+        .and_then(|v| v.get("required_bytes"))
+        .and_then(serde_json::Value::as_u64);
+    let available_bytes = value
+        .and_then(|v| v.get("available_bytes"))
+        .and_then(serde_json::Value::as_u64);
+    (sentence, required_bytes, available_bytes)
+}
+
+pub fn classify_upload_create(response: &HttpResponse) -> UploadCreateReply {
+    if matches!(response.status, 401 | 403) {
+        return UploadCreateReply::AuthStop;
+    }
+    let parsed = serde_json::from_slice::<serde_json::Value>(&response.body).ok();
+    if response.status == 507 {
+        let (sentence, required_bytes, available_bytes) = parse_space_fields(parsed.as_ref());
+        return UploadCreateReply::InsufficientSpace {
+            sentence,
+            required_bytes,
+            available_bytes,
+        };
+    }
+    if response.status >= 500 || response.status == 429 {
+        return UploadCreateReply::Retry;
+    }
+    if matches!(response.status, 404 | 405) {
+        let reason = parsed.as_ref().and_then(|v| nonempty(v, "reason_code"));
+        if reason.as_deref() != Some("upload_not_found") {
+            return UploadCreateReply::Unsupported;
+        }
+    }
+    if matches!(response.status, 200 | 201) {
+        let Some(value) = parsed else {
+            return UploadCreateReply::Retry;
+        };
+        match value.get("status").and_then(serde_json::Value::as_str) {
+            Some("open") => {
+                let upload_id = nonempty(&value, "upload_id").filter(|id| is_valid_upload_id(id));
+                let next_offset = value.get("next_offset").and_then(serde_json::Value::as_u64);
+                let total_bytes = value.get("total_bytes").and_then(serde_json::Value::as_u64);
+                let chunk_bytes = value.get("chunk_bytes").and_then(serde_json::Value::as_u64);
+                if let (Some(upload_id), Some(next_offset), Some(total_bytes), Some(chunk_bytes)) =
+                    (upload_id, next_offset, total_bytes, chunk_bytes)
+                {
+                    if total_bytes > 0
+                        && next_offset <= total_bytes
+                        && chunk_bytes > 0
+                        && chunk_bytes <= UPLOAD_BRIDGE_MAX_BODY_BYTES as u64
+                    {
+                        return UploadCreateReply::Open(UploadOpen {
+                            upload_id,
+                            next_offset,
+                            total_bytes,
+                            chunk_bytes,
+                            expires_at: nonempty(&value, "expires_at"),
+                        });
+                    }
+                }
+                return UploadCreateReply::Retry;
+            }
+            Some("already_staged") if response.status == 200 => {
+                if let Some(saved) = value.get("save_response").and_then(parse_saved_import) {
+                    return UploadCreateReply::AlreadyStaged(saved);
+                }
+                return UploadCreateReply::Retry;
+            }
+            Some("already_imported") if response.status == 200 => {
+                let import_id = nonempty(&value, "import_id");
+                return UploadCreateReply::AlreadyImported { import_id };
+            }
+            _ => return UploadCreateReply::Retry,
+        }
+    }
+    if (200..300).contains(&response.status) {
+        return UploadCreateReply::Retry;
+    }
+    let reason = parsed.as_ref().and_then(|v| nonempty(v, "reason_code"));
+    if response.status == 409 && reason.as_deref() == Some("journal_busy") {
+        return UploadCreateReply::Retry;
+    }
+    let kind = parsed.as_ref().and_then(|v| nonempty(v, "kind"));
+    let sentence = parsed
+        .as_ref()
+        .and_then(|v| nonempty(v, "error"))
+        .unwrap_or_else(|| message("windows.ui.yourjournalcouldntacceptthis", &[]));
+    UploadCreateReply::Refused {
+        sentence,
+        retryable: false,
+        reason_code: reason,
+        kind,
+    }
+}
+
+pub fn classify_upload_chunk(response: &HttpResponse) -> UploadChunkReply {
+    if matches!(response.status, 401 | 403) {
+        return UploadChunkReply::AuthStop;
+    }
+    let parsed = serde_json::from_slice::<serde_json::Value>(&response.body).ok();
+    if response.status == 507 {
+        let (sentence, required_bytes, available_bytes) = parse_space_fields(parsed.as_ref());
+        return UploadChunkReply::InsufficientSpace {
+            sentence,
+            required_bytes,
+            available_bytes,
+        };
+    }
+    if response.status >= 500 || response.status == 429 {
+        return UploadChunkReply::Retry;
+    }
+    if response.status == 404 {
+        return UploadChunkReply::UploadNotFound;
+    }
+    if response.status == 200 {
+        let Some(value) = parsed else {
+            return UploadChunkReply::Retry;
+        };
+        let next_offset = value.get("next_offset").and_then(serde_json::Value::as_u64);
+        let total_bytes = value.get("total_bytes").and_then(serde_json::Value::as_u64);
+        let complete = value.get("complete").and_then(serde_json::Value::as_bool);
+        if let (Some(next_offset), Some(total_bytes), Some(complete)) =
+            (next_offset, total_bytes, complete)
+        {
+            if total_bytes > 0 && next_offset <= total_bytes {
+                return UploadChunkReply::Accepted {
+                    next_offset,
+                    total_bytes,
+                    complete,
+                    expires_at: nonempty(&value, "expires_at"),
+                };
+            }
+        }
+        return UploadChunkReply::Retry;
+    }
+    if (200..300).contains(&response.status) {
+        return UploadChunkReply::Retry;
+    }
+    let reason = parsed.as_ref().and_then(|v| nonempty(v, "reason_code"));
+    if response.status == 409 {
+        if reason.as_deref() == Some("journal_busy") {
+            return UploadChunkReply::Retry;
+        }
+        if reason.as_deref() == Some("offset_mismatch") || parsed.is_none() {
+            let next_offset = parsed
+                .as_ref()
+                .and_then(|v| v.get("next_offset"))
+                .and_then(serde_json::Value::as_u64);
+            return UploadChunkReply::OffsetMismatch { next_offset };
+        }
+    }
+    if response.status == 422 && reason.as_deref() == Some("chunk_checksum_mismatch") {
+        return UploadChunkReply::ChunkChecksumMismatch;
+    }
+    let kind = parsed.as_ref().and_then(|v| nonempty(v, "kind"));
+    let sentence = parsed
+        .as_ref()
+        .and_then(|v| nonempty(v, "error"))
+        .unwrap_or_else(|| message("windows.ui.yourjournalcouldntacceptthis", &[]));
+    UploadChunkReply::Refused {
+        sentence,
+        retryable: false,
+        reason_code: reason,
+        kind,
+    }
+}
+
+pub fn classify_upload_status(response: &HttpResponse) -> UploadStatusReply {
+    if matches!(response.status, 401 | 403) {
+        return UploadStatusReply::AuthStop;
+    }
+    if response.status == 404 {
+        return UploadStatusReply::UploadNotFound;
+    }
+    if response.status != 200 {
+        return UploadStatusReply::Retry;
+    }
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&response.body) else {
+        return UploadStatusReply::Retry;
+    };
+    if value.get("status").and_then(serde_json::Value::as_str) != Some("open") {
+        return UploadStatusReply::Retry;
+    }
+    let upload_id = nonempty(&value, "upload_id").filter(|id| is_valid_upload_id(id));
+    let next_offset = value.get("next_offset").and_then(serde_json::Value::as_u64);
+    let total_bytes = value.get("total_bytes").and_then(serde_json::Value::as_u64);
+    let chunk_bytes = value.get("chunk_bytes").and_then(serde_json::Value::as_u64);
+    match (upload_id, next_offset, total_bytes, chunk_bytes) {
+        (Some(upload_id), Some(next_offset), Some(total_bytes), Some(chunk_bytes))
+            if total_bytes > 0
+                && next_offset <= total_bytes
+                && chunk_bytes > 0
+                && chunk_bytes <= UPLOAD_BRIDGE_MAX_BODY_BYTES as u64 =>
+        {
+            UploadStatusReply::Open {
+                upload_id,
+                next_offset,
+                total_bytes,
+                chunk_bytes,
+                phase: nonempty(&value, "phase"),
+                expires_at: nonempty(&value, "expires_at"),
+            }
+        }
+        _ => UploadStatusReply::Retry,
+    }
+}
+
+pub fn classify_upload_commit(response: &HttpResponse) -> UploadCommitReply {
+    if matches!(response.status, 401 | 403) {
+        return UploadCommitReply::AuthStop;
+    }
+    let parsed = serde_json::from_slice::<serde_json::Value>(&response.body).ok();
+    if response.status == 507 {
+        let (sentence, required_bytes, available_bytes) = parse_space_fields(parsed.as_ref());
+        return UploadCommitReply::InsufficientSpace {
+            sentence,
+            required_bytes,
+            available_bytes,
+        };
+    }
+    if response.status >= 500 || response.status == 429 {
+        return UploadCommitReply::Retry;
+    }
+    if response.status == 404 {
+        return UploadCommitReply::UploadNotFound;
+    }
+    if response.status == 200 {
+        if let Some(saved) = parsed.as_ref().and_then(parse_saved_import) {
+            return UploadCommitReply::Saved(saved);
+        }
+        return UploadCommitReply::Retry;
+    }
+    if (200..300).contains(&response.status) {
+        return UploadCommitReply::Retry;
+    }
+    let reason = parsed.as_ref().and_then(|v| nonempty(v, "reason_code"));
+    if response.status == 409 {
+        if reason.as_deref() == Some("journal_busy") {
+            return UploadCommitReply::Retry;
+        }
+        if reason.as_deref() == Some("incomplete_upload") || parsed.is_none() {
+            let next_offset = parsed
+                .as_ref()
+                .and_then(|v| v.get("next_offset"))
+                .and_then(serde_json::Value::as_u64);
+            return UploadCommitReply::Incomplete { next_offset };
+        }
+    }
+    if response.status == 422 && reason.as_deref() == Some("whole_file_checksum_mismatch") {
+        let sentence = parsed
+            .as_ref()
+            .and_then(|v| nonempty(v, "error"))
+            .unwrap_or_else(|| message("windows.ui.yourjournalcouldntacceptthis", &[]));
+        return UploadCommitReply::WholeFileChecksumMismatch { sentence };
+    }
+    let kind = parsed.as_ref().and_then(|v| nonempty(v, "kind"));
+    let sentence = parsed
+        .as_ref()
+        .and_then(|v| nonempty(v, "error"))
+        .unwrap_or_else(|| message("windows.ui.yourjournalcouldntacceptthis", &[]));
+    UploadCommitReply::Refused {
+        sentence,
+        retryable: false,
+        reason_code: reason,
+        kind,
+    }
+}
+
+pub fn classify_upload_abort(response: &HttpResponse) -> UploadAbortReply {
+    if matches!(response.status, 401 | 403) {
+        return UploadAbortReply::AuthStop;
+    }
+    if matches!(response.status, 200 | 204) {
+        return UploadAbortReply::Deleted;
+    }
+    if response.status == 404 {
+        return UploadAbortReply::NotFound;
+    }
+    UploadAbortReply::Retry
 }
 
 #[cfg(test)]
@@ -773,5 +1528,226 @@ mod tests {
         assert!(suffix.contains("name=\"area\"\r\n\r\nquick\r\n"));
         assert!(!suffix.contains("source_hint"));
         assert!(suffix.contains("name=\"context\"\r\n\r\n{}\r\n"));
+    }
+
+    #[test]
+    fn sources_resumable_probe_reads_journal_limits_and_treats_404_and_405_as_unsupported() {
+        let supported = answer(
+            200,
+            r#"{"sources":[],"resumable":{"threshold_bytes":16777216,"chunk_bytes":4194304,"max_file_bytes":4294967296}}"#,
+        );
+        assert_eq!(
+            classify_sources_resumable(&supported),
+            ResumableProbe::Supported(ResumableConfig {
+                threshold_bytes: 16_777_216,
+                chunk_bytes: 4_194_304,
+                max_file_bytes: 4_294_967_296,
+            })
+        );
+        // Custom advertised threshold/chunk sizes are respected rather than hard-coded.
+        let custom = answer(
+            200,
+            r#"{"resumable":{"threshold_bytes":8388608,"chunk_bytes":2097152,"max_file_bytes":1073741824}}"#,
+        );
+        assert_eq!(
+            classify_sources_resumable(&custom),
+            ResumableProbe::Supported(ResumableConfig {
+                threshold_bytes: 8_388_608,
+                chunk_bytes: 2_097_152,
+                max_file_bytes: 1_073_741_824,
+            })
+        );
+        assert_eq!(
+            classify_sources_resumable(&answer(200, r#"{"sources":[]}"#)),
+            ResumableProbe::Unsupported
+        );
+        assert_eq!(
+            classify_sources_resumable(&answer(404, "")),
+            ResumableProbe::Unsupported
+        );
+        assert_eq!(
+            classify_sources_resumable(&answer(405, "")),
+            ResumableProbe::Unsupported
+        );
+        assert_eq!(
+            classify_sources_resumable(&answer(401, "")),
+            ResumableProbe::AuthStop
+        );
+        assert_eq!(
+            classify_sources_resumable(&answer(503, "")),
+            ResumableProbe::Retry
+        );
+    }
+
+    #[test]
+    fn upload_create_classifies_open_dedup_fallback_and_space_faults() {
+        assert_eq!(
+            classify_upload_create(&answer(
+                201,
+                r#"{"upload_id":"550e8400-e29b-41d4-a716-446655440000","client_item_id":"id-1","status":"open","next_offset":0,"total_bytes":33554432,"chunk_bytes":4194304,"expires_at":"2026-12-01T00:00:00Z"}"#,
+            )),
+            UploadCreateReply::Open(UploadOpen {
+                upload_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+                next_offset: 0,
+                total_bytes: 33_554_432,
+                chunk_bytes: 4_194_304,
+                expires_at: Some("2026-12-01T00:00:00Z".into()),
+            })
+        );
+        assert_eq!(
+            classify_upload_create(&answer(
+                200,
+                r#"{"status":"already_staged","replay":true,"save_response":{"status":"staged","path":"/imports/20261125_120000/a.zip","timestamp":"20261125_120000"}}"#,
+            )),
+            UploadCreateReply::AlreadyStaged(SavedImport {
+                path: "/imports/20261125_120000/a.zip".into(),
+                timestamp: "20261125_120000".into(),
+            })
+        );
+        assert_eq!(
+            classify_upload_create(&answer(
+                200,
+                r#"{"status":"already_imported","import_id":"20261125_120000","reason_code":"invalid_operation_for_state","kind":"already_imported"}"#,
+            )),
+            UploadCreateReply::AlreadyImported {
+                import_id: Some("20261125_120000".into()),
+            }
+        );
+        // Unprobed older journal returns 405 (or 404); both fall back identically.
+        assert_eq!(
+            classify_upload_create(&answer(404, "")),
+            UploadCreateReply::Unsupported
+        );
+        assert_eq!(
+            classify_upload_create(&answer(405, "")),
+            UploadCreateReply::Unsupported
+        );
+        assert_eq!(
+            classify_upload_create(&answer(
+                507,
+                r#"{"error":"not enough room","reason_code":"insufficient_journal_space","detail":"low space","required_bytes":4294967296,"available_bytes":100}"#,
+            )),
+            UploadCreateReply::InsufficientSpace {
+                sentence: "not enough room".into(),
+                required_bytes: Some(4_294_967_296),
+                available_bytes: Some(100),
+            }
+        );
+        assert_eq!(
+            classify_upload_create(&answer(
+                409,
+                r#"{"error":"busy","reason_code":"journal_busy","detail":"busy"}"#,
+            )),
+            UploadCreateReply::Retry
+        );
+    }
+
+    #[test]
+    fn upload_chunk_and_commit_classifiers_cover_resync_checksum_expiry_and_space() {
+        assert_eq!(
+            classify_upload_chunk(&answer(
+                200,
+                r#"{"upload_id":"u1","next_offset":4194304,"total_bytes":16777216,"complete":false,"expires_at":"2026-12-01T00:00:00Z"}"#,
+            )),
+            UploadChunkReply::Accepted {
+                next_offset: 4_194_304,
+                total_bytes: 16_777_216,
+                complete: false,
+                expires_at: Some("2026-12-01T00:00:00Z".into()),
+            }
+        );
+        assert_eq!(
+            classify_upload_chunk(&answer(
+                409,
+                r#"{"error":"mismatch","reason_code":"offset_mismatch","detail":"bad","next_offset":8388608}"#,
+            )),
+            UploadChunkReply::OffsetMismatch {
+                next_offset: Some(8_388_608),
+            }
+        );
+        assert_eq!(
+            classify_upload_chunk(&answer(409, "")),
+            UploadChunkReply::OffsetMismatch { next_offset: None }
+        );
+        assert_eq!(
+            classify_upload_chunk(&answer(
+                422,
+                r#"{"error":"bad chunk","reason_code":"chunk_checksum_mismatch","detail":"mismatch"}"#,
+            )),
+            UploadChunkReply::ChunkChecksumMismatch
+        );
+        assert_eq!(
+            classify_upload_chunk(&answer(
+                404,
+                r#"{"error":"gone","reason_code":"upload_not_found","detail":"expired"}"#,
+            )),
+            UploadChunkReply::UploadNotFound
+        );
+        assert_eq!(
+            classify_upload_commit(&answer(
+                200,
+                r#"{"status":"staged","path":"/imports/20261125_120000/big.zip","timestamp":"20261125_120000"}"#,
+            )),
+            UploadCommitReply::Saved(SavedImport {
+                path: "/imports/20261125_120000/big.zip".into(),
+                timestamp: "20261125_120000".into(),
+            })
+        );
+        assert_eq!(
+            classify_upload_commit(&answer(
+                422,
+                r#"{"error":"file changed","reason_code":"whole_file_checksum_mismatch","detail":"bad sha"}"#,
+            )),
+            UploadCommitReply::WholeFileChecksumMismatch {
+                sentence: "file changed".into(),
+            }
+        );
+        assert_eq!(
+            classify_upload_commit(&answer(
+                409,
+                r#"{"error":"incomplete","reason_code":"incomplete_upload","detail":"short","next_offset":4194304}"#,
+            )),
+            UploadCommitReply::Incomplete {
+                next_offset: Some(4_194_304),
+            }
+        );
+        assert_eq!(
+            classify_upload_commit(&answer(503, "")),
+            UploadCommitReply::Retry
+        );
+    }
+
+    #[test]
+    fn retry_ladder_steps_through_contract_schedule_with_twenty_percent_jitter() {
+        let mut ladder = RetryLadder::new();
+        let expected_secs = [1, 2, 5, 10, 30, 60, 60];
+        for secs in expected_secs {
+            assert_eq!(
+                ladder.next_delay_with_jitter(0.0),
+                Duration::from_secs(secs)
+            );
+        }
+        ladder.reset();
+        assert_eq!(
+            ladder.next_delay_with_jitter(-1.0),
+            Duration::from_millis(800)
+        );
+        assert_eq!(
+            ladder.next_delay_with_jitter(1.0),
+            Duration::from_millis(2400)
+        );
+    }
+
+    #[test]
+    fn hash_file_and_read_chunk_stream_exact_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blob.bin");
+        let data: Vec<u8> = (0..(150 * 1024 + 13)).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &data).unwrap();
+        let (hex, len) = hash_file_sha256(&path).unwrap();
+        assert_eq!(len, data.len() as u64);
+        assert_eq!(hex, sha256_hex(&data));
+        let slice = read_file_chunk(&path, 1024, 4096).unwrap();
+        assert_eq!(slice, &data[1024..5120]);
     }
 }

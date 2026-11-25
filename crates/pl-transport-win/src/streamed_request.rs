@@ -18,6 +18,7 @@ use crate::ordinary_request::OrdinaryRequest;
 use crate::{ObserverClient, RouteError, TransportError};
 
 pub const REQUEST_BODY_LIMIT: u64 = 4 * 1024 * 1024 * 1024 + 1024 * 1024;
+pub const UPLOAD_BRIDGE_MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 const RESPONSE_CAP: usize = 64 * 1024;
 const HEAD_CAP: usize = 16 * 1024;
 // A moving upload has no total deadline. A stalled local exchange is bounded.
@@ -255,6 +256,196 @@ pub(crate) async fn post<R: AsyncRead + Unpin>(
     exchange.map_err(RouteError::Transport)
 }
 
+pub(crate) fn is_valid_upload_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+pub(crate) fn allowed_upload_route(method: &str, target: &str) -> bool {
+    if method == "POST" && target == "/app/import/api/uploads" {
+        return true;
+    }
+    let Some(rest) = target.strip_prefix("/app/import/api/uploads/") else {
+        return false;
+    };
+    match method {
+        "GET" | "DELETE" => is_valid_upload_id(rest),
+        "POST" => rest.strip_suffix("/commit").is_some_and(is_valid_upload_id),
+        "PUT" => {
+            let Some((id, offset)) = rest.split_once("?offset=") else {
+                return false;
+            };
+            is_valid_upload_id(id)
+                && !offset.is_empty()
+                && offset.bytes().all(|byte| byte.is_ascii_digit())
+                && offset.parse::<u64>().is_ok()
+        }
+        _ => false,
+    }
+}
+
+/// Persistent single-carrier bridge for a resumable upload session.
+///
+/// Reuses one mTLS/relay carrier across session creation, sequential chunks,
+/// offset resyncs, commit, and cancellation. Tears down cleanly on drop,
+/// network failure, or TLS refusal.
+pub(crate) struct UploadSession {
+    client: Arc<ObserverClient>,
+    port: u16,
+    cookie: String,
+    guard: BridgeGuard,
+    had_ok: bool,
+}
+
+impl UploadSession {
+    pub(crate) async fn open(client: Arc<ObserverClient>) -> Result<Self, RouteError> {
+        if !client.gate_open() {
+            return Err(RouteError::AwaitingConfirmation);
+        }
+        if let Some(stop) = client.refusal_stop() {
+            return Err(RouteError::Transport(crate::pairing::map_shared_error(
+                stop.error(),
+            )));
+        }
+        let bridge = journal_bridge::start(JournalBridgeConfig {
+            opener: Arc::new(Opener(client.clone())),
+            bridge_names: BridgeNames {
+                capability_cookie_name: observer_pl::CAP_COOKIE_NAME.into(),
+                upstream_cookie_prefix: observer_pl::UPSTREAM_COOKIE_PREFIX.into(),
+                observer_header_name: observer_pl::OBSERVER_HANDLE_HEADER.to_ascii_lowercase(),
+                protocol_version_header_name: observer_pl::PROTOCOL_VERSION_HEADER
+                    .to_ascii_lowercase(),
+            },
+            endpoint_hosts: Vec::new(),
+            policy: BridgePolicy {
+                max_request_body_bytes: UPLOAD_BRIDGE_MAX_BODY_BYTES,
+                stream_response: Arc::new(|_| true),
+                local_response: Arc::new(|head, _| {
+                    if allowed_upload_route(&head.method, &head.target) {
+                        None
+                    } else {
+                        Some(journal_bridge::LocalResponse {
+                            status: 403,
+                            content_type: "text/plain".into(),
+                            body: Vec::new(),
+                        })
+                    }
+                }),
+                ..Default::default()
+            },
+        })
+        .await
+        .map_err(|_| RouteError::Transport(TransportError::NoEndpoint))?;
+        let port = bridge.port();
+        let cookie = bridge
+            .capability_cookie()
+            .expect("capability enabled")
+            .split(';')
+            .next()
+            .expect("capability cookie")
+            .to_owned();
+        Ok(Self {
+            client,
+            port,
+            cookie,
+            guard: BridgeGuard(Some(bridge)),
+            had_ok: false,
+        })
+    }
+
+    pub(crate) fn is_alive(&self) -> bool {
+        self.guard.0.is_some()
+    }
+
+    pub(crate) async fn send<R: AsyncRead + Unpin>(
+        &mut self,
+        method: &str,
+        target: &str,
+        extra_headers: &[(String, String)],
+        body: R,
+        length: u64,
+    ) -> Result<HttpResponse, RouteError> {
+        if !self.client.gate_open() {
+            return Err(RouteError::AwaitingConfirmation);
+        }
+        if let Some(stop) = self.client.refusal_stop() {
+            return Err(RouteError::Transport(crate::pairing::map_shared_error(
+                stop.error(),
+            )));
+        }
+        if !allowed_upload_route(method, target) {
+            return Err(RouteError::Transport(
+                invalid("disallowed upload route").into(),
+            ));
+        }
+        if length > UPLOAD_BRIDGE_MAX_BODY_BYTES as u64 {
+            return Err(RouteError::Transport(
+                invalid("upload chunk exceeds bridge limit").into(),
+            ));
+        }
+        if self.guard.0.is_none() {
+            return Err(RouteError::Transport(TransportError::NoEndpoint));
+        }
+        let mut headers = Vec::with_capacity(extra_headers.len() + 1);
+        headers.extend(extra_headers.iter().cloned());
+        headers.push(("Cookie".into(), self.cookie.clone()));
+        let head = http::build_request_head_with_host(
+            method,
+            target,
+            &format!("127.0.0.1:{}", self.port),
+            &headers,
+            length as usize,
+        );
+        let exchange = async {
+            let stream = progress(tokio::net::TcpStream::connect(("127.0.0.1", self.port))).await?;
+            exchange_request(stream, &head, body, length).await
+        }
+        .await;
+
+        let should_teardown = match &exchange {
+            Err(_) => true,
+            Ok(resp) if resp.status == 502 => true,
+            Ok(_) => self
+                .guard
+                .0
+                .as_ref()
+                .is_some_and(|bridge| bridge.status().last_failure.is_some()),
+        };
+        if should_teardown {
+            if let Some(bridge) = self.guard.0.take() {
+                let status = bridge.shutdown_and_wait().await;
+                let stop = self.client.note_streamed_attempt(
+                    &status,
+                    exchange.is_ok() && !matches!(&exchange, Ok(r) if r.status == 502),
+                );
+                if let Some(stop) = stop {
+                    return Err(RouteError::Transport(crate::pairing::map_shared_error(
+                        stop.error(),
+                    )));
+                }
+            }
+            return exchange.map_err(RouteError::Transport);
+        }
+
+        self.had_ok = true;
+        if let Some(bridge) = self.guard.0.as_ref() {
+            let status = bridge.status();
+            let _ = self.client.note_streamed_attempt(&status, true);
+        }
+        exchange.map_err(RouteError::Transport)
+    }
+
+    pub(crate) async fn close(mut self) {
+        if let Some(bridge) = self.guard.0.take() {
+            let status = bridge.shutdown_and_wait().await;
+            let _ = self.client.note_streamed_attempt(&status, self.had_ok);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,5 +565,44 @@ mod tests {
             .unwrap();
         drop(peer);
         assert_eq!(task.await.unwrap().unwrap().body, b"ok");
+    }
+
+    #[test]
+    fn allowed_upload_route_enforces_exact_protocol_paths() {
+        assert!(allowed_upload_route("POST", "/app/import/api/uploads"));
+        assert!(allowed_upload_route(
+            "GET",
+            "/app/import/api/uploads/550e8400-e29b-41d4-a716-446655440000"
+        ));
+        assert!(allowed_upload_route(
+            "DELETE",
+            "/app/import/api/uploads/550e8400-e29b-41d4-a716-446655440000"
+        ));
+        assert!(allowed_upload_route(
+            "POST",
+            "/app/import/api/uploads/550e8400-e29b-41d4-a716-446655440000/commit"
+        ));
+        assert!(allowed_upload_route(
+            "PUT",
+            "/app/import/api/uploads/550e8400-e29b-41d4-a716-446655440000?offset=4194304"
+        ));
+        assert!(!allowed_upload_route("GET", "/app/import/api/uploads"));
+        assert!(!allowed_upload_route(
+            "PUT",
+            "/app/import/api/uploads/abc-123"
+        ));
+        assert!(!allowed_upload_route(
+            "PUT",
+            "/app/import/api/uploads/abc-123?offset=-1"
+        ));
+        assert!(!allowed_upload_route(
+            "PUT",
+            "/app/import/api/uploads/abc-123?offset=0&extra=1"
+        ));
+        assert!(!allowed_upload_route(
+            "GET",
+            "/app/import/api/uploads/../status"
+        ));
+        assert!(!allowed_upload_route("POST", "/app/import/api/start"));
     }
 }

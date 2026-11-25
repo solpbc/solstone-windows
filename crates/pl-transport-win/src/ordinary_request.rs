@@ -35,6 +35,8 @@ pub(crate) enum OrdinaryRequest {
     ImportSavePost,
     ImportStartPost,
     ImportStatusGet,
+    ImportSourcesGet,
+    ImportUploadAbortDelete,
 }
 
 /// One route's transport authority.
@@ -49,7 +51,7 @@ pub(crate) struct OrdinaryRequestSpec {
 }
 
 impl OrdinaryRequest {
-    pub(crate) const ALL: [Self; 21] = [
+    pub(crate) const ALL: [Self; 23] = [
         Self::ClientsListGet,
         Self::ClientsSelfGet,
         Self::ClientsSelfPut,
@@ -71,6 +73,8 @@ impl OrdinaryRequest {
         Self::ImportSavePost,
         Self::ImportStartPost,
         Self::ImportStatusGet,
+        Self::ImportSourcesGet,
+        Self::ImportUploadAbortDelete,
     ];
 
     pub(crate) const fn spec(self) -> OrdinaryRequestSpec {
@@ -198,6 +202,20 @@ impl OrdinaryRequest {
                 response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
                 gated: true,
             },
+            Self::ImportSourcesGet => OrdinaryRequestSpec {
+                method: "GET",
+                path_pattern: "/app/import/api/sources",
+                replay: ReplayPolicy::ReplaySafe,
+                response_cap: spl_core::mux::MAX_ASSEMBLED_BYTES,
+                gated: true,
+            },
+            Self::ImportUploadAbortDelete => OrdinaryRequestSpec {
+                method: "DELETE",
+                path_pattern: "/app/import/api/uploads/<upload-id>",
+                replay: ReplayPolicy::ReplaySafe,
+                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: true,
+            },
             Self::SelfSourcesPut => OrdinaryRequestSpec {
                 method: "PUT",
                 path_pattern: paths::SELF_SOURCES,
@@ -248,6 +266,12 @@ impl OrdinaryRequest {
                 format!(
                     "/app/import/api/{}",
                     client_id.expect("import status route requires an import id")
+                )
+            }
+            Self::ImportUploadAbortDelete => {
+                format!(
+                    "/app/import/api/uploads/{}",
+                    client_id.expect("import upload abort route requires an upload id")
                 )
             }
             _ => self.spec().path_pattern.to_string(),
@@ -452,6 +476,22 @@ mod tests {
                 MAX_POST_CONNECT_RESPONSE_BYTES,
                 true,
             ),
+            (
+                OrdinaryRequest::ImportSourcesGet,
+                "GET",
+                "/app/import/api/sources",
+                ReplayPolicy::ReplaySafe,
+                spl_core::mux::MAX_ASSEMBLED_BYTES,
+                true,
+            ),
+            (
+                OrdinaryRequest::ImportUploadAbortDelete,
+                "DELETE",
+                "/app/import/api/uploads/<upload-id>",
+                ReplayPolicy::ReplaySafe,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                true,
+            ),
         ];
 
         assert_eq!(OrdinaryRequest::ALL, expected.map(|(route, ..)| route));
@@ -473,6 +513,10 @@ mod tests {
         assert_eq!(
             OrdinaryRequest::ImportStatusGet.path(None, Some("20261122_143000")),
             "/app/import/api/20261122_143000"
+        );
+        assert_eq!(
+            OrdinaryRequest::ImportUploadAbortDelete.path(None, Some("upload-123")),
+            "/app/import/api/uploads/upload-123"
         );
     }
 }

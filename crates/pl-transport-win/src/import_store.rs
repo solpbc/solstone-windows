@@ -29,6 +29,37 @@ pub struct SavedProgress {
     pub saved: SavedImport,
 }
 
+/// Durable journal-scoped resumable upload cursor.
+///
+/// Bound to `journal` (`upload_instance_id`): if the owner pairs with a
+/// different journal mid-upload, this state is discarded while keeping the
+/// staged local file and its precomputed `sha256`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResumableUploadState {
+    pub journal: String,
+    pub upload_id: String,
+    pub next_offset: u64,
+    pub total_bytes: u64,
+    pub chunk_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UploadPhase {
+    Sending,
+    Paused,
+    Checking,
+}
+
+impl UploadPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sending => "sending",
+            Self::Paused => "paused",
+            Self::Checking => "checking",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Refusal {
     pub journal: String,
@@ -94,6 +125,12 @@ pub struct Item {
     /// Present when the journal page handed this file to the app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handoff: Option<Handoff>,
+    /// Whole-file SHA-256 computed once from the stored custody copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// Resumable chunked upload cursor scoped to one paired journal instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload: Option<ResumableUploadState>,
 }
 
 impl Item {
@@ -116,6 +153,12 @@ impl Item {
         self.review
             .as_ref()
             .filter(|r| !journal.is_empty() && r.journal == journal)
+    }
+
+    pub fn upload_for(&self, journal: &str) -> Option<&ResumableUploadState> {
+        self.upload
+            .as_ref()
+            .filter(|u| !journal.is_empty() && u.journal == journal)
     }
 }
 
@@ -146,6 +189,9 @@ pub struct Store {
     root: PathBuf,
     pub items: BTreeMap<String, Item>,
     pub active: Option<String>,
+    pub active_phase: Option<UploadPhase>,
+    pub active_resumable: bool,
+    pub paused_uploads: BTreeSet<String>,
     pub confirming_remove: Option<String>,
     pub intake: Option<Intake>,
     pub interrupted: bool,
@@ -272,12 +318,38 @@ impl Store {
             root,
             items,
             active: None,
+            active_phase: None,
+            active_resumable: false,
+            paused_uploads: BTreeSet::new(),
             confirming_remove: None,
             intake: None,
             interrupted,
             delivered_to,
             recent,
         })
+    }
+
+    pub fn set_active(&mut self, id: String, resumable: bool, phase: Option<UploadPhase>) {
+        self.paused_uploads.remove(&id);
+        self.active = Some(id);
+        self.active_resumable = resumable;
+        self.active_phase = phase;
+    }
+
+    pub fn clear_active(&mut self) {
+        self.active = None;
+        self.active_resumable = false;
+        self.active_phase = None;
+    }
+
+    pub fn mark_paused(&mut self, id: &str) {
+        if self.items.contains_key(id) {
+            self.paused_uploads.insert(id.to_owned());
+        }
+    }
+
+    pub fn clear_paused(&mut self, id: &str) {
+        self.paused_uploads.remove(id);
     }
 
     pub fn root(&self) -> &Path {
@@ -315,20 +387,51 @@ impl Store {
     }
 
     pub fn remove(&mut self, id: &str) -> io::Result<bool> {
+        Ok(self.remove_returning_upload(id)?.is_some())
+    }
+
+    pub fn remove_returning_upload(
+        &mut self,
+        id: &str,
+    ) -> io::Result<Option<Option<ResumableUploadState>>> {
         if self.active.as_deref() == Some(id)
             || self.confirming_remove.as_deref() != Some(id)
             || !self.items.contains_key(id)
         {
-            return Ok(false);
+            return Ok(None);
         }
         match fs::remove_dir_all(self.root.join(id)) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        self.items.remove(id);
+        let removed = self.items.remove(id);
+        self.paused_uploads.remove(id);
         self.confirming_remove = None;
-        Ok(true)
+        Ok(Some(removed.and_then(|item| item.upload)))
+    }
+
+    /// Cancel an active or paused resumable upload immediately, removing its
+    /// local custody copy and returning any journal-scoped upload cursor so the
+    /// caller can send best-effort `DELETE /app/import/api/uploads/{upload_id}`.
+    pub fn cancel_upload(&mut self, id: &str) -> io::Result<Option<ResumableUploadState>> {
+        if !self.items.contains_key(id) {
+            return Ok(None);
+        }
+        if self.active.as_deref() == Some(id) {
+            self.clear_active();
+        }
+        match fs::remove_dir_all(self.root.join(id)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        let removed = self.items.remove(id);
+        self.paused_uploads.remove(id);
+        if self.confirming_remove.as_deref() == Some(id) {
+            self.confirming_remove = None;
+        }
+        Ok(removed.and_then(|item| item.upload))
     }
 
     /// Called only after the journal proved terminal custody. A failed cleanup
@@ -376,6 +479,7 @@ impl Store {
             Err(error) => return Err(error),
         }
         self.items.remove(id);
+        self.paused_uploads.remove(id);
         if self.confirming_remove.as_deref() == Some(id) {
             self.confirming_remove = None;
         }
@@ -396,6 +500,36 @@ impl Store {
         prune_recent_receipts(&mut filtered, now_ms);
         filtered.truncate(RECENT_MAX_ITEMS);
         filtered
+    }
+
+    /// On re-pair to a different journal instance, discard remote upload cursors
+    /// bound to the prior journal while keeping the staged local file and sha256.
+    pub fn reset_foreign_uploads(&mut self, current_journal: &str) -> io::Result<bool> {
+        if current_journal.is_empty() {
+            return Ok(false);
+        }
+        let foreign_ids: Vec<String> = self
+            .items
+            .values()
+            .filter(|item| {
+                self.active.as_deref() != Some(&item.id)
+                    && item
+                        .upload
+                        .as_ref()
+                        .is_some_and(|u| u.journal != current_journal)
+            })
+            .map(|item| item.id.clone())
+            .collect();
+        let mut changed = false;
+        for id in foreign_ids {
+            if let Some(mut item) = self.items.get(&id).cloned() {
+                item.upload = None;
+                self.paused_uploads.remove(&id);
+                self.put(item)?;
+                changed = true;
+            }
+        }
+        Ok(changed)
     }
 
     /// On re-pair to a different journal instance, reset `ready to review` and
@@ -510,8 +644,10 @@ impl Store {
         }
         item.review = None;
         item.saved = None;
+        item.upload = None;
         item.refusal = None;
         item.may_have_reached = false;
+        self.paused_uploads.remove(id);
         self.put(item)?;
         Ok(true)
     }
@@ -558,6 +694,16 @@ pub struct Row {
     pub review_expired: bool,
     pub added: u64,
     pub size: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_sent: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub resumable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<&'static str>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub can_cancel: bool,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -580,7 +726,8 @@ fn row_sort_rank(state: &str) -> u8 {
         "review_expired" => 1,
         "refused" => 2,
         "sending" => 3,
-        _ => 4,
+        "paused" => 4,
+        _ => 5,
     }
 }
 
@@ -636,8 +783,20 @@ pub fn build_document(
                 .filter(|_| item.refused_here(journal, version))
         };
 
+        let upload = item.upload_for(journal);
         let row = if active {
             pending += 1;
+            let is_resumable = store.active_resumable || upload.is_some();
+            let phase = if is_resumable {
+                Some(store.active_phase.unwrap_or(UploadPhase::Sending).as_str())
+            } else {
+                None
+            };
+            let bytes_sent = if is_resumable {
+                Some(upload.map_or(0, |u| u.next_offset.min(item.size)))
+            } else {
+                None
+            };
             Row {
                 id: item.id.clone(),
                 name: item.name.clone(),
@@ -655,6 +814,11 @@ pub fn build_document(
                 review_expired: false,
                 added: item.added,
                 size: item.size,
+                bytes_sent,
+                bytes_total: is_resumable.then_some(item.size),
+                resumable: is_resumable,
+                phase,
+                can_cancel: is_resumable && phase != Some("checking"),
             }
         } else if let Some(review) = review {
             if review.expired {
@@ -686,6 +850,11 @@ pub fn build_document(
                 review_expired: review.expired,
                 added: item.added,
                 size: item.size,
+                bytes_sent: None,
+                bytes_total: None,
+                resumable: false,
+                phase: None,
+                can_cancel: false,
             }
         } else if let Some(refusal) = refusal {
             attention += 1;
@@ -706,6 +875,36 @@ pub fn build_document(
                 review_expired: false,
                 added: item.added,
                 size: item.size,
+                bytes_sent: upload.map(|u| u.next_offset.min(item.size)),
+                bytes_total: upload.map(|_| item.size),
+                resumable: upload.is_some(),
+                phase: None,
+                can_cancel: false,
+            }
+        } else if store.paused_uploads.contains(&item.id) || upload.is_some() {
+            pending += 1;
+            Row {
+                id: item.id.clone(),
+                name: item.name.clone(),
+                state: "paused",
+                reason: None,
+                retryable: false,
+                may_have_reached: item.may_have_reached,
+                missing_copy: item.missing_copy,
+                import_id: item
+                    .progress_for(journal)
+                    .map(|s| s.timestamp.clone())
+                    .filter(|id| is_valid_import_id(id)),
+                reason_code: None,
+                review_kind: None,
+                review_expired: false,
+                added: item.added,
+                size: item.size,
+                bytes_sent: Some(upload.map_or(0, |u| u.next_offset.min(item.size))),
+                bytes_total: Some(item.size),
+                resumable: true,
+                phase: Some(UploadPhase::Paused.as_str()),
+                can_cancel: true,
             }
         } else {
             pending += 1;
@@ -726,6 +925,11 @@ pub fn build_document(
                 review_expired: false,
                 added: item.added,
                 size: item.size,
+                bytes_sent: None,
+                bytes_total: None,
+                resumable: false,
+                phase: None,
+                can_cancel: false,
             }
         };
         rows.push(row);
@@ -854,7 +1058,20 @@ pub fn handoff_status_json(
     let Some(item) = store.items.get(id) else {
         return json!({"state": "gone"});
     };
+    let upload = item.upload_for(journal);
     if store.active.as_deref() == Some(id) {
+        if store.active_resumable || upload.is_some() {
+            return json!({
+                "state": "uploading",
+                "size": item.size,
+                "size_bytes": item.size,
+                "bytes_sent": upload.map_or(0, |u| u.next_offset.min(item.size)),
+                "bytes_total": item.size,
+                "resumable": true,
+                "phase": store.active_phase.unwrap_or(UploadPhase::Sending).as_str(),
+                "device_noun": "PC",
+            });
+        }
         return json!({
             "state": "uploading",
             "size": item.size,
@@ -909,6 +1126,18 @@ pub fn handoff_status_json(
                 .filter(|candidate| is_valid_import_id(candidate)),
             "device_noun": "PC",
             "size_bytes": item.size,
+        });
+    }
+    if store.paused_uploads.contains(id) || upload.is_some() {
+        return json!({
+            "state": "waiting",
+            "size": item.size,
+            "size_bytes": item.size,
+            "bytes_sent": upload.map_or(0, |u| u.next_offset.min(item.size)),
+            "bytes_total": item.size,
+            "resumable": true,
+            "phase": UploadPhase::Paused.as_str(),
+            "device_noun": "PC",
         });
     }
     json!({
@@ -1008,6 +1237,8 @@ where
         may_have_reached: false,
         missing_copy: false,
         handoff,
+        sha256: None,
+        upload: None,
     };
     let framing = ImportFile {
         id: &item.id,
@@ -1159,6 +1390,8 @@ mod tests {
             may_have_reached: true,
             missing_copy: false,
             handoff: None,
+            sha256: None,
+            upload: None,
         };
         assert!(item.progress_for("new").is_none());
         assert!(!item.refused_here("new", "2.0.52"));
@@ -1187,6 +1420,8 @@ mod tests {
             may_have_reached: false,
             missing_copy: false,
             handoff: None,
+            sha256: None,
+            upload: None,
         }
     }
 
@@ -1747,5 +1982,116 @@ mod tests {
         assert_eq!(err.name, "IMG_0413.heif");
         assert!(!err.reason.is_empty());
         assert_eq!(Store::open(store.root().into()).unwrap().items.len(), 1);
+    }
+
+    #[test]
+    fn resumable_upload_progress_respects_pairing_switch_and_emits_honest_host_status() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open(root.path().join("import")).unwrap();
+        let mut item = make_item('b', "archive.zip", 100);
+        item.size = 32 * 1024 * 1024;
+        item.sha256 = Some("f".repeat(64));
+        item.upload = Some(ResumableUploadState {
+            journal: "journal-a".into(),
+            upload_id: "550e8400-e29b-41d4-a716-446655440000".into(),
+            next_offset: 8 * 1024 * 1024,
+            total_bytes: 32 * 1024 * 1024,
+            chunk_bytes: 4 * 1024 * 1024,
+        });
+        fs::create_dir_all(store.root().join(&item.id)).unwrap();
+        fs::write(store.payload(&item.id), b"payload").unwrap();
+        store.put(item.clone()).unwrap();
+
+        let mut sync = SyncSnapshot::default();
+        sync.pairing.phase = PairingPhase::Paired;
+        sync.journal_version = Some("2.0.59".into());
+        sync.journal_version_fresh = true;
+
+        // Before delivery wakes on journal-a, persisted offset renders as paused (not attention).
+        let paused_doc = build_document(Some(&store), &sync, "journal-a", false, 1000);
+        assert_eq!(paused_doc.waiting, 1);
+        assert!(!paused_doc.needs_owner);
+        assert_eq!(paused_doc.rows[0].state, "paused");
+        assert_eq!(paused_doc.rows[0].bytes_sent, Some(8 * 1024 * 1024));
+        assert_eq!(paused_doc.rows[0].bytes_total, Some(32 * 1024 * 1024));
+        assert!(paused_doc.rows[0].resumable);
+        assert_eq!(paused_doc.rows[0].phase, Some("paused"));
+        assert!(paused_doc.rows[0].can_cancel);
+
+        let host_paused = handoff_status_json(None, Some(&store), "journal-a", "2.0.59", &item.id);
+        assert_eq!(host_paused["state"], "waiting");
+        assert_eq!(host_paused["bytes_sent"], 8 * 1024 * 1024);
+        assert_eq!(host_paused["bytes_total"], 32 * 1024 * 1024);
+        assert_eq!(host_paused["resumable"], true);
+        assert_eq!(host_paused["phase"], "paused");
+        assert_eq!(host_paused["device_noun"], "PC");
+
+        // Active sending and checking phases emit honest live fields.
+        store.set_active(item.id.clone(), true, Some(UploadPhase::Sending));
+        let host_sending = handoff_status_json(None, Some(&store), "journal-a", "2.0.59", &item.id);
+        assert_eq!(host_sending["state"], "uploading");
+        assert_eq!(host_sending["bytes_sent"], 8 * 1024 * 1024);
+        assert_eq!(host_sending["bytes_total"], 32 * 1024 * 1024);
+        assert_eq!(host_sending["resumable"], true);
+        assert_eq!(host_sending["phase"], "sending");
+
+        store.active_phase = Some(UploadPhase::Checking);
+        let checking_doc = build_document(Some(&store), &sync, "journal-a", false, 1000);
+        assert_eq!(checking_doc.rows[0].phase, Some("checking"));
+        assert!(!checking_doc.rows[0].can_cancel);
+        let host_checking =
+            handoff_status_json(None, Some(&store), "journal-a", "2.0.59", &item.id);
+        assert_eq!(host_checking["phase"], "checking");
+
+        // Pairing-switch rule: switching to journal-b clears upload_id/next_offset
+        // while preserving local custody bytes and precomputed sha256.
+        store.clear_active();
+        assert!(store.reset_foreign_uploads("journal-b").unwrap());
+        let reset = &store.items[&item.id];
+        assert!(reset.upload.is_none());
+        assert_eq!(reset.sha256.as_deref(), Some("f".repeat(64).as_str()));
+        assert_eq!(fs::read(store.payload(&item.id)).unwrap(), b"payload");
+        let fresh_doc = build_document(Some(&store), &sync, "journal-b", false, 1000);
+        assert_eq!(fresh_doc.rows[0].state, "waiting");
+        assert!(!fresh_doc.rows[0].resumable);
+
+        // Reopen backward compatibility: legacy item.json without sha256/upload opens cleanly.
+        let legacy_id = "c".repeat(64);
+        let legacy_dir = store.root().join(&legacy_id);
+        fs::create_dir_all(&legacy_dir).unwrap();
+        fs::write(
+            legacy_dir.join("item.json"),
+            format!(
+                r#"{{"id":"{legacy_id}","name":"old.txt","mime":"text/plain","size":5,"added":1,"saved":null,"refusal":null}}"#
+            ),
+        )
+        .unwrap();
+        let reopened = Store::open(store.root().into()).unwrap();
+        assert!(reopened.items[&legacy_id].sha256.is_none());
+        assert!(reopened.items[&legacy_id].upload.is_none());
+    }
+
+    #[test]
+    fn cancel_upload_removes_custody_and_returns_remote_cursor() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open(root.path().join("import")).unwrap();
+        let mut item = make_item('d', "video.mp4", 10);
+        item.upload = Some(ResumableUploadState {
+            journal: "journal-a".into(),
+            upload_id: "upload-abc".into(),
+            next_offset: 4 * 1024 * 1024,
+            total_bytes: 20 * 1024 * 1024,
+            chunk_bytes: 4 * 1024 * 1024,
+        });
+        fs::create_dir_all(store.root().join(&item.id)).unwrap();
+        fs::write(store.payload(&item.id), b"bytes").unwrap();
+        store.put(item.clone()).unwrap();
+        store.set_active(item.id.clone(), true, Some(UploadPhase::Sending));
+
+        let cancelled = store.cancel_upload(&item.id).unwrap().unwrap();
+        assert_eq!(cancelled.upload_id, "upload-abc");
+        assert!(store.active.is_none());
+        assert!(!store.items.contains_key(&item.id));
+        assert!(!store.root().join(&item.id).exists());
     }
 }

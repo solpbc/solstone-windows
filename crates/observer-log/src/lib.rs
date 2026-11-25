@@ -33,7 +33,10 @@ pub use journal_open::{
     classify_journal_open_failure, strip_cap, usable_failure_reason, JournalOpenFailure,
     UsableFailureReason,
 };
-pub use redact::{redact_pair_link, redact_secret, redact_titles, RedactedSecret, TitleSummary};
+pub use redact::{
+    hash_reader_sha256, redact_pair_link, redact_secret, redact_titles, sha256_hex, RedactedSecret,
+    TitleSummary,
+};
 pub use time::format_rfc3339_utc;
 pub use writer::RotatingFileWriter;
 
