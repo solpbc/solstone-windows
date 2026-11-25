@@ -82,7 +82,7 @@ windows.desktop.shared.copy.choosedevice = scegli un dispositivo
 
 windows.desktop.shared.copy.decidingtitle = salvataggio della tua scelta
 
-windows.desktop.shared.copy.decisionrefusedbody = il tuo diario non ha potuto applicare questa scelta. la connessione attuale funziona ancora.
+windows.desktop.shared.copy.decisionrefusedbody = non è stato possibile applicare questa scelta al tuo diario. la tua connessione attuale funziona ancora.
 
 windows.desktop.shared.copy.decisionrefusedtitle = la scelta richiede attenzione
 
@@ -106,7 +106,7 @@ windows.desktop.shared.copy.journalmarkunverifiedtitle = non è stato possibile 
 
 windows.desktop.shared.copy.keepboth = tieni entrambi
 
-windows.desktop.shared.copy.listunavailablebody = non è stato possibile caricare i dispositivi nel tuo diario. riprova quando il tuo diario è raggiungibile.
+windows.desktop.shared.copy.listunavailablebody = non è stato possibile caricare i dispositivi nel tuo diario. riprova quando ci si può connettere al tuo diario.
 
 windows.desktop.shared.copy.listunavailabletitle = dispositivi non disponibili
 
@@ -164,7 +164,7 @@ windows.desktop.shared.copy.sourcesbrowserdiscardcommit = scarta le pagine
 
 windows.desktop.shared.copy.sourcesbrowserdiscardconfirm = le pagine del browser ancora in attesa di invio saranno rimosse da questo PC.
 
-windows.desktop.shared.copy.sourcesbrowserheld = le nuove pagine del browser non vengono prese in questo momento.
+windows.desktop.shared.copy.sourcesbrowserheld = non si stanno prendendo nuove pagine del browser ora.
 
 windows.desktop.shared.copy.sourcesbrowserpages = pagine del browser
 
@@ -172,7 +172,7 @@ windows.desktop.shared.copy.storageunavailablebody = questo PC non ha potuto leg
 
 windows.desktop.shared.copy.storageunavailabletitle = connessione salvata non disponibile
 
-windows.desktop.shared.copy.targetmissingbody = quel dispositivo non è più nell'elenco del tuo diario. scegli un altro dispositivo, oppure tieni entrambi.
+windows.desktop.shared.copy.targetmissingbody = quel dispositivo non è più elencato nel tuo diario. scegli un altro dispositivo, oppure tieni entrambi.
 
 windows.desktop.shared.copy.targetmissingtitle = dispositivo non più disponibile
 
@@ -214,7 +214,7 @@ windows.desktop.shared.updates.automaticupdates = aggiornamenti automatici
 
 windows.desktop.shared.updates.checkforupdatesautomatically = cerca aggiornamenti automaticamente
 
-windows.desktop.shared.updates.checknow = cerca ora
+windows.desktop.shared.updates.checknow = controlla ora
 
 windows.desktop.shared.updates.dismiss = ignora
 
@@ -260,7 +260,7 @@ windows.import.expiredword = scaduta
 
 windows.import.holdoffline = in attesa che il tuo diario si riconnetta.
 
-windows.import.intro = aggiunge qualsiasi file scegli qui o rilasci su questa finestra. il tuo diario capisce che cos'è.
+windows.import.intro = aggiunge qualsiasi file che scegli qui o rilasci su questa finestra. il tuo diario capisce che cos'è.
 
 windows.import.morehelper = guide, opzioni e cronologia delle importazioni nel tuo diario
 
@@ -280,9 +280,9 @@ windows.import.reviewdetail = salvato nel tuo diario. mostra l'anteprima e confe
 
 windows.import.reviewdetailbody = salvato nel tuo diario. rivedi entro un'ora, prima che il tuo diario rimuova la copia in attesa.
 
-windows.import.reviewexpired = la copia in attesa nel tuo diario è scaduta. questo dispositivo ha ancora il file.
+windows.import.reviewexpired = la copia in attesa nel tuo diario è scaduta. questo dispositivo tiene ancora il file.
 
-windows.import.rowsending = invio al tuo diario…
+windows.import.rowsending = invio al tuo diario in corso…
 
 windows.import.sectionreview = in attesa della tua revisione
 
@@ -328,7 +328,7 @@ windows.logs.norecentlogsareavailableyettry = non ci sono ancora registri recent
 
 windows.logs.readthelogsbelowthenchoosewhether = leggi i registri sotto, poi scegli se salvare una copia.
 
-windows.logs.textcontent = leggi i registri recenti dell'app di solstone prima di salvare una copia per una segnalazione al supporto. da qui non viene inviato niente.
+windows.logs.textcontent = leggi i registri recenti dell'app di solstone prima di salvare una copia per un rapporto di supporto. niente viene inviato da qui.
 
 windows.logs.textcontent2 = leggi i registri recenti
 
@@ -506,7 +506,7 @@ windows.tray.pausedleft = in pausa, { $value } rimasti
 
 windows.tray.solstonewaitingforyoutoconfirmyour = solstone · in attesa che tu confermi la marca del tuo diario
 
-windows.tray.starting = avvio…
+windows.tray.starting = avvio in corso…
 
 windows.tray.storagefaultforowner = non è stato possibile salvare su questo PC
 
@@ -552,9 +552,9 @@ windows.ui.addto = aggiungi a { $value }
 
 windows.ui.aglobalshortcuttopauseandresume = una scorciatoia globale per mettere in pausa e riprendere l'ingresso da qualsiasi punto.
 
-windows.ui.allcaughtup = in pari
+windows.ui.allcaughtup = tutto in pari
 
-windows.ui.allofit = tutto
+windows.ui.allofit = tutto quanto
 
 windows.ui.allsourceson = tutte le fonti attive
 
@@ -669,7 +669,7 @@ windows.ui.clickthenpressyourshortcut = clicca, poi premi la tua scorciatoia
 
 windows.ui.closenavigation = chiudi la navigazione
 
-windows.ui.computersound = audio del computer
+windows.ui.computersound = suono del computer
 
 windows.ui.computersoundlevel = livello dell'audio del computer
 
@@ -685,7 +685,7 @@ windows.ui.connected = connesso
 
 windows.ui.connectedto = connesso a { $value }
 
-windows.ui.connecting = connessione…
+windows.ui.connecting = connessione in corso…
 
 windows.ui.connectingx3d6df245 = connessione in corso
 
@@ -753,7 +753,7 @@ windows.ui.couldntremovethistryagain = non è stato possibile rimuoverlo. riprov
 
 windows.ui.couldntturntryagain = non è stato possibile attivarlo. riprova.
 
-windows.ui.couldntverifyjournalsonothing = non è stato possibile verificare il tuo diario, quindi non si è connesso niente. riprova, oppure incolla un link di accoppiamento.
+windows.ui.couldntverifyjournalsonothing = non è stato possibile verificare il tuo diario, quindi non si è connesso niente. riprova, o incolla un link di accoppiamento.
 
 windows.ui.dayago = { $count ->
     [one] { $count } giorno fa
@@ -767,7 +767,7 @@ windows.ui.delivered = { $value } consegnato
 
 windows.ui.deliveredpending = { $value } consegnato · { $value2 } in attesa
 
-windows.ui.desktopactivity = attività del desktop
+windows.ui.desktopactivity = attività sul desktop
 
 windows.ui.devicechoice = scelta del dispositivo
 
@@ -799,7 +799,7 @@ windows.ui.esctocancel = esc per annullare
 
 windows.ui.everypicturesavedinarg0comesinnotonlyyourscreens = ogni immagine salvata in { $arg0 } entra, non solo i tuoi screenshot.
 
-windows.ui.everythingisinyourjournal = tutto è nel tuo diario
+windows.ui.everythingisinyourjournal = è tutto nel tuo diario
 
 windows.ui.exclude = escludi
 
@@ -827,9 +827,9 @@ windows.ui.from = da { $value }
 
 windows.ui.frombeforetoday = da prima di oggi
 
-windows.ui.gettingready = preparazione…
+windows.ui.gettingready = preparazione in corso…
 
-windows.ui.gettingreadyconnectingtoyourjournal = preparazione. connessione al tuo diario.
+windows.ui.gettingreadyconnectingtoyourjournal = preparazione in corso. connessione al tuo diario in corso.
 
 windows.ui.gettingthisdeviceready = preparazione di questo PC
 
@@ -865,11 +865,11 @@ windows.ui.ifyouhaventyetaddthe = se non l'hai ancora fatto, aggiungi l'estensio
 
 windows.ui.import = importazione
 
-windows.ui.importswaitonthisdeviceuntilyouconnectajournal = le importazioni aspettano su questo dispositivo finché non connetti un diario.
+windows.ui.importswaitonthisdeviceuntilyouconnectajournal = le importazioni restano in attesa su questo dispositivo finché non connetti un diario.
 
-windows.ui.importswaituntilyouconfirmyourjournalsmark = le importazioni aspettano finché non confermi la marca del tuo diario.
+windows.ui.importswaituntilyouconfirmyourjournalsmark = le importazioni restano in attesa finché non confermi la marca del tuo diario.
 
-windows.ui.importswaituntilyourjournalisupdated = le importazioni aspettano finché il tuo diario non è aggiornato.
+windows.ui.importswaituntilyourjournalisupdated = le importazioni restano in attesa finché il tuo diario non è aggiornato.
 
 windows.ui.inputgain = guadagno di ingresso
 
@@ -895,7 +895,7 @@ windows.ui.journalneedsupdatebeforecantake = il tuo diario ha bisogno di un aggi
 
 windows.ui.journalsync = sincronizzazione del diario
 
-windows.ui.journalupdateneeded = serve un aggiornamento del diario
+windows.ui.journalupdateneeded = aggiornamento del diario necessario
 
 windows.ui.journalversion = versione del diario
 
@@ -947,7 +947,7 @@ windows.ui.minuteago = { $count ->
    *[other] { $count } minuti fa
 }
 
-windows.ui.moreaboutthis = altro su questo
+windows.ui.moreaboutthis = di più su questo
 
 windows.ui.moreimports = altre importazioni
 
@@ -999,7 +999,7 @@ windows.ui.nosoundoutputisavailableconnectorenableoneinwind = nessuna uscita aud
 
 windows.ui.not = non
 
-windows.ui.notanswered = nessuna risposta
+windows.ui.notanswered = senza risposta
 
 windows.ui.notavailable = non disponibile
 
@@ -1039,7 +1039,7 @@ windows.ui.offline = non in linea
 
 windows.ui.offlinearg0waiting = non in linea · { $arg0 } in attesa
 
-windows.ui.onlywhatthesolstoneappcantellisascreenshotcomesi = entra solo ciò che l'app di solstone riconosce come uno screenshot.
+windows.ui.onlywhatthesolstoneappcantellisascreenshotcomesi = arriva solo ciò che l'app di solstone può riconoscere come uno screenshot.
 
 windows.ui.onthesitesyouallowthesolstoneextensiontakesinthe = sui siti che consenti, l'estensione di solstone prende il testo della pagina e la disposizione approssimativa, e tutto va nel tuo diario.
 
@@ -1119,7 +1119,7 @@ windows.ui.progresstext = passaggio { $stepnum } di { $totalsteps }
 
 windows.ui.quitsolstone = esci da solstone
 
-windows.ui.readytosetupword = pronto per la configurazione
+windows.ui.readytosetupword = pronto per configurare
 
 windows.ui.recent = recenti
 
@@ -1151,7 +1151,7 @@ windows.ui.screenpreview = anteprima dello schermo
 
 windows.ui.screenshots = screenshot
 
-windows.ui.screenshotsalreadyinyourjournalarentbroughtinaga = gli screenshot già nel tuo diario non vengono portati di nuovo.
+windows.ui.screenshotsalreadyinyourjournalarentbroughtinaga = gli screenshot già nel tuo diario non vengono presi di nuovo.
 
 windows.ui.screenshotsyoutakewhileitspauseddontcomein = gli screenshot che fai mentre è in pausa non entrano.
 
@@ -1159,9 +1159,9 @@ windows.ui.segmentsthathavenotreachedyourjournal = i segmenti che non sono ancor
 
 windows.ui.selecteddevice = dispositivo selezionato
 
-windows.ui.sendingtoyourjournal = invio al tuo diario.
+windows.ui.sendingtoyourjournal = invio al tuo diario in corso.
 
-windows.ui.sendingword = invio
+windows.ui.sendingword = invio in corso
 
 windows.ui.september = settembre
 
@@ -1175,7 +1175,7 @@ windows.ui.setupisbusytryagainina = la configurazione iniziale è occupata. ripr
 
 windows.ui.setupprogresscouldnotbesaved = non è stato possibile salvare l'avanzamento della configurazione iniziale
 
-windows.ui.setupsequenceisunavailableinthisbuild = la sequenza della configurazione iniziale non è disponibile in questa build
+windows.ui.setupsequenceisunavailableinthisbuild = la sequenza di configurazione iniziale non è disponibile in questa build
 
 windows.ui.setupunavailable = configurazione iniziale non disponibile
 
@@ -1193,7 +1193,7 @@ windows.ui.sofar = finora
 
 windows.ui.solstoneappcantreadvault = l'app di solstone non può leggere questo vault. controlla che la sua cartella ci sia e che l'unità su cui si trova sia connessa. niente cambia nel tuo diario mentre non è raggiungibile.
 
-windows.ui.solstoneappcouldntsaveits = l'app di solstone non ha potuto salvare il punto in cui era arrivata per questo vault. controlla che questo computer abbia spazio libero.
+windows.ui.solstoneappcouldntsaveits = non è stato possibile salvare la posizione dell'app di solstone per questo vault. controlla che questo computer abbia spazio libero.
 
 windows.ui.solstoneappdidntfindvault = l'app di solstone non ha trovato un vault su questo computer. scegli invece la sua cartella.
 
@@ -1207,13 +1207,13 @@ windows.ui.solstoneisreadytoinstall = solstone { $v } è pronto per l'installazi
 
 windows.ui.solstonereadyinstall = solstone è pronto per l'installazione
 
-windows.ui.somenotescouldntgointo = alcune note non hanno potuto andare nel tuo diario. l'app di solstone le riprova al prossimo avvio.
+windows.ui.somenotescouldntgointo = non è stato possibile far entrare alcune note nel tuo diario. l'app di solstone le riprova la prossima volta che si avvia.
 
 windows.ui.somethingansweredpcatisnt = qualcosa ha risposto a questo PC a { $value }, e non è il diario con cui questo PC è accoppiato. può essere un altro dispositivo che ora usa quell'indirizzo, oppure il tuo diario, se la sua identità è stata reimpostata. se la marca sotto "che cosa ha risposto" corrisponde a quella che il tuo diario mostra ora, accoppia di nuovo questo PC.
 
 windows.ui.somethingansweredpcthroughrelayisn = qualcosa ha risposto a questo PC attraverso il relay, e non è il diario con cui questo PC è accoppiato. è meno certo di una connessione diretta.
 
-windows.ui.somethingotherthanyourjournalansweredcompare = ha risposto qualcosa al posto del tuo diario
+windows.ui.somethingotherthanyourjournalansweredcompare = qualcosa ha risposto al posto del tuo diario
 
 windows.ui.somethingyouwereaddingdidntfinishsavingadditagai = qualcosa che stavi aggiungendo non ha finito di salvarsi. aggiungilo di nuovo.
 
@@ -1221,11 +1221,11 @@ windows.ui.sourcesetupisunfinished = la configurazione iniziale della fonte non 
 
 windows.ui.startfromtoday = inizia da oggi
 
-windows.ui.state = condizione
+windows.ui.state = stato
 
 windows.ui.status = stato
 
-windows.ui.storage = spazio
+windows.ui.storage = archiviazione
 
 windows.ui.storagelocation = posizione di archiviazione
 
@@ -1245,7 +1245,7 @@ windows.ui.text6 = { $status }: { $reason }
 
 windows.ui.textcontent = è arrivato un altro link di accoppiamento: usalo o ignoralo.
 
-windows.ui.textcontent2 = accoppiamento…
+windows.ui.textcontent2 = accoppiamento in corso…
 
 windows.ui.textcontent4 = cancella la scorciatoia
 
@@ -1267,7 +1267,7 @@ windows.ui.thearg0folderisntonthispcanymore = la cartella { $arg0 } non è più 
 
 windows.ui.thecopyisalreadygonesothisonlyclearsitfromhere = la copia è già sparita, quindi questo la cancella solo da qui.
 
-windows.ui.thecopyonthisdeviceismissing = la copia su questo dispositivo manca
+windows.ui.thecopyonthisdeviceismissing = manca la copia su questo dispositivo
 
 windows.ui.thedownloaddidnotfinish = { $leading }· lo scaricamento non è finito
 
@@ -1341,7 +1341,7 @@ windows.ui.titlekeywords = parole chiave del titolo
 
 windows.ui.titlekeywordtoexclude = parola chiave del titolo da escludere
 
-windows.ui.toolargebring = troppo grande per portarlo
+windows.ui.toolargebring = troppo grande da prendere
 
 windows.ui.trynow = prova ora
 
@@ -1351,7 +1351,7 @@ windows.ui.tryopeningthelinkagain = prova ad aprire di nuovo il link.
 
 windows.ui.turningoffstopsbringingchangeswhat = disattivare questo smette di portare le modifiche. ciò che è già nel tuo diario resta lì, e ciò che è in attesa resta su questo computer finché non lo attivi di nuovo.
 
-windows.ui.turnitonanytime = attivalo in qualsiasi momento.
+windows.ui.turnitonanytime = attivalo quando vuoi.
 
 windows.ui.turnoff = disattiva
 
@@ -1435,7 +1435,7 @@ windows.ui.youcanturneachsourceonor = puoi attivare o disattivare ogni fonte in 
 
 windows.ui.youchoosewhichsourcesareon = scegli tu quali fonti sono attive.
 
-windows.ui.youllseehowmanyscreenshotstherearebeforeanycomei = vedrai quanti screenshot ci sono prima che ne entri uno.
+windows.ui.youllseehowmanyscreenshotstherearebeforeanycomei = vedrai quanti screenshot ci sono prima che ne arrivi qualcuno.
 
 windows.ui.your = tuo
 
@@ -1443,7 +1443,7 @@ windows.ui.yourjournal = tuo · diario
 
 windows.ui.yourjournalcanttakethiskindoffile = il tuo diario non può prendere questo tipo di file
 
-windows.ui.yourjournalcouldntacceptthis = il tuo diario non ha potuto accettare questo.
+windows.ui.yourjournalcouldntacceptthis = non è stato possibile accettare questo nel tuo diario.
 
 windows.ui.yourjournaldoesntsupportthismove = il tuo diario non supporta ancora questa operazione. tutto ciò che è in attesa di invio resta su questo PC. aggiorna il tuo diario, poi riprova.
 
@@ -1457,7 +1457,7 @@ windows.ui.yourjournalshowsthissamemarkbeside = il tuo diario mostra questa stes
 
 windows.ui.yourjournalsmarkunavailablerightnow = la marca del tuo diario, non disponibile in questo momento
 
-windows.ui.yourjournalstoppedacceptingthisdeviceimportswait = il tuo diario ha smesso di accettare questo dispositivo. le importazioni aspettano qui finché non accoppi di nuovo.
+windows.ui.yourjournalstoppedacceptingthisdeviceimportswait = il tuo diario ha smesso di accettare questo dispositivo. le importazioni restano in attesa qui finché non accoppi di nuovo.
 
 windows.ui.yourshortcut = la tua scorciatoia
 
