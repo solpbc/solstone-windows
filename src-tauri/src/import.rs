@@ -410,7 +410,9 @@ pub fn start(app: tauri::AppHandle, counters: Option<source_counters::SharedCoun
     let mut cancel_rx = service.cancel.subscribe();
     tauri::async_runtime::spawn(async move {
         loop {
-            if let Err(error) = deliver_pass(&app, &service, &mut power_rx, &mut cancel_rx).await {
+            if let Err(error) =
+                Box::pin(deliver_pass(&app, &service, &mut power_rx, &mut cancel_rx)).await
+            {
                 tracing::warn!(target: "import", %error, "import delivery retained its local copy");
             }
             publish(&app, &service);
@@ -1283,7 +1285,7 @@ async fn deliver_pass(
                         &[],
                     ))
                 },
-                stage_resumable_upload(
+                Box::pin(stage_resumable_upload(
                     app,
                     service,
                     &client,
@@ -1291,7 +1293,7 @@ async fn deliver_pass(
                     &mut item,
                     &payload,
                     resumable_chunk_bytes,
-                ),
+                )),
             )
             .await;
 
@@ -1557,7 +1559,7 @@ async fn deliver_pass(
                     &[],
                 ))
             },
-            async {
+            Box::pin(async {
                 if item.progress_for(&journal).is_none() {
                     let reply = client
                         .save_import_file(ImportFile {
@@ -1598,7 +1600,7 @@ async fn deliver_pass(
                         .start_import(item.progress_for(&journal).expect("saved progress"))
                         .await,
                 ))
-            },
+            }),
         )
         .await;
         let result = match step {

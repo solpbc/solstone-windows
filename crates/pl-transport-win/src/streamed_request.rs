@@ -86,7 +86,7 @@ async fn upload<W: AsyncWrite + Unpin, R: AsyncRead + Unpin>(
     activity: tokio::sync::watch::Sender<()>,
 ) -> io::Result<()> {
     let mut remaining = length;
-    let mut chunk = [0; 64 * 1024];
+    let mut chunk = vec![0u8; 64 * 1024];
     while remaining != 0 {
         let want = usize::try_from(remaining.min(chunk.len() as u64)).expect("bounded chunk");
         let n = progress(body.read(&mut chunk[..want])).await?;
@@ -108,7 +108,7 @@ async fn response<R: AsyncRead + Unpin>(
     mut activity: tokio::sync::watch::Receiver<()>,
 ) -> Result<HttpResponse, TransportError> {
     let mut bytes = Vec::new();
-    let mut chunk = [0; 8192];
+    let mut chunk = vec![0u8; 8192];
     loop {
         let n = tokio::select! {
             result = read.read(&mut chunk) => result?,
@@ -604,5 +604,20 @@ mod tests {
             "/app/import/api/uploads/../status"
         ));
         assert!(!allowed_upload_route("POST", "/app/import/api/start"));
+    }
+
+    #[test]
+    fn streamed_futures_stay_small_for_windows_stacks() {
+        fn assert_small<F: Future>(name: &str, f: F) {
+            let size = std::mem::size_of_val(&f);
+            assert!(
+                size <= 4096,
+                "{name} future is {size} bytes; keep large I/O buffers on the heap so Windows 1 MiB stacks cannot overflow"
+            );
+        }
+        let (write, read) = tokio::io::duplex(64);
+        let (tx, rx) = tokio::sync::watch::channel(());
+        assert_small("upload", upload(write, &b""[..], 0, tx));
+        assert_small("response", response(read, rx));
     }
 }
