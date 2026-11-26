@@ -473,10 +473,28 @@ struct LinkWatch {
     had_network: bool,
 }
 
+/// Whether the paired journal link should stay up and checking.
+///
+/// Covers `Observing`, `Idle` (non-engine sources only), `Operator`-only `Paused`,
+/// and single-source-fault `AppPhase::Error` (`engine_ready == true`), while
+/// stopping probes on OS lock/suspend (`away`), cold `Starting` (`!engine_ready`),
+/// or engine channel death (`!engine_ready`).
+pub(crate) fn journal_link_up(dump: &HealthDump) -> bool {
+    dump.engine_ready
+        && dump.sync.pairing.phase == observer_model::PairingPhase::Paired
+        && !dump.pause.as_ref().is_some_and(|p| {
+            p.away
+                || matches!(
+                    p.reason,
+                    PauseReason::SessionLocked | PauseReason::SystemSuspending
+                )
+        })
+}
+
 /// Feed one health reading to the link presenter, and set when the uploader
 /// checks the journal: often on mains power, rarely on battery, never while
-/// intake is paused, not paired, or Windows reports no network. Back from a
-/// pause, a lock, sleep or no network, a fresh check goes out at once.
+/// locked/suspending, not paired, engine down, or Windows reports no network.
+/// Back from a lock, sleep or no network, a fresh check goes out at once.
 fn present_journal_link(
     presenter: &mut observer_model::LinkPresenter,
     watch: &mut LinkWatch,
@@ -484,16 +502,34 @@ fn present_journal_link(
     dump: &HealthDump,
     now_ms: u64,
 ) -> Option<observer_model::JournalLink> {
+    present_journal_link_with(
+        presenter,
+        watch,
+        liveness,
+        dump,
+        platform_win::on_mains_power(),
+        platform_win::network_available(),
+        now_ms,
+    )
+}
+
+fn present_journal_link_with(
+    presenter: &mut observer_model::LinkPresenter,
+    watch: &mut LinkWatch,
+    liveness: &pl_transport_win::Liveness,
+    dump: &HealthDump,
+    on_mains_power: bool,
+    network: bool,
+    now_ms: u64,
+) -> Option<observer_model::JournalLink> {
     use observer_model::journal_link::{lease_ms, BACKGROUND_CHECK_SECS, FOREGROUND_CHECK_SECS};
 
-    let up = dump.app_state == AppPhase::Observing
-        && dump.sync.pairing.phase == observer_model::PairingPhase::Paired;
-    let check_secs = if platform_win::on_mains_power() {
+    let up = journal_link_up(dump);
+    let check_secs = if on_mains_power {
         FOREGROUND_CHECK_SECS
     } else {
         BACKGROUND_CHECK_SECS
     };
-    let network = platform_win::network_available();
     let checking = up && network;
     liveness.set_cadence(if checking { check_secs } else { 0 });
     if checking && !(watch.was_up && watch.had_network) {
@@ -510,6 +546,70 @@ fn present_journal_link(
         },
         now_ms,
     )
+}
+
+fn teardown_engine_watch_closed(
+    health: &Arc<Mutex<HealthDump>>,
+    shared_sync: &Arc<Mutex<SyncSnapshot>>,
+    liveness: &pl_transport_win::Liveness,
+) -> HealthDump {
+    liveness.set_cadence(0);
+    if let Ok(mut sync) = shared_sync.lock() {
+        sync.journal_link = None;
+    }
+    let (
+        sources,
+        mut sync,
+        exclusions,
+        views,
+        pump_degraded,
+        listener_faults,
+        setup,
+        screenshots_state,
+    ) = health
+        .lock()
+        .map(|h| {
+            (
+                h.sources.clone(),
+                h.sync.clone(),
+                h.exclusions.clone(),
+                h.views.clone(),
+                h.pump_degraded,
+                h.listener_faults.clone(),
+                h.setup.clone(),
+                h.screenshots_state,
+            )
+        })
+        .unwrap_or_default();
+    if let Ok(shared) = shared_sync.lock() {
+        sync.imports_waiting = shared.imports_waiting;
+        sync.imports_ready_to_review = shared.imports_ready_to_review;
+        sync.imports_need_owner = shared.imports_need_owner;
+    }
+    sync.journal_link = None;
+    let terminal = HealthDump {
+        app_state: AppPhase::Error,
+        sources,
+        frame_rate: None,
+        segment_dir: None,
+        segment_seconds_remaining: None,
+        engine_ready: false,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        sync,
+        screen_encoder: None,
+        exclusions,
+        storage: None,
+        pause: None,
+        views,
+        pump_degraded,
+        listener_faults,
+        setup,
+        screenshots_state,
+    };
+    if let Ok(mut h) = health.lock() {
+        *h = terminal.clone();
+    }
+    terminal
 }
 
 fn app_phase_label(phase: AppPhase) -> &'static str {
@@ -969,8 +1069,8 @@ pub fn run(
             crate::obsidian::start(app.handle().clone(), source_counters.clone());
             // The screenshots source: the folder, the count, then each one as it's taken.
             crate::screenshots::start(app.handle().clone(), source_counters.clone());
-            crate::import::start(app.handle().clone(), source_counters);
-            crate::shared_sources::start(app.handle().clone());
+            crate::import::start(app.handle().clone(), source_counters.clone());
+            crate::shared_sources::start(app.handle().clone(), source_counters);
 
             // In-app updater: construct the Velopack-backed controller (honest
             // state earned from the feed, persisted next to pairing.json),
@@ -1115,6 +1215,7 @@ pub fn run(
                     // So does the screenshots folder going away.
                     let mut screenshots_state = crate::screenshots::state_changes();
                     let mut import_changes = crate::import::on_changes();
+                    let mut browser_changes = crate::browser::on_changes();
                     // And an update the menu names, or stops naming.
                     let mut update_notice = app.state::<crate::update::UpdateController>().notice();
                     loop {
@@ -1135,6 +1236,9 @@ pub fn run(
                         dump.sync.journal_link = link;
                         if let Ok(mut sync) = shared_sync.lock() {
                             sync.journal_link = link;
+                        }
+                        if let Ok(mut h) = health.lock() {
+                            h.sync.journal_link = link;
                         }
                         crate::shared_sources::observe(&app, &dump, link_watch.had_network);
                         // After the transport copy, so a frame never becomes a real pair.
@@ -1215,6 +1319,16 @@ pub fn run(
                                 }
                             } => {}
                             _ = async {
+                                match browser_changes.as_mut() {
+                                    Some(changes) => {
+                                        if changes.changed().await.is_err() {
+                                            std::future::pending::<()>().await;
+                                        }
+                                    }
+                                    None => std::future::pending::<()>().await,
+                                }
+                            } => {}
+                            _ = async {
                                 match screenshots_state.as_mut() {
                                     Some(state) => {
                                         if state.changed().await.is_err() {
@@ -1242,61 +1356,14 @@ pub fn run(
                         }
                     }
 
-                    let sources = health
-                        .lock()
-                        .map(|health| health.sources.clone())
-                        .unwrap_or_default();
-                    let sync = health
-                        .lock()
-                        .map(|health| health.sync.clone())
-                        .unwrap_or_default();
-                    let exclusions = health
-                        .lock()
-                        .ok()
-                        .and_then(|health| health.exclusions.clone());
-                    let views = health
-                        .lock()
-                        .map(|health| health.views.clone())
-                        .unwrap_or_default();
-                    let pump_degraded = health
-                        .lock()
-                        .map(|health| health.pump_degraded)
-                        .unwrap_or_default();
-                    let listener_faults = health
-                        .lock()
-                        .map(|health| health.listener_faults.clone())
-                        .unwrap_or_default();
-                    let setup = health
-                        .lock()
-                        .map(|health| health.setup.clone())
-                        .unwrap_or_default();
-                    let screenshots_state = health
-                        .lock()
-                        .ok()
-                        .and_then(|health| health.screenshots_state);
-                    let terminal = HealthDump {
-                        app_state: AppPhase::Error,
-                        sources,
-                        frame_rate: None,
-                        segment_dir: None,
-                        segment_seconds_remaining: None,
-                        engine_ready: false,
-                        version: env!("CARGO_PKG_VERSION").to_string(),
-                        sync,
-                        screen_encoder: None,
-                        exclusions,
-                        storage: None,
-                        pause: None,
-                        views,
-                        pump_degraded,
-                        listener_faults,
-                        setup,
-                        screenshots_state,
-                    };
+                    let terminal =
+                        teardown_engine_watch_closed(&health, &shared_sync, &liveness);
+                    crate::shared_sources::observe(
+                        &app,
+                        &terminal,
+                        platform_win::network_available(),
+                    );
                     log_health_transitions(previous.as_ref(), &terminal);
-                    if let Ok(mut health) = health.lock() {
-                        *health = terminal.clone();
-                    }
                     crate::tray::apply_state(&mut tray_menu, &terminal, *update_notice.borrow());
                     let _ = app.emit("health://changed", &terminal);
                 }
@@ -1458,5 +1525,154 @@ pub(crate) async fn open_journal_from_launch<S: crate::windows::JournalSurface>(
             error = error.token(),
             "open-journal failed"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use observer_model::journal_link::FOREGROUND_CHECK_SECS;
+    use observer_model::{JournalLink, PairingPhase, PauseSnapshot};
+
+    fn paired_ready_dump(phase: AppPhase) -> HealthDump {
+        let mut dump: HealthDump = serde_json::from_value(serde_json::json!({
+            "app_state": "observing",
+            "engine_ready": true,
+            "version": "test",
+            "sources": []
+        }))
+        .unwrap();
+        dump.app_state = phase;
+        dump.sync.pairing.phase = PairingPhase::Paired;
+        dump.sync.upload.last_successful_sync = Some(1_000);
+        dump
+    }
+
+    #[test]
+    fn engine_watch_channel_close_clears_journal_link_and_stops_liveness() {
+        let mut initial = paired_ready_dump(AppPhase::Observing);
+        initial.sync.journal_link = Some(JournalLink::Connected);
+        let health = Arc::new(Mutex::new(initial));
+        let mut sync = SyncSnapshot::default();
+        sync.pairing.phase = PairingPhase::Paired;
+        sync.journal_link = Some(JournalLink::Connected);
+        sync.imports_waiting = 2;
+        let shared_sync = Arc::new(Mutex::new(sync));
+        let liveness = pl_transport_win::Liveness::default();
+        liveness.set_cadence(FOREGROUND_CHECK_SECS);
+        assert_eq!(liveness.cadence_secs(), FOREGROUND_CHECK_SECS);
+
+        let terminal = teardown_engine_watch_closed(&health, &shared_sync, &liveness);
+        assert_eq!(terminal.app_state, AppPhase::Error);
+        assert!(!terminal.engine_ready);
+        assert_eq!(terminal.sync.journal_link, None);
+        assert_eq!(terminal.sync.imports_waiting, 2);
+        assert_eq!(shared_sync.lock().unwrap().journal_link, None);
+        assert_eq!(health.lock().unwrap().sync.journal_link, None);
+        assert_eq!(liveness.cadence_secs(), 0);
+    }
+
+    #[test]
+    fn present_journal_link_keeps_paired_non_away_phases_up_and_stops_on_lock_suspend_or_engine_down(
+    ) {
+        let mut presenter = observer_model::LinkPresenter::default();
+        let mut watch = LinkWatch::default();
+        let liveness = pl_transport_win::Liveness::default();
+        let mut now_ms = 0;
+
+        for phase in [AppPhase::Observing, AppPhase::Idle, AppPhase::Error] {
+            let dump = paired_ready_dump(phase);
+            assert!(journal_link_up(&dump));
+            let link = present_journal_link_with(
+                &mut presenter,
+                &mut watch,
+                &liveness,
+                &dump,
+                true,
+                true,
+                now_ms,
+            );
+            assert_eq!(link, Some(JournalLink::Connected));
+            assert_eq!(liveness.cadence_secs(), FOREGROUND_CHECK_SECS);
+            now_ms += 1_000;
+        }
+
+        let mut operator_paused = paired_ready_dump(AppPhase::Paused);
+        operator_paused.pause = Some(PauseSnapshot {
+            reason: PauseReason::Operator,
+            seconds_remaining: Some(900),
+            away: false,
+        });
+        assert!(journal_link_up(&operator_paused));
+        assert_eq!(
+            present_journal_link_with(
+                &mut presenter,
+                &mut watch,
+                &liveness,
+                &operator_paused,
+                true,
+                true,
+                now_ms,
+            ),
+            Some(JournalLink::Connected)
+        );
+        assert_eq!(liveness.cadence_secs(), FOREGROUND_CHECK_SECS);
+        now_ms += 1_000;
+
+        for away_pause in [
+            PauseSnapshot {
+                reason: PauseReason::SessionLocked,
+                seconds_remaining: None,
+                away: true,
+            },
+            PauseSnapshot {
+                reason: PauseReason::SystemSuspending,
+                seconds_remaining: None,
+                away: true,
+            },
+            PauseSnapshot {
+                reason: PauseReason::Operator,
+                seconds_remaining: Some(600),
+                away: true,
+            },
+        ] {
+            let mut away_dump = paired_ready_dump(AppPhase::Paused);
+            away_dump.pause = Some(away_pause);
+            assert!(!journal_link_up(&away_dump));
+            assert_eq!(
+                present_journal_link_with(
+                    &mut presenter,
+                    &mut watch,
+                    &liveness,
+                    &away_dump,
+                    true,
+                    true,
+                    now_ms,
+                ),
+                None
+            );
+            assert_eq!(liveness.cadence_secs(), 0);
+            now_ms += 1_000;
+        }
+
+        for phase in [AppPhase::Starting, AppPhase::Error] {
+            let mut down = paired_ready_dump(phase);
+            down.engine_ready = false;
+            assert!(!journal_link_up(&down));
+            assert_eq!(
+                present_journal_link_with(
+                    &mut presenter,
+                    &mut watch,
+                    &liveness,
+                    &down,
+                    true,
+                    true,
+                    now_ms,
+                ),
+                None
+            );
+            assert_eq!(liveness.cadence_secs(), 0);
+            now_ms += 1_000;
+        }
     }
 }

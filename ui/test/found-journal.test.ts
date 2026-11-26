@@ -300,13 +300,18 @@ describe("a journal found on this computer", () => {
       const pairedLabel = t("windows.ui.pairedwith", mark);
       expect(heading()?.textContent).toBe(connectedLabel);
 
-      for (const journal_link of ["connecting", "offline"] as const) {
-        app.__test__.renderSettings({ ...paired, sync: { ...paired.sync, journal_link } });
-        expect(heading()?.textContent).toBe(pairedLabel);
-      }
-      app.__test__.renderSettings(paired);
+      const connectingDump = { ...paired, sync: { ...paired.sync, journal_link: "connecting" as const } };
+      app.__test__.renderSettings(connectingDump);
+      expect(app.__test__.journalConnectionIsCurrent(connectingDump as ReturnType<typeof notPairedDump>)).toBe(true);
+      expect(heading()?.textContent).toBe(connectedLabel);
+
+      app.__test__.renderSettings({ ...paired, sync: { ...paired.sync, journal_link: "offline" as const } });
+      expect(heading()?.textContent).toBe(pairedLabel);
+
+      app.__test__.renderSettings(connectingDump);
       const displayedHeading = heading()!;
       expect(displayedHeading.tagName).toBe("H2");
+      expect(displayedHeading.textContent).toBe(connectedLabel);
 
       clock.mockReturnValue(now + 20_999);
       app.__test__.lapseFoundJournalPress();
@@ -316,6 +321,50 @@ describe("a journal found on this computer", () => {
       app.__test__.lapseFoundJournalPress();
       expect(heading()).toBe(displayedHeading);
       expect(displayedHeading.textContent).toBe(pairedLabel);
+    });
+
+    it("desktop shell treats paired null journal_link as connecting across pill, visual, lead, and facts", () => {
+      setRoute("home");
+      const base = pairedWithMarkDump(found.mark);
+      for (const pending_segments of [0, 4]) {
+        const dump = {
+          ...base,
+          sync: {
+            ...base.sync,
+            journal_link: null,
+            upload: { ...base.sync.upload, pending_segments },
+          },
+          setup: {
+            sequence_enabled: true,
+            mic: false,
+            system_audio: false,
+            screen: false,
+            start_at_login: false,
+            wizard: "done" as const,
+            notice_dismissed: true,
+          },
+        } as ReturnType<typeof notPairedDump>;
+
+        const input = app.__test__.deskJournalInput(dump);
+        expect(input.connecting).toBe(true);
+        expect(input.waitingToSync).toBe(false);
+        expect(app.__test__.deskFacts(dump)).toContainEqual({
+          label: t("windows.ui.connection"),
+          value: t("windows.ui.connecting"),
+        });
+
+        app.__test__.renderSettings(dump);
+        const pill = document.querySelector<HTMLButtonElement>(".desk-pill");
+        expect(pill?.textContent).toBe(t("windows.ui.connecting"));
+        expect(pill?.dataset.connected).toBeUndefined();
+        expect(document.querySelector(".desk-lead-headline")?.textContent).toBe(
+          t("windows.ui.connecting"),
+        );
+        expect(document.querySelector(".desk-lead-line")).toBeNull();
+        const factsText = document.querySelector(".desk-journal-facts")?.textContent ?? "";
+        expect(factsText).toContain(t("windows.ui.connection"));
+        expect(factsText).toContain(t("windows.ui.connecting"));
+      }
     });
   });
 

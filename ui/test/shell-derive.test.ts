@@ -12,6 +12,7 @@ import {
   headerWhilePaused,
   journalFacts,
   journalPill,
+  journalPillVisual,
   legacyRoute,
   settingsNavigate,
   menuRows,
@@ -211,20 +212,79 @@ describe("screen", () => {
 });
 
 describe("browsers", () => {
-  it("is on with none connected, needs attention when the store is full, and not a fault when unpaired", () => {
-    expect(browsersTile({ capture: "permitted", deliveryFailed: false, appPaused: false })).toEqual({
+  it("requires configuration before reporting on or paused, and keeps faults ahead of pause", () => {
+    expect(
+      browsersTile({
+        capture: "permitted",
+        deliveryFailed: false,
+        configured: false,
+        appPaused: false,
+      }).word,
+    ).toBe("ready to set up");
+    expect(
+      browsersTile({
+        capture: "paused",
+        deliveryFailed: false,
+        configured: false,
+        appPaused: true,
+      }).word,
+    ).toBe("ready to set up");
+    expect(
+      browsersTile({
+        capture: "permitted",
+        deliveryFailed: false,
+        configured: true,
+        appPaused: false,
+      }),
+    ).toEqual({
       word: "on",
       switchOn: null,
       activityKept: false,
       activityAlongside: false,
       namesMicrophone: false,
     });
-    expect(browsersTile({ capture: "intake_off", deliveryFailed: false, appPaused: false }).word).toBe(
-      "needs attention",
-    );
-    expect(browsersTile({ capture: "not_paired", deliveryFailed: false, appPaused: false }).word).not.toBe(
-      "needs attention",
-    );
+    expect(
+      browsersTile({
+        capture: "permitted",
+        deliveryFailed: false,
+        configured: true,
+        appPaused: true,
+      }).word,
+    ).toBe("paused");
+    expect(
+      browsersTile({
+        capture: "intake_off",
+        deliveryFailed: false,
+        configured: false,
+        appPaused: false,
+      }).word,
+    ).toBe("needs attention");
+    expect(
+      browsersTile({
+        capture: "paused",
+        deliveryFailed: false,
+        custodyFull: true,
+        configured: false,
+        appPaused: true,
+      }).word,
+    ).toBe("needs attention");
+    expect(
+      browsersTile({
+        capture: "paused",
+        deliveryFailed: true,
+        custodyFull: false,
+        configured: false,
+        appPaused: true,
+      }).word,
+    ).toBe("needs attention");
+    expect(
+      browsersTile({
+        capture: "not_paired",
+        deliveryFailed: false,
+        configured: false,
+        appPaused: false,
+      }).word,
+    ).not.toBe("needs attention");
   });
 });
 
@@ -286,6 +346,13 @@ describe("journal pill and pause header", () => {
     expect(quiet.headline).not.toMatch(/\d/);
     expect(quiet.lines.join(" ")).not.toMatch(/\d/);
     expect(quiet.lines).not.toContain("on this device");
+
+    for (const waiting of [0, 3]) {
+      const connecting = { ...caughtUp, connecting: true, waitingToSync: false, waiting };
+      expect(journalPill(connecting)).toBe("connecting…");
+      expect(journalPillVisual(connecting)).toBe("neutral");
+      expect(statusLead(connecting)).toEqual({ headline: "connecting…", lines: [] });
+    }
   });
 
   it("names connection, and last reached only for a real instant", () => {

@@ -778,11 +778,14 @@ impl Default for SyncSnapshot {
 /// `seconds_remaining` counts down to an automatic resume for a duration-bounded
 /// operator pause (15m / 30m / 1h); it is `None` for an indefinite pause — the
 /// operator's "until I resume", or a system lock/suspend pause that ends on its
-/// own OS event rather than a timer.
+/// own OS event rather than a timer. `away` is true whenever a system lock or
+/// suspend pause is simultaneously active, even alongside an operator pause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PauseSnapshot {
     pub reason: PauseReason,
     pub seconds_remaining: Option<u64>,
+    #[serde(default)]
+    pub away: bool,
 }
 
 /// App-owned loopback listener faults. The engine never computes these; refresh
@@ -1326,6 +1329,7 @@ mod tests {
             pause: Some(PauseSnapshot {
                 reason: PauseReason::Operator,
                 seconds_remaining: Some(900),
+                away: false,
             }),
             views: BTreeMap::new(),
             pump_degraded: false,

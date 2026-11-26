@@ -183,6 +183,10 @@ impl SharedCounters {
         self.with_mut(|c| c.page_count())
     }
 
+    pub fn has_browser_activity(&self) -> bool {
+        self.with_mut(|c| c.disk.browsers.total > 0 || c.disk.browsers.last.is_some())
+    }
+
     pub fn note_count(&self) -> u64 {
         self.with_mut(|c| c.note_count())
     }

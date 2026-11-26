@@ -35,6 +35,11 @@ pub fn dispatch(args: &[String]) -> Option<ExitCode> {
 #[cfg(feature = "browser-host")]
 pub use imp::*;
 
+#[cfg(not(feature = "browser-host"))]
+pub fn on_changes() -> Option<tokio::sync::watch::Receiver<u64>> {
+    None
+}
+
 #[cfg(feature = "browser-host")]
 mod imp {
     use std::path::PathBuf;
@@ -56,6 +61,7 @@ mod imp {
     pub const DEVELOPMENT: bool = cfg!(feature = "browser-dev-host");
 
     static HUB: OnceLock<Arc<Hub>> = OnceLock::new();
+    static CHANGES: OnceLock<tokio::sync::watch::Sender<u64>> = OnceLock::new();
 
     fn now_ms() -> u64 {
         SystemTime::now()
@@ -222,6 +228,7 @@ mod imp {
         if let Some(counters) = counters {
             hub.set_counters(counters);
         }
+        let _ = CHANGES.set(tokio::sync::watch::channel(0).0);
         let _ = HUB.set(Arc::clone(&hub));
 
         // The endpoint: first instance only; a name someone else holds is a
@@ -345,8 +352,11 @@ mod imp {
             .lock()
             .map(|h| {
                 let paused = h.app_state == AppPhase::Paused;
-                let owner = matches!(h.pause, Some(p) if p.reason == PauseReason::Operator);
-                (paused, paused && !owner)
+                let away = paused
+                    && h.pause
+                        .as_ref()
+                        .map_or(true, |p| p.away || p.reason != PauseReason::Operator);
+                (paused, away)
             })
             .unwrap_or((false, false));
         let phase = state
@@ -458,6 +468,13 @@ mod imp {
         if std::fs::write(&tmp, bytes).is_ok() {
             let _ = std::fs::rename(&tmp, &path);
         }
+        if let Some(changes) = CHANGES.get() {
+            changes.send_modify(|n| *n = n.wrapping_add(1));
+        }
+    }
+
+    pub fn on_changes() -> Option<tokio::sync::watch::Receiver<u64>> {
+        CHANGES.get().map(tokio::sync::watch::Sender::subscribe)
     }
 
     pub fn status() -> Option<BrowserStatus> {
@@ -466,7 +483,9 @@ mod imp {
 
     /// Store full, or a delivery that failed. The tile has no switch.
     pub fn needs_attention() -> bool {
-        status().is_some_and(|status| status.capture == "intake_off" || status.delivery == "failed")
+        status().is_some_and(|status| {
+            status.capture == "intake_off" || status.delivery == "failed" || status.custody.full
+        })
     }
 
     /// `--browser-status`: print what the running app last published.

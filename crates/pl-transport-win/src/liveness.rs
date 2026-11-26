@@ -40,6 +40,11 @@ impl Liveness {
         self.cadence_secs.store(secs, Ordering::Relaxed);
     }
 
+    /// Current status-check cadence in whole seconds (`0` when stopped).
+    pub fn cadence_secs(&self) -> u64 {
+        self.cadence_secs.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn cadence(&self) -> Option<Duration> {
         match self.cadence_secs.load(Ordering::Relaxed) {
             0 => None,

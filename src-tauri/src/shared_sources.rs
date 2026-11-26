@@ -23,18 +23,49 @@ struct Entry {
     detail: Option<String>,
 }
 
-fn declaration(dump: &HealthDump) -> Option<Vec<Entry>> {
-    if !dump.engine_ready {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BrowserSource<'a> {
+    capture: &'a str,
+    delivery: &'a str,
+    custody_full: bool,
+    configured: bool,
+}
+
+fn declaration_ready(dump: &HealthDump) -> bool {
+    dump.engine_ready || dump.app_state == observer_model::AppPhase::Error
+}
+
+fn browser_configured(
+    connected_count: usize,
+    held_bytes: u64,
+    counters: Option<&source_counters::SharedCounters>,
+) -> bool {
+    connected_count > 0
+        || held_bytes > 0
+        || counters.is_some_and(source_counters::SharedCounters::has_browser_activity)
+}
+
+fn declaration(
+    dump: &HealthDump,
+    counters: Option<&source_counters::SharedCounters>,
+) -> Option<Vec<Entry>> {
+    if !declaration_ready(dump) {
         return None;
     }
     let obsidian = crate::obsidian::source_status()?;
     let screenshots = crate::screenshots::source_status()?;
     #[cfg(feature = "browser-host")]
-    let browser = crate::browser::status()
-        .filter(|b| !b.connected.is_empty())
-        .map(|b| (b.capture, b.delivery));
+    let browser = crate::browser::status().map(|b| BrowserSource {
+        capture: b.capture,
+        delivery: b.delivery,
+        custody_full: b.custody.full,
+        configured: browser_configured(b.connected.len(), b.custody.held_bytes, counters),
+    });
     #[cfg(not(feature = "browser-host"))]
-    let browser = None;
+    let browser = {
+        let _ = counters;
+        None
+    };
     Some(configured_sources(
         dump,
         obsidian.state,
@@ -49,7 +80,7 @@ fn configured_sources(
     vault_state: obsidian_source::State,
     vault: Option<String>,
     screenshots: Option<ScreenshotsState>,
-    browser: Option<(&str, &str)>,
+    browser: Option<BrowserSource<'_>>,
 ) -> Vec<Entry> {
     use obsidian_source::State;
     let mut entries = Vec::new();
@@ -78,45 +109,55 @@ fn configured_sources(
     if let Some(state) = shots {
         add("screenshots", state, None);
     }
-    for (source, kinds) in [
-        ("screen", vec![(SourceKind::Screen, dump.setup.screen)]),
-        (
-            "audio",
-            vec![
-                (SourceKind::Mic, dump.setup.mic),
-                (SourceKind::SystemAudio, dump.setup.system_audio),
-            ],
-        ),
-    ] {
-        let enabled: Vec<_> = kinds
-            .iter()
-            .filter(|(_, on)| *on)
-            .filter_map(|(kind, _)| dump.sources.iter().find(|r| r.kind == *kind))
-            .collect();
-        let fault = enabled
-            .iter()
-            .any(|r| matches!(r.state, SourceState::Faulted { .. }));
-        let active = enabled.iter().any(|r| r.state == SourceState::Active);
-        let configured = kinds.iter().any(|(_, on)| *on);
-        let word = if fault {
+    if dump.engine_ready {
+        for (source, kinds) in [
+            ("screen", vec![(SourceKind::Screen, dump.setup.screen)]),
+            (
+                "audio",
+                vec![
+                    (SourceKind::Mic, dump.setup.mic),
+                    (SourceKind::SystemAudio, dump.setup.system_audio),
+                ],
+            ),
+        ] {
+            let enabled: Vec<_> = kinds
+                .iter()
+                .filter(|(_, on)| *on)
+                .filter_map(|(kind, _)| dump.sources.iter().find(|r| r.kind == *kind))
+                .collect();
+            let fault = enabled
+                .iter()
+                .any(|r| matches!(r.state, SourceState::Faulted { .. }));
+            let active = enabled.iter().any(|r| r.state == SourceState::Active);
+            let configured = kinds.iter().any(|(_, on)| *on);
+            let word = if fault {
+                Some("needs_attention")
+            } else if configured && dump.pause.is_some() {
+                Some("paused")
+            } else if active {
+                Some("on")
+            } else {
+                None
+            };
+            if let Some(word) = word {
+                add(source, word, None);
+            }
+        }
+    }
+    let app_paused = dump.app_state == observer_model::AppPhase::Paused || dump.pause.is_some();
+    let browser_state = browser.and_then(|b| {
+        if b.capture == "intake_off" || b.delivery == "failed" || b.custody_full {
             Some("needs_attention")
-        } else if configured && dump.pause.is_some() {
+        } else if matches!(b.capture, "not_paired" | "unavailable") || !b.configured {
+            None
+        } else if b.capture == "paused" || app_paused {
             Some("paused")
-        } else if active {
+        } else if b.capture == "permitted" {
             Some("on")
         } else {
             None
-        };
-        if let Some(word) = word {
-            add(source, word, None);
         }
-    }
-    let browser_state = match browser {
-        Some(("intake_off", _) | (_, "failed")) => Some("needs_attention"),
-        Some(("paused", _)) => Some("paused"),
-        Some(("permitted", _)) => Some("on"),
-        _ => None,
-    };
+    });
     if let Some(state) = browser_state {
         add("browsers", state, None);
     }
@@ -145,6 +186,7 @@ struct Shared {
     refresh: Mutex<Refresh>,
     wake: Notify,
     view: Mutex<Option<View>>,
+    counters: Option<source_counters::SharedCounters>,
 }
 
 #[derive(Clone, Serialize)]
@@ -160,13 +202,14 @@ fn now() -> u64 {
         .as_secs()
 }
 
-pub fn start(app: tauri::AppHandle) {
+pub fn start(app: tauri::AppHandle, counters: Option<source_counters::SharedCounters>) {
     let (input, rx) = watch::channel(Input::default());
     app.manage(Shared {
         input,
         refresh: Mutex::new(Refresh::Cached),
         wake: Notify::new(),
         view: Mutex::default(),
+        counters,
     });
     tauri::async_runtime::spawn(run(app, rx));
 }
@@ -204,7 +247,7 @@ pub fn observe(app: &tauri::AppHandle, dump: &HealthDump, network: bool) {
                     Some(JournalLink::Offline | JournalLink::Connecting)
                 ),
             advert: client.source_advert(),
-            local: declaration(dump),
+            local: declaration(dump, shared.counters.as_ref()),
         }
     } else {
         Input::default()
@@ -567,7 +610,12 @@ mod tests {
             State::Paused,
             Some("Notes".into()),
             Some(ScreenshotsState::FolderMissing),
-            Some(("permitted", "ready")),
+            Some(BrowserSource {
+                capture: "permitted",
+                delivery: "ready",
+                custody_full: false,
+                configured: true,
+            }),
         );
         assert_eq!(
             serde_json::to_value(entries).unwrap(),
@@ -579,6 +627,157 @@ mod tests {
                 {"source":"browsers","state":"on","detail":null}
             ])
         );
+    }
+
+    #[test]
+    fn engine_death_omits_dead_capture_sources_and_keeps_healthy_non_engine_sources() {
+        use obsidian_source::State;
+        let mut dump: HealthDump = serde_json::from_value(serde_json::json!({
+            "app_state": "error", "engine_ready": false, "version": "1", "sources": []
+        }))
+        .unwrap();
+        dump.setup.screen = true;
+        dump.setup.mic = true;
+        dump.setup.system_audio = true;
+        for kind in [SourceKind::Screen, SourceKind::Mic, SourceKind::SystemAudio] {
+            dump.sources.push(observer_model::SourceReport {
+                kind,
+                state: SourceState::Active,
+                device: None,
+            });
+        }
+        assert!(declaration_ready(&dump));
+        let entries = configured_sources(
+            &dump,
+            State::On,
+            Some("Vault".into()),
+            Some(ScreenshotsState::On),
+            Some(BrowserSource {
+                capture: "permitted",
+                delivery: "idle",
+                custody_full: false,
+                configured: true,
+            }),
+        );
+        assert_eq!(
+            serde_json::to_value(entries).unwrap(),
+            serde_json::json!([
+                {"source":"obsidian","state":"on","detail":"Vault"},
+                {"source":"screenshots","state":"on","detail":null},
+                {"source":"browsers","state":"on","detail":null}
+            ])
+        );
+        assert!(configured_sources(&dump, State::Off, None, None, None).is_empty());
+
+        let starting: HealthDump = serde_json::from_value(serde_json::json!({
+            "app_state": "starting", "engine_ready": false, "version": "1", "sources": []
+        }))
+        .unwrap();
+        assert!(!declaration_ready(&starting));
+    }
+
+    #[test]
+    fn browsers_declaration_respects_setup_closed_activity_and_paused_faults() {
+        use obsidian_source::State;
+        let dir = tempfile::tempdir().unwrap();
+        let counters = source_counters::SharedCounters::open(dir.path(), "2026-11-25").unwrap();
+        assert!(!browser_configured(0, 0, Some(&counters)));
+        assert!(browser_configured(1, 0, Some(&counters)));
+        assert!(browser_configured(0, 128, Some(&counters)));
+
+        let mut dump: HealthDump = serde_json::from_value(serde_json::json!({
+            "app_state": "idle", "engine_ready": true, "version": "1", "sources": []
+        }))
+        .unwrap();
+
+        // Unconfigured paired install (connected: [], held_bytes: 0, empty counters): omitted.
+        assert!(configured_sources(
+            &dump,
+            State::Off,
+            None,
+            None,
+            Some(BrowserSource {
+                capture: "permitted",
+                delivery: "idle",
+                custody_full: false,
+                configured: browser_configured(0, 0, Some(&counters)),
+            }),
+        )
+        .is_empty());
+
+        // Once browser pages have been recorded in counters.json, closed browsers still declare "on" / "paused".
+        assert!(counters.reconcile_pages(&[source_counters::PageBatch {
+            browser_id: "b1".into(),
+            batch_id: "batch1".into(),
+            records: vec![source_counters::PageRecord {
+                snapshot: true,
+                ctx: Some("tab-1".into()),
+                url: Some("https://example.com".into()),
+                url_is_digest: false,
+                at_secs: Some(1_700_000_000),
+            }],
+        }]));
+        assert!(browser_configured(0, 0, Some(&counters)));
+
+        let closed_on = configured_sources(
+            &dump,
+            State::Off,
+            None,
+            None,
+            Some(BrowserSource {
+                capture: "permitted",
+                delivery: "idle",
+                custody_full: false,
+                configured: browser_configured(0, 0, Some(&counters)),
+            }),
+        );
+        assert_eq!(
+            serde_json::to_value(closed_on).unwrap(),
+            serde_json::json!([{"source":"browsers","state":"on","detail":null}])
+        );
+
+        dump.app_state = observer_model::AppPhase::Paused;
+        dump.pause = Some(observer_model::PauseSnapshot {
+            reason: observer_model::PauseReason::Operator,
+            seconds_remaining: None,
+            away: false,
+        });
+        let closed_paused = configured_sources(
+            &dump,
+            State::Off,
+            None,
+            None,
+            Some(BrowserSource {
+                capture: "paused",
+                delivery: "idle",
+                custody_full: false,
+                configured: browser_configured(0, 0, Some(&counters)),
+            }),
+        );
+        assert_eq!(
+            serde_json::to_value(closed_paused).unwrap(),
+            serde_json::json!([{"source":"browsers","state":"paused","detail":null}])
+        );
+
+        // Full spool or failed delivery stays needs_attention even while paused with connected: [].
+        for (delivery, custody_full) in [("kept_locally", true), ("failed", false)] {
+            let faulted = configured_sources(
+                &dump,
+                State::Off,
+                None,
+                None,
+                Some(BrowserSource {
+                    capture: "paused",
+                    delivery,
+                    custody_full,
+                    configured: false,
+                }),
+            );
+            assert_eq!(
+                serde_json::to_value(faulted).unwrap(),
+                serde_json::json!([{"source":"browsers","state":"needs_attention","detail":null}])
+            );
+        }
     }
 
     #[test]

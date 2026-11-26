@@ -166,16 +166,19 @@ impl StateMachine {
     /// automatic resume for a duration-bounded pause, `None` for an indefinite one.
     /// The owner's pause is reported first: it is the one the owner ends.
     pub fn pause_snapshot(&self, now_epoch_secs: u64) -> Option<PauseSnapshot> {
+        let away = self.system_pause.is_some();
         match (self.owner_pause, self.system_pause) {
             (Some(owner), _) => Some(PauseSnapshot {
                 reason: PauseReason::Operator,
                 seconds_remaining: owner
                     .expires_at_epoch_secs
                     .map(|exp| exp.saturating_sub(now_epoch_secs)),
+                away,
             }),
             (None, Some(reason)) => Some(PauseSnapshot {
                 reason,
                 seconds_remaining: None,
+                away,
             }),
             (None, None) => None,
         }
@@ -600,12 +603,61 @@ mod tests {
         assert_eq!(p, AppPhase::Paused);
         let snap = sm.pause_snapshot(1_000).expect("still paused");
         assert_eq!(snap.reason, PauseReason::Operator);
+        assert!(!snap.away);
         assert_eq!(
             sm.owner_pause(),
             Some(OwnerPause {
                 expires_at_epoch_secs: None
             })
         );
+    }
+
+    #[test]
+    fn pause_snapshot_carries_away_whenever_system_pause_is_active() {
+        let mut sm = StateMachine::new();
+        reduce(
+            &mut sm,
+            AppEvent::RequestedPause {
+                reason: PauseReason::Operator,
+                expires_at_epoch_secs: Some(1_900),
+            },
+        );
+        let owner_only = sm.pause_snapshot(1_000).expect("operator pause");
+        assert_eq!(owner_only.reason, PauseReason::Operator);
+        assert!(!owner_only.away);
+
+        for system_reason in [PauseReason::SessionLocked, PauseReason::SystemSuspending] {
+            reduce(
+                &mut sm,
+                AppEvent::RequestedPause {
+                    reason: system_reason,
+                    expires_at_epoch_secs: None,
+                },
+            );
+            let combined = sm.pause_snapshot(1_000).expect("operator + system pause");
+            assert_eq!(combined.reason, PauseReason::Operator);
+            assert!(combined.away);
+
+            reduce(&mut sm, AppEvent::SystemResumed);
+            let resumed = sm.pause_snapshot(1_000).expect("operator pause remains");
+            assert_eq!(resumed.reason, PauseReason::Operator);
+            assert!(!resumed.away);
+        }
+
+        reduce(&mut sm, AppEvent::RequestedResume);
+        for system_reason in [PauseReason::SessionLocked, PauseReason::SystemSuspending] {
+            reduce(
+                &mut sm,
+                AppEvent::RequestedPause {
+                    reason: system_reason,
+                    expires_at_epoch_secs: None,
+                },
+            );
+            let sys_only = sm.pause_snapshot(1_000).expect("system pause");
+            assert_eq!(sys_only.reason, system_reason);
+            assert!(sys_only.away);
+            reduce(&mut sm, AppEvent::SystemResumed);
+        }
     }
 
     #[test]

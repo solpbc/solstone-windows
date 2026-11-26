@@ -552,6 +552,7 @@ mod tests {
         let indefinite = PauseSnapshot {
             reason: PauseReason::Operator,
             seconds_remaining: None,
+            away: false,
         };
         assert_eq!(
             tray_visual(AppPhase::Paused, &idle, Some(&indefinite), None),
@@ -561,6 +562,7 @@ mod tests {
         let bounded = PauseSnapshot {
             reason: PauseReason::Operator,
             seconds_remaining: Some(14 * 60 + 30),
+            away: false,
         };
         assert_eq!(
             tray_visual(AppPhase::Paused, &idle, Some(&bounded), None),
@@ -802,6 +804,7 @@ mod tests {
         let indefinite = PauseSnapshot {
             reason: PauseReason::Operator,
             seconds_remaining: None,
+            away: false,
         };
 
         let (visual, tooltip) = classify_tray(
@@ -889,6 +892,7 @@ mod tests {
         let pause = PauseSnapshot {
             reason: PauseReason::Operator,
             seconds_remaining: None,
+            away: false,
         };
         let (visual, _) =
             classify_tray(AppPhase::Paused, &idle, Some(&pause), None, blocked, false);
@@ -1091,12 +1095,14 @@ mod tests {
         paused.pause = Some(PauseSnapshot {
             reason: PauseReason::Operator,
             seconds_remaining: Some(61),
+            away: false,
         });
         let one_minute = {
             let mut dump = paused.clone();
             dump.pause = Some(PauseSnapshot {
                 reason: PauseReason::Operator,
                 seconds_remaining: Some(60),
+                away: false,
             });
             menu_status_line(&dump)
         };
@@ -1106,6 +1112,7 @@ mod tests {
         paused.pause = Some(PauseSnapshot {
             reason: PauseReason::Operator,
             seconds_remaining: None,
+            away: false,
         });
         assert_ne!(menu_status_line(&paused), two_minutes);
     }

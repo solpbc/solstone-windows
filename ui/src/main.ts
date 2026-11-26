@@ -292,6 +292,7 @@ interface ExclusionHealth {
 interface PauseSnapshot {
   reason: "operator" | "session_locked" | "system_suspending";
   seconds_remaining: number | null;
+  away?: boolean;
 }
 
 type WizardStep = "mic" | "system_audio" | "screen" | "connection" | "done";
@@ -768,7 +769,11 @@ function foundJournalPressHolds(): boolean {
 
 function journalConnectionIsCurrent(dump: HealthDump): boolean {
   const link = dump.sync.journal_link ?? null;
-  return link === "connected" || (link === null && foundJournalPressHolds());
+  if (link === "connected") {
+    foundJournalConnectedAt = null;
+    return true;
+  }
+  return (link === null || link === "connecting") && foundJournalPressHolds();
 }
 
 function pairingStatusLabel(dump: HealthDump): string {
@@ -5891,8 +5896,9 @@ function deskJournalInput(dump: HealthDump): JournalPillInput {
     syncPaused: false,
     held: phase === "awaiting_confirmation",
     offline: phase === "paired" && link === "offline",
-    connecting: phase === "pairing" || (phase === "paired" && link === "connecting"),
-    waitingToSync: phase === "paired" && waiting > 0 && link !== "offline" && link !== "connecting",
+    connecting:
+      phase === "pairing" || (phase === "paired" && (link == null || link === "connecting")),
+    waitingToSync: phase === "paired" && waiting > 0 && link === "connected",
     waiting,
     sourceNeedsAttention: false,
     importsNeedOwner: latestImport?.needs_owner ?? dump.sync.imports_need_owner ?? false,
@@ -5906,7 +5912,12 @@ function deskFacts(dump: HealthDump): { label: string; value: string }[] {
   const link = dump.sync.journal_link;
   const synced = dump.sync.upload.last_successful_sync;
   const lastReached = typeof synced === "number" ? lastSyncedLabel(synced, nowSecs()) : null;
-  const word = link === "connected" || link === "connecting" || link === "offline" ? link : null;
+  const word =
+    link === "connected" || link === "connecting" || link === "offline"
+      ? link
+      : phase === "paired"
+        ? "connecting"
+        : null;
   return journalFacts({ paired, link: word, lastReached });
 }
 
@@ -5932,6 +5943,18 @@ function totalWords(source: CounterSourceName, total: number): string {
 function factFor(source: CounterSourceName): SourceFacts | undefined {
   const facts = counterFacts(latestCounters ?? null);
   return facts?.find((fact) => fact.source === source);
+}
+
+function browsersConfigured(): boolean {
+  const browserFact = factFor("browsers");
+  const hasCounterActivity = Boolean(
+    browserFact && (!browserFact.nothingYet || browserFact.last !== null),
+  );
+  return Boolean(
+    (latestBrowser &&
+      (latestBrowser.connected.length > 0 || latestBrowser.custody.held_bytes > 0)) ||
+      hasCounterActivity,
+  );
 }
 
 function openDeskSource(id: string): void {
@@ -6007,6 +6030,8 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
   const browsers = browsersTile({
     capture: latestBrowser?.capture ?? "unavailable",
     deliveryFailed: latestBrowser?.delivery === "failed",
+    custodyFull: latestBrowser?.custody.full === true,
+    configured: browsersConfigured(),
     appPaused: paused,
   });
   if (latestObsidian && latestObsidian.state !== "off") obsidianWantsFolder = false;
@@ -6110,7 +6135,7 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
           ? ACCESS_DENIED_TILE
           : id === "browsers"
             ? browsers.word === "needs attention"
-              ? latestBrowser?.capture === "intake_off"
+              ? latestBrowser?.capture === "intake_off" || latestBrowser?.custody.full
                 ? BROWSER_COPY.held
                 : BROWSER_COPY.failed
               : ""
@@ -7351,7 +7376,23 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
   }
   if (deskPane === "browsers") {
     const capture = latestBrowser?.capture;
-    if (capture === "not_paired" || capture === "unavailable" || !latestBrowser) {
+    if (
+      latestBrowser &&
+      (capture === "intake_off" || latestBrowser.custody.full || latestBrowser.delivery === "failed")
+    ) {
+      body.append(
+        deskReason(
+          capture === "intake_off" || latestBrowser.custody.full
+            ? BROWSER_COPY.held
+            : BROWSER_COPY.failed,
+        ),
+      );
+    } else if (
+      !latestBrowser ||
+      capture === "not_paired" ||
+      capture === "unavailable" ||
+      !browsersConfigured()
+    ) {
       body.append(deskReason(BROWSER_COPY.setup));
       if (latestBrowser && latestBrowser.stores.length > 0) {
         const stores = document.createElement("div");
@@ -7365,8 +7406,6 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
         }
         body.append(stores);
       }
-    } else if (capture === "intake_off" || latestBrowser.delivery === "failed") {
-      body.append(deskReason(capture === "intake_off" ? BROWSER_COPY.held : BROWSER_COPY.failed));
     }
     body.append(breath(DESK_BREATH.browsers));
     const facts = deskFactBlock("browsers");
@@ -7939,6 +7978,9 @@ function nowSecs(): number {
 
 function setLatestHealth(dump: HealthDump | null): void {
   latestHealth = dump;
+  if (dump?.sync.pairing.phase === "paired" && dump.sync.journal_link === "connected") {
+    foundJournalConnectedAt = null;
+  }
   if (openProofKind !== "closed" && !proofEligible(openProofKind, dump)) closeProofConsumer();
   healthReceivedAt = dump ? nowSecs() : null;
 }
@@ -8632,16 +8674,33 @@ function scheduleRenderBeacon(): void {
   });
 }
 
-let browserRefreshAt = 0;
+let browserFetching = false;
 
-// The browser row follows the health heartbeat, at most every few seconds.
-async function refreshBrowserStatus(): Promise<void> {
-  const now = Date.now();
-  if (now - browserRefreshAt < 5000) {
+// The browser row: fetched with the heartbeat and on the open-window poll.
+// Re-renders and re-reads counters only when the status changes.
+async function refreshBrowserStatus(render = true): Promise<void> {
+  if (browserFetching) {
     return;
   }
-  browserRefreshAt = now;
-  latestBrowser = await invoke<BrowserStatus | null>("browser_status").catch(() => null);
+  browserFetching = true;
+  try {
+    const next = await invoke<BrowserStatus | null>("browser_status").catch(() => null);
+    const changed = JSON.stringify(next) !== JSON.stringify(latestBrowser);
+    latestBrowser = next;
+    if (changed && render) {
+      countersFor = null;
+      requestRerender();
+    }
+  } finally {
+    browserFetching = false;
+  }
+}
+
+function pollBrowserStatus(): Promise<void> {
+  if (label !== "settings" || document.visibilityState === "hidden" || browserDiscard === "busy") {
+    return Promise.resolve();
+  }
+  return refreshBrowserStatus();
 }
 
 let obsidianFetching = false;
@@ -8894,20 +8953,24 @@ async function boot(): Promise<void> {
     rerender();
     return;
   }
-  const [health, storage, update, exclusions, apps, hotkey, micCfg, mics, migration] = await Promise.all([
-    invoke<HealthDump>("get_health").catch(() => null),
-    invoke<StorageInfo>("storage_info").catch(() => null),
-    invoke<UpdateView>("update_get").catch(() => null),
-    invoke<ExclusionRules>("get_exclusions").catch(() => null),
-    invoke<RunningApp[]>("list_running_apps").catch(() => [] as RunningApp[]),
-    invoke<HotkeyView>("get_hotkey").catch(() => null),
-    invoke<MicView>("get_mic_config").catch(() => null),
-    invoke<MicDeviceRef[]>("list_mic_devices").catch(() => [] as MicDeviceRef[]),
-    invoke<MigrationSnapshot>("pairing_migration_state").catch(
-      () => ({ migration: null, issue: "storage_unavailable" }) as MigrationSnapshot,
-    ),
-  ]);
+  const [health, storage, update, exclusions, apps, hotkey, micCfg, mics, migration, counters] =
+    await Promise.all([
+      invoke<HealthDump>("get_health").catch(() => null),
+      invoke<StorageInfo>("storage_info").catch(() => null),
+      invoke<UpdateView>("update_get").catch(() => null),
+      invoke<ExclusionRules>("get_exclusions").catch(() => null),
+      invoke<RunningApp[]>("list_running_apps").catch(() => [] as RunningApp[]),
+      invoke<HotkeyView>("get_hotkey").catch(() => null),
+      invoke<MicView>("get_mic_config").catch(() => null),
+      invoke<MicDeviceRef[]>("list_mic_devices").catch(() => [] as MicDeviceRef[]),
+      invoke<MigrationSnapshot>("pairing_migration_state").catch(
+        () => ({ migration: null, issue: "storage_unavailable" }) as MigrationSnapshot,
+      ),
+      invoke<CounterDocument | null>("get_source_counters").catch(() => null),
+    ]);
   setLatestHealth(health);
+  latestCounters = counters ?? null;
+  countersFor = latestHealth;
   latestStorage = storage;
   latestUpdate = update;
   latestExclusions = exclusions;
@@ -8918,7 +8981,7 @@ async function boot(): Promise<void> {
   latestMigration = migration ?? { migration: null, issue: null };
   migrationOfferBinding = latestMigration.migration?.offer_binding ?? null;
   migrationRefreshAt = Date.now();
-  await refreshBrowserStatus();
+  await refreshBrowserStatus(false);
   await refreshObsidianStatus();
   await refreshScreenshotsStatus();
   await refreshImportStatus();
@@ -9138,6 +9201,7 @@ export function start(): void {
     lapseFoundJournalPress();
   }, 1000);
   setInterval(() => {
+    void pollBrowserStatus();
     void pollObsidianStatus();
     void pollScreenshotsStatus();
   }, 2500);
@@ -9148,6 +9212,9 @@ export const __test__ = {
   refreshPairingPrefillOnFocus,
   lookForFoundJournal,
   lapseFoundJournalPress,
+  journalConnectionIsCurrent,
+  deskJournalInput,
+  deskFacts,
   foundJournalPending: () => foundJournalLookInFlight,
   getHealth: () => latestHealth,
   updateStatusClocks,
@@ -9209,6 +9276,8 @@ export const __test__ = {
   setBrowser(status: BrowserStatus | null) {
     latestBrowser = status;
   },
+  pollBrowserStatus,
+  refreshBrowserStatus,
   pollObsidianStatus,
   pollScreenshotsStatus,
   setScreenshots(status: ScreenshotsStatus | null) {
@@ -9288,6 +9357,7 @@ export const __test__ = {
     micDevices = [];
     runningApps = [];
     latestBrowser = null;
+    browserFetching = false;
     latestObsidian = null;
     remoteRequest++;
     remoteDevices = [];

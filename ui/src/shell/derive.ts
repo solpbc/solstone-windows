@@ -144,13 +144,24 @@ export type BrowserCapture = "unavailable" | "not_paired" | "permitted" | "pause
 export function browsersTile(input: {
   capture: BrowserCapture;
   deliveryFailed: boolean;
+  custodyFull?: boolean;
+  configured: boolean;
   appPaused: boolean;
 }): TileView {
   let word: StateWord;
-  if (input.capture === "intake_off" || input.deliveryFailed) word = "needs attention";
-  else if (input.capture === "not_paired" || input.capture === "unavailable") word = "ready to set up";
-  else if (input.capture === "paused" || input.appPaused) word = "paused";
-  else word = "on";
+  if (input.capture === "intake_off" || input.deliveryFailed || input.custodyFull) {
+    word = "needs attention";
+  } else if (
+    input.capture === "not_paired" ||
+    input.capture === "unavailable" ||
+    !input.configured
+  ) {
+    word = "ready to set up";
+  } else if (input.capture === "paused" || input.appPaused) {
+    word = "paused";
+  } else {
+    word = "on";
+  }
   return {
     word,
     switchOn: null,
@@ -471,6 +482,9 @@ export function statusLead(input: JournalPillInput): StatusLead {
       return { headline: t("windows.ui.offlinearg0waiting", { "arg0": String(input.waiting) }), lines: [t("windows.ui.onthisdevice")] };
     }
     return { headline: t("windows.ui.offline"), lines: [] };
+  }
+  if (input.paired && input.connecting) {
+    return { headline: t("windows.ui.connecting"), lines: [] };
   }
   if (input.paired && input.waitingToSync) {
     return { headline: t("windows.ui.waitingtosync"), lines: [t("windows.ui.onthisdevice")] };
