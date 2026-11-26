@@ -639,27 +639,28 @@ async fn stage_resumable_upload(
     };
 
     // 2. Resync an existing remote upload cursor via GET, or create a new session via POST.
-    let (mut upload_id, mut next_offset, mut chunk_bytes) =
-        if let Some(existing) = item.upload_for(journal).cloned() {
+    let (upload_id, mut next_offset, mut chunk_bytes) =
+        if let Some(mut existing) = item.upload_for(journal).cloned() {
             match session.get_status(&existing.upload_id).await {
                 Ok(UploadStatusReply::Open {
                     upload_id,
                     next_offset,
                     chunk_bytes,
+                    total_bytes,
                     ..
                 }) => {
-                    let clamped = next_offset.min(item.size);
-                    item.upload = Some(ResumableUploadState {
-                        journal: journal.to_owned(),
-                        upload_id: upload_id.clone(),
-                        next_offset: clamped,
-                        total_bytes: item.size,
-                        chunk_bytes,
-                    });
+                    let advanced = next_offset > existing.next_offset;
+                    if !existing.reconcile(&upload_id, next_offset, total_bytes, chunk_bytes) {
+                        return Ok(ResumableStageOutcome::PausedTransient);
+                    }
+                    let limit = existing.chunk_bytes;
+                    item.upload = Some(existing);
                     persist_item_snapshot(service, item)?;
-                    reset_retry_ladder(service, &item.id);
+                    if advanced {
+                        reset_retry_ladder(service, &item.id);
+                    }
                     publish(app, service);
-                    (upload_id, clamped, chunk_bytes)
+                    (upload_id, next_offset, limit)
                 }
                 Ok(UploadStatusReply::UploadNotFound) => {
                     // If all bytes had reached the journal before disconnect, a prior commit
@@ -732,19 +733,23 @@ async fn stage_resumable_upload(
             };
             match create_reply {
                 Ok(UploadCreateReply::Open(open)) => {
-                    let clamped = open.next_offset.min(item.size);
+                    if open.total_bytes != item.size {
+                        return Ok(ResumableStageOutcome::PausedTransient);
+                    }
+                    let initial_offset = open.next_offset;
                     let chunk = open.chunk_bytes.max(1);
                     item.upload = Some(ResumableUploadState {
+                        unanswered_bytes: None,
                         journal: journal.to_owned(),
                         upload_id: open.upload_id.clone(),
-                        next_offset: clamped,
+                        next_offset: initial_offset,
                         total_bytes: item.size,
                         chunk_bytes: chunk,
                     });
                     persist_item_snapshot(service, item)?;
                     reset_retry_ladder(service, &item.id);
                     publish(app, service);
-                    (open.upload_id, clamped, chunk)
+                    (open.upload_id, initial_offset, chunk)
                 }
                 Ok(UploadCreateReply::AlreadyStaged(saved)) => {
                     session.close().await;
@@ -820,9 +825,13 @@ async fn stage_resumable_upload(
             match session.put_chunk(&upload_id, next_offset, &bytes).await {
                 Ok(UploadChunkReply::Accepted {
                     next_offset: confirmed,
+                    total_bytes,
                     ..
                 }) => {
-                    next_offset = confirmed.min(item.size);
+                    if total_bytes != item.size || confirmed != next_offset + bytes.len() as u64 {
+                        return Ok(ResumableStageOutcome::PausedTransient);
+                    }
+                    next_offset = confirmed;
                     chunk_bad_retries = 0;
                     reset_retry_ladder(service, &item.id);
                     if let Some(state) = item.upload.as_mut() {
@@ -834,7 +843,10 @@ async fn stage_resumable_upload(
                 Ok(UploadChunkReply::OffsetMismatch {
                     next_offset: Some(server_offset),
                 }) => {
-                    next_offset = server_offset.min(item.size);
+                    if server_offset == next_offset || server_offset > item.size {
+                        return Ok(ResumableStageOutcome::PausedTransient);
+                    }
+                    next_offset = server_offset;
                     chunk_bad_retries = 0;
                     if let Some(state) = item.upload.as_mut() {
                         state.next_offset = next_offset;
@@ -848,17 +860,23 @@ async fn stage_resumable_upload(
                             upload_id: refreshed_id,
                             next_offset: server_offset,
                             chunk_bytes: server_chunk,
+                            total_bytes,
                             ..
                         }) => {
-                            upload_id = refreshed_id;
-                            next_offset = server_offset.min(item.size);
-                            chunk_bytes = server_chunk.max(1);
-                            chunk_bad_retries = 0;
-                            if let Some(state) = item.upload.as_mut() {
-                                state.upload_id = upload_id.clone();
-                                state.next_offset = next_offset;
-                                state.chunk_bytes = chunk_bytes;
+                            let state = item.upload.as_mut().expect("open upload");
+                            if server_offset == next_offset
+                                || !state.reconcile(
+                                    &refreshed_id,
+                                    server_offset,
+                                    total_bytes,
+                                    server_chunk,
+                                )
+                            {
+                                return Ok(ResumableStageOutcome::PausedTransient);
                             }
+                            next_offset = state.next_offset;
+                            chunk_bytes = state.chunk_bytes;
+                            chunk_bad_retries = 0;
                             persist_item_snapshot(service, item)?;
                             publish(app, service);
                         }
@@ -896,6 +914,13 @@ async fn stage_resumable_upload(
                 Ok(UploadChunkReply::AuthStop) => {
                     session.close().await;
                     return Ok(ResumableStageOutcome::AuthStop);
+                }
+                Ok(UploadChunkReply::Interrupted) => {
+                    if let Some(state) = item.upload.as_mut() {
+                        state.unanswered_bytes = Some(bytes.len() as u64);
+                    }
+                    persist_item_snapshot(service, item)?;
+                    return Ok(ResumableStageOutcome::PausedTransient);
                 }
                 Ok(UploadChunkReply::Retry) | Err(_) => {
                     session.close().await;
@@ -935,7 +960,10 @@ async fn stage_resumable_upload(
             Ok(UploadCommitReply::Incomplete { next_offset: srv }) => {
                 set_active_phase(service, UploadPhase::Sending);
                 if let Some(offset) = srv {
-                    next_offset = offset.min(item.size);
+                    if offset >= item.size {
+                        return Ok(ResumableStageOutcome::PausedTransient);
+                    }
+                    next_offset = offset;
                     if let Some(state) = item.upload.as_mut() {
                         state.next_offset = next_offset;
                     }
@@ -945,13 +973,20 @@ async fn stage_resumable_upload(
                 }
                 match session.get_status(&upload_id).await {
                     Ok(UploadStatusReply::Open {
-                        next_offset: server_offset,
+                        upload_id: confirmed_id,
+                        next_offset: offset,
+                        total_bytes,
+                        chunk_bytes: advertised,
                         ..
                     }) => {
-                        next_offset = server_offset.min(item.size);
-                        if let Some(state) = item.upload.as_mut() {
-                            state.next_offset = next_offset;
+                        let state = item.upload.as_mut().expect("open upload");
+                        if offset >= item.size
+                            || !state.reconcile(&confirmed_id, offset, total_bytes, advertised)
+                        {
+                            return Ok(ResumableStageOutcome::PausedTransient);
                         }
+                        next_offset = state.next_offset;
+                        chunk_bytes = state.chunk_bytes;
                         persist_item_snapshot(service, item)?;
                         publish(app, service);
                         continue;
@@ -1249,6 +1284,14 @@ async fn deliver_pass(
                         item.upload_for(&journal)
                             .map_or(4 * 1024 * 1024, |u| u.chunk_bytes),
                     ),
+                    CachedProbe::Unsupported if has_open_upload => {
+                        // An interrupted upload must reconcile its durable cursor before
+                        // the app can choose another route for this file.
+                        (
+                            true,
+                            item.upload_for(&journal).expect("open upload").chunk_bytes,
+                        )
+                    }
                     CachedProbe::Transient
                         if has_open_upload
                             || item.size >= PROBE_UNAVAILABLE_PAUSE_THRESHOLD_BYTES =>

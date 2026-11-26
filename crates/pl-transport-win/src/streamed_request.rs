@@ -96,9 +96,16 @@ async fn upload<W: AsyncWrite + Unpin, R: AsyncRead + Unpin>(
                 "short file request body",
             ));
         }
-        progress(write.write_all(&chunk[..n])).await?;
+        let mut pending = &chunk[..n];
+        while !pending.is_empty() {
+            let written = progress(write.write(pending)).await?;
+            if written == 0 {
+                return Err(io::ErrorKind::WriteZero.into());
+            }
+            pending = &pending[written..];
+            activity.send_replace(());
+        }
         remaining -= n as u64;
-        activity.send_replace(());
     }
     progress(write.flush()).await
 }
@@ -400,7 +407,16 @@ impl UploadSession {
             length as usize,
         );
         let exchange = async {
-            let stream = progress(tokio::net::TcpStream::connect(("127.0.0.1", self.port))).await?;
+            let stream = progress(tokio::net::TcpStream::connect(("127.0.0.1", self.port)))
+                .await
+                .map_err(|error| {
+                    // A listener timeout occurs before any request bytes can leave the app.
+                    if error.kind() == io::ErrorKind::TimedOut {
+                        TransportError::NoEndpoint
+                    } else {
+                        error.into()
+                    }
+                })?;
             exchange_request(stream, &head, body, length).await
         }
         .await;
@@ -547,6 +563,50 @@ mod tests {
             let (_, activity) = tokio::sync::watch::channel(());
             assert!(response(bytes.as_slice(), activity).await.is_err());
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn part_writes_keep_a_backpressured_file_request_moving() {
+        let (writer, mut reader) = tokio::io::duplex(16 * 1024);
+        let (mut reply, response_reader) = tokio::io::duplex(256);
+        let (activity, rx) = tokio::sync::watch::channel(());
+        let bytes = vec![b'q'; 64 * 1024];
+        let peer = async {
+            let mut received = Vec::new();
+            let mut chunk = [0; 16 * 1024];
+            while received.len() < bytes.len() {
+                tokio::time::sleep(Duration::from_secs(110)).await;
+                let count = reader.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                received.extend_from_slice(&chunk[..count]);
+            }
+            reply
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .await
+                .unwrap();
+            drop(reply);
+            received
+        };
+        let start = tokio::time::Instant::now();
+        let (sent, answer, received) = tokio::join!(
+            upload(writer, &bytes[..], bytes.len() as u64, activity),
+            response(response_reader, rx),
+            peer
+        );
+        sent.unwrap();
+        assert_eq!(answer.unwrap().status, 200);
+        assert_eq!(received, bytes);
+        assert!(start.elapsed() > IDLE);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stopped_writer_still_expires_at_the_idle_deadline() {
+        let (writer, _stopped_reader) = tokio::io::duplex(1);
+        let (activity, _) = tokio::sync::watch::channel(());
+        let start = tokio::time::Instant::now();
+        let failure = upload(writer, &b"xy"[..], 2, activity).await.unwrap_err();
+        assert_eq!(failure.kind(), io::ErrorKind::TimedOut);
+        assert!(start.elapsed() >= IDLE);
     }
 
     #[tokio::test(start_paused = true)]

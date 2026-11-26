@@ -6,6 +6,10 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- when one piece of a large file stops sending during import, the app checks what your journal received. if that piece didn't arrive, the app can try a smaller one.
+
 ### Changed
 
 - exporting your journal from the journal window now streams the download as it arrives instead of holding the whole file in memory.

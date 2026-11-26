@@ -76,6 +76,7 @@ pub enum UploadCreateReply {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum UploadChunkReply {
+    Interrupted,
     Accepted {
         next_offset: u64,
         total_bytes: u64,
@@ -519,11 +520,12 @@ impl ResumableUploadSession {
             ("Content-Type".into(), "application/octet-stream".into()),
             ("X-Chunk-Sha256".into(), chunk_sha),
         ];
+        let started = tokio::time::Instant::now();
         let response = self
             .session
             .send("PUT", &target, &headers, bytes, bytes.len() as u64)
-            .await?;
-        Ok(classify_upload_chunk(&response))
+            .await;
+        classify_put_exchange(response, started.elapsed(), upload_id)
     }
 
     pub async fn get_status(&mut self, upload_id: &str) -> Result<UploadStatusReply, RouteError> {
@@ -940,7 +942,40 @@ pub fn classify_upload_create(response: &HttpResponse) -> UploadCreateReply {
     }
 }
 
+fn classify_put_exchange(
+    response: Result<HttpResponse, RouteError>,
+    elapsed: Duration,
+    upload_id: &str,
+) -> Result<UploadChunkReply, RouteError> {
+    match response {
+        Err(RouteError::Transport(TransportError::Io(error)))
+            if error.kind() == io::ErrorKind::TimedOut =>
+        {
+            Ok(UploadChunkReply::Interrupted)
+        }
+        // The loopback bridge also reports carrier loss as an HTTP 502. A
+        // brief redeploy can resume at full size; sustained trouble can
+        // justify a smaller piece once the journal confirms no progress.
+        Ok(response)
+            if response.status == 502
+                && response.body == b"journal unreachable"
+                && elapsed >= Duration::from_secs(60) =>
+        {
+            Ok(UploadChunkReply::Interrupted)
+        }
+        Ok(response) => Ok(classify_upload_chunk_for(&response, Some(upload_id))),
+        Err(error) => Err(error),
+    }
+}
+
 pub fn classify_upload_chunk(response: &HttpResponse) -> UploadChunkReply {
+    classify_upload_chunk_for(response, None)
+}
+
+fn classify_upload_chunk_for(
+    response: &HttpResponse,
+    expected_id: Option<&str>,
+) -> UploadChunkReply {
     if matches!(response.status, 401 | 403) {
         return UploadChunkReply::AuthStop;
     }
@@ -953,11 +988,18 @@ pub fn classify_upload_chunk(response: &HttpResponse) -> UploadChunkReply {
             available_bytes,
         };
     }
-    if response.status >= 500 || response.status == 429 {
+    if response.status >= 500 || matches!(response.status, 405 | 429) {
         return UploadChunkReply::Retry;
     }
     if response.status == 404 {
-        return UploadChunkReply::UploadNotFound;
+        return if parsed
+            .as_ref()
+            .is_some_and(|body| body["reason_code"] == "upload_not_found")
+        {
+            UploadChunkReply::UploadNotFound
+        } else {
+            UploadChunkReply::Retry
+        };
     }
     if response.status == 200 {
         let Some(value) = parsed else {
@@ -969,7 +1011,14 @@ pub fn classify_upload_chunk(response: &HttpResponse) -> UploadChunkReply {
         if let (Some(next_offset), Some(total_bytes), Some(complete)) =
             (next_offset, total_bytes, complete)
         {
-            if total_bytes > 0 && next_offset <= total_bytes {
+            let wrong_id = expected_id
+                .zip(value.get("upload_id"))
+                .is_some_and(|(expected, actual)| actual.as_str() != Some(expected));
+            if !wrong_id
+                && total_bytes > 0
+                && next_offset <= total_bytes
+                && complete == (next_offset == total_bytes)
+            {
                 return UploadChunkReply::Accepted {
                     next_offset,
                     total_bytes,
@@ -1017,7 +1066,12 @@ pub fn classify_upload_status(response: &HttpResponse) -> UploadStatusReply {
         return UploadStatusReply::AuthStop;
     }
     if response.status == 404 {
-        return UploadStatusReply::UploadNotFound;
+        return match serde_json::from_slice::<serde_json::Value>(&response.body) {
+            Ok(body) if body["reason_code"] == "upload_not_found" => {
+                UploadStatusReply::UploadNotFound
+            }
+            _ => UploadStatusReply::Retry,
+        };
     }
     if response.status != 200 {
         return UploadStatusReply::Retry;
@@ -1065,11 +1119,18 @@ pub fn classify_upload_commit(response: &HttpResponse) -> UploadCommitReply {
             available_bytes,
         };
     }
-    if response.status >= 500 || response.status == 429 {
+    if response.status >= 500 || matches!(response.status, 405 | 429) {
         return UploadCommitReply::Retry;
     }
     if response.status == 404 {
-        return UploadCommitReply::UploadNotFound;
+        return if parsed
+            .as_ref()
+            .is_some_and(|body| body["reason_code"] == "upload_not_found")
+        {
+            UploadCommitReply::UploadNotFound
+        } else {
+            UploadCommitReply::Retry
+        };
     }
     if response.status == 200 {
         if let Some(saved) = parsed.as_ref().and_then(parse_saved_import) {
@@ -1643,7 +1704,60 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_puts_require_journal_status_before_size_recovery() {
+        assert!(matches!(
+            classify_put_exchange(
+                Err(RouteError::Transport(TransportError::Io(
+                    io::ErrorKind::TimedOut.into()
+                ))),
+                Duration::ZERO,
+                "upload"
+            ),
+            Ok(UploadChunkReply::Interrupted)
+        ));
+        for (code, seconds) in [(502, 2), (502, 120), (503, 120), (429, 120)] {
+            assert!(matches!(
+                classify_put_exchange(Ok(answer(code, "")), Duration::from_secs(seconds), "upload"),
+                Ok(UploadChunkReply::Retry)
+            ));
+        }
+        assert!(matches!(
+            classify_put_exchange(
+                Ok(answer(502, "journal unreachable")),
+                Duration::from_secs(120),
+                "upload"
+            ),
+            Ok(UploadChunkReply::Interrupted)
+        ));
+        assert_eq!(
+            classify_upload_chunk(&answer(404, "")),
+            UploadChunkReply::Retry
+        );
+        assert_eq!(
+            classify_upload_commit(&answer(404, "")),
+            UploadCommitReply::Retry
+        );
+        assert_eq!(
+            classify_upload_status(&answer(404, "")),
+            UploadStatusReply::Retry
+        );
+        assert_eq!(
+            classify_upload_status(&answer(404, r#"{"reason_code":"upload_not_found"}"#)),
+            UploadStatusReply::UploadNotFound
+        );
+    }
+
+    #[test]
     fn upload_chunk_and_commit_classifiers_cover_resync_checksum_expiry_and_space() {
+        for body in [
+            r#"{"upload_id":"other","next_offset":8,"total_bytes":16,"complete":false}"#,
+            r#"{"upload_id":"upload","next_offset":8,"total_bytes":16,"complete":true}"#,
+        ] {
+            assert_eq!(
+                classify_upload_chunk_for(&answer(200, body), Some("upload")),
+                UploadChunkReply::Retry
+            );
+        }
         assert_eq!(
             classify_upload_chunk(&answer(
                 200,

@@ -994,17 +994,17 @@ fn format_http_response(status_code: u16, headers: &[(String, String)], body: &[
     resp_bytes
 }
 
-async fn serve_framed_requests<S, F>(
+type JournalReply = (u16, Vec<(String, String)>, Vec<u8>);
+
+async fn serve_framed_requests<S, F, R>(
     stream: S,
     acceptor: TlsAcceptor,
     handler: Arc<F>,
     requests: Arc<Mutex<Vec<RecordedJournalRequest>>>,
 ) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    F: Fn(&str, &str, &HashMap<String, String>, &[u8]) -> (u16, Vec<(String, String)>, Vec<u8>)
-        + Send
-        + Sync
-        + 'static,
+    F: Fn(&str, &str, &HashMap<String, String>, &[u8]) -> R + Send + Sync + 'static,
+    R: Into<Option<JournalReply>>,
 {
     let Ok(mut tls) = acceptor.accept(stream).await else {
         return;
@@ -1040,7 +1040,11 @@ async fn serve_framed_requests<S, F>(
                     body: body.clone(),
                 });
 
-                let (status, resp_headers, resp_body) = handler(&method, &path, &headers, &body);
+                let Some((status, resp_headers, resp_body)) =
+                    handler(&method, &path, &headers, &body).into()
+                else {
+                    return;
+                };
                 let response_bytes = format_http_response(status, &resp_headers, &resp_body);
                 let resp_frame = Frame::new(stream_id, FLAG_DATA | FLAG_CLOSE, response_bytes);
                 if let Ok(encoded) = resp_frame.encode() {
@@ -1069,12 +1073,10 @@ impl PathRoutedRelay {
     }
 }
 
-async fn spawn_path_routed_relay<F>(acceptor: TlsAcceptor, handler: F) -> PathRoutedRelay
+async fn spawn_path_routed_relay<F, R>(acceptor: TlsAcceptor, handler: F) -> PathRoutedRelay
 where
-    F: Fn(&str, &str, &HashMap<String, String>, &[u8]) -> (u16, Vec<(String, String)>, Vec<u8>)
-        + Send
-        + Sync
-        + 'static,
+    F: Fn(&str, &str, &HashMap<String, String>, &[u8]) -> R + Send + Sync + 'static,
+    R: Into<Option<JournalReply>>,
 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
@@ -4009,5 +4011,117 @@ async fn test_adapter_local_endpoints_refresh_relay_eligibility() {
         working_server.abort();
         relay.abort();
         let _ = std::fs::remove_file(&state_path);
+    }
+}
+
+#[tokio::test]
+async fn interrupted_put_resumes_from_authenticated_offset_on_a_fresh_relay_session() {
+    use pl_transport_win::import_client::{
+        sha256_hex, ResumableUploadSession, UploadChunkReply, UploadStatusReply,
+    };
+    use pl_transport_win::import_store::ResumableUploadState;
+
+    const ID: &str = "bba9cad9-bab4-4dd5-a675-9bceb5530dd4";
+    const DATA: &[u8] = b"0123456789abcdef";
+    for first_put_committed in [true, false] {
+        let (cert, key) = self_signed();
+        let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+        let durable = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let bytes = durable.clone();
+        let calls = AtomicUsize::new(0);
+        let relay = spawn_path_routed_relay(
+            TlsAcceptor::from(Arc::new(server_config(cert, key))),
+            move |method, path, headers, body| {
+                let mut bytes = bytes.lock().unwrap();
+                let route = format!("/app/import/api/uploads/{ID}");
+                if method == "GET" {
+                    assert_eq!(path, route);
+                    let status = json!({
+                        "status": "open",
+                        "upload_id": ID,
+                        "total_bytes": DATA.len(),
+                        "next_offset": bytes.len(),
+                        "chunk_bytes": 8
+                    });
+                    return Some((200, vec![], status.to_string().into_bytes()));
+                }
+                assert_eq!(method, "PUT");
+                assert_eq!(path, format!("{route}?offset={}", bytes.len()));
+                assert_eq!(headers["x-chunk-sha256"], sha256_hex(body));
+                let first = calls.fetch_add(1, Ordering::SeqCst) == 0;
+                if !first || first_put_committed {
+                    bytes.extend_from_slice(body);
+                }
+                if first {
+                    // Drop the carrier before an acknowledgement can reach the client.
+                    return None;
+                }
+                let ack = json!({
+                    "next_offset": bytes.len(),
+                    "total_bytes": DATA.len(),
+                    "complete": bytes.len() == DATA.len()
+                });
+                Some((200, vec![], ack.to_string().into_bytes()))
+            },
+        )
+        .await;
+        let now = epoch_secs();
+        let mut credential =
+            observer_relay_credential(pin, 1, relay.origin.clone(), mint_jwt(now, now + 3600));
+        credential.endpoints.clear();
+        let new_client = || {
+            Arc::new(
+                ObserverClient::new(credential.clone(), Arc::new(AtomicBool::new(true))).unwrap(),
+            )
+        };
+        let state = ResumableUploadState {
+            journal: INSTANCE_ID.into(),
+            upload_id: ID.into(),
+            next_offset: 0,
+            total_bytes: DATA.len() as u64,
+            chunk_bytes: 8,
+            unanswered_bytes: None,
+        };
+        let checkpoint = serde_json::to_vec(&state).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            let mut interrupted = ResumableUploadSession::open(new_client()).await.unwrap();
+            assert!(matches!(
+                interrupted.put_chunk(ID, 0, &DATA[..8]).await,
+                Ok(UploadChunkReply::Retry) | Err(_)
+            ));
+            interrupted.close().await;
+            let mut resume = ResumableUploadSession::open(new_client()).await.unwrap();
+            let mut state: ResumableUploadState = serde_json::from_slice(&checkpoint).unwrap();
+            let UploadStatusReply::Open {
+                upload_id,
+                next_offset,
+                total_bytes,
+                chunk_bytes,
+                ..
+            } = resume.get_status(ID).await.unwrap()
+            else {
+                panic!("expected durable cursor")
+            };
+            assert!(state.reconcile(&upload_id, next_offset, total_bytes, chunk_bytes));
+            assert_eq!(state.next_offset, if first_put_committed { 8 } else { 0 });
+            while state.next_offset < state.total_bytes {
+                let start = state.next_offset;
+                let end = start + state.chunk_bytes;
+                let UploadChunkReply::Accepted { next_offset, .. } = resume
+                    .put_chunk(ID, start, &DATA[start as usize..end as usize])
+                    .await
+                    .unwrap()
+                else {
+                    panic!("expected chunk accepted")
+                };
+                assert_eq!(next_offset, end);
+                state.next_offset = next_offset;
+            }
+            resume.close().await;
+        })
+        .await
+        .expect("relay did not resume after its first connection dropped");
+        assert_eq!(durable.lock().unwrap().as_slice(), DATA);
+        relay.abort();
     }
 }

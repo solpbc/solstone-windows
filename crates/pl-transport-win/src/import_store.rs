@@ -41,6 +41,31 @@ pub struct ResumableUploadState {
     pub next_offset: u64,
     pub total_bytes: u64,
     pub chunk_bytes: u64,
+    /// Length of the unacknowledged PUT at next_offset, until a status GET answers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unanswered_bytes: Option<u64>,
+}
+
+impl ResumableUploadState {
+    /// Keep the learned ceiling for this upload; another file starts at its advertised size.
+    pub fn reconcile(&mut self, id: &str, offset: u64, total: u64, advertised: u64) -> bool {
+        if self.upload_id != id || self.total_bytes != total || offset > total || advertised == 0 {
+            return false;
+        }
+        let mut limit = if self.chunk_bytes == 0 {
+            advertised
+        } else {
+            self.chunk_bytes.min(advertised)
+        };
+        if let Some(length) = self.unanswered_bytes.take() {
+            if offset == self.next_offset {
+                limit = limit.min((length / 2).clamp(1024, 512 * 1024));
+            }
+        }
+        self.chunk_bytes = limit;
+        self.next_offset = offset;
+        true
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1995,6 +2020,41 @@ mod tests {
     }
 
     #[test]
+    fn restart_resolves_an_unanswered_piece_from_the_same_journal_cursor() {
+        let head = r#"{"journal":"home","upload_id":"upload","total_bytes":16777216,"next_offset":4194304,"chunk_bytes":4194304}"#;
+        let original: ResumableUploadState = serde_json::from_str(head).unwrap();
+        let mut interrupted = original.clone();
+        interrupted.unanswered_bytes = Some(4194304);
+        let saved = serde_json::to_vec(&interrupted).unwrap();
+        let mut restored = interrupted.clone();
+        assert!(restored.reconcile("upload", 0, 16777216, 4194304));
+        assert_eq!(restored.unanswered_bytes, None);
+        assert_eq!((restored.next_offset, restored.chunk_bytes), (0, 4194304));
+        for accepted in [false, true] {
+            let mut state: ResumableUploadState = serde_json::from_slice(&saved).unwrap();
+            for (id, offset, total) in [("other", 4194304, 16777216), ("upload", 4194304, 8388608)]
+            {
+                assert!(!state.reconcile(id, offset, total, 4194304));
+                assert_eq!(state, interrupted);
+            }
+            let offset = if accepted { 8388608 } else { 4194304 };
+            assert!(state.reconcile("upload", offset, 16777216, 4194304));
+            assert_eq!(state.next_offset, offset);
+            assert_eq!(state.unanswered_bytes, None);
+            assert_eq!(state.chunk_bytes, if accepted { 4194304 } else { 524288 });
+            if !accepted {
+                state.unanswered_bytes = Some(state.chunk_bytes);
+                assert!(state.reconcile("upload", offset, 16777216, 4194304));
+                assert_eq!(state.chunk_bytes, 262144);
+                assert!(state.reconcile("upload", offset + 262144, 16777216, 8192));
+                assert!(state.reconcile("upload", offset + 262144, 16777216, 4194304));
+                assert_eq!(state.chunk_bytes, 8192);
+            }
+        }
+        assert_eq!(original.chunk_bytes, 4194304);
+    }
+
+    #[test]
     fn resumable_upload_progress_respects_pairing_switch_and_emits_honest_host_status() {
         let root = tempfile::tempdir().unwrap();
         let mut store = Store::open(root.path().join("import")).unwrap();
@@ -2002,6 +2062,7 @@ mod tests {
         item.size = 32 * 1024 * 1024;
         item.sha256 = Some("f".repeat(64));
         item.upload = Some(ResumableUploadState {
+            unanswered_bytes: None,
             journal: "journal-a".into(),
             upload_id: "550e8400-e29b-41d4-a716-446655440000".into(),
             next_offset: 8 * 1024 * 1024,
@@ -2087,6 +2148,7 @@ mod tests {
         let mut store = Store::open(root.path().join("import")).unwrap();
         let mut item = make_item('d', "video.mp4", 10);
         item.upload = Some(ResumableUploadState {
+            unanswered_bytes: None,
             journal: "journal-a".into(),
             upload_id: "upload-abc".into(),
             next_offset: 4 * 1024 * 1024,
