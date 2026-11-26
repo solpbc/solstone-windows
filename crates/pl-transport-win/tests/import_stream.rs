@@ -18,6 +18,29 @@ use support::journal_fake::{
     direct_credential, refusing_server_config, self_signed, server_config,
 };
 
+/// Refuse one carrier the way the journal's listener does: send the verdict,
+/// then linger until the client hangs up (at most 2 s), so a client that is
+/// still writing reads the refusal instead of a reset (Windows discards unread
+/// data when a reset arrives). Returns whether the handshake was refused.
+async fn refuse_like_the_journal(tcp: tokio::net::TcpStream, config: rustls::ServerConfig) -> bool {
+    match TlsAcceptor::from(Arc::new(config))
+        .accept(tcp)
+        .into_fallible()
+        .await
+    {
+        Ok(_) => false,
+        Err((_, mut io)) => {
+            let _ = io.shutdown().await;
+            let mut discard = [0_u8; 4096];
+            let _ = tokio::time::timeout(Duration::from_secs(2), async {
+                while matches!(io.read(&mut discard).await, Ok(count) if count > 0) {}
+            })
+            .await;
+            true
+        }
+    }
+}
+
 #[tokio::test]
 async fn multi_megabyte_save_preserves_bytes_and_sends_the_device_headers() {
     let (cert, key) = self_signed();
@@ -123,10 +146,7 @@ async fn a_refused_device_stops_future_file_and_start_dials() {
             key,
             rustls::CertificateError::ApplicationVerificationFailure,
         );
-        assert!(TlsAcceptor::from(Arc::new(config))
-            .accept(tcp)
-            .await
-            .is_err());
+        assert!(refuse_like_the_journal(tcp, config).await);
         assert!(
             tokio::time::timeout(Duration::from_millis(500), listener.accept())
                 .await
@@ -749,10 +769,7 @@ async fn resumable_upload_session_stops_dials_after_tls_refusal() {
             key,
             rustls::CertificateError::ApplicationVerificationFailure,
         );
-        assert!(TlsAcceptor::from(Arc::new(config))
-            .accept(tcp)
-            .await
-            .is_err());
+        assert!(refuse_like_the_journal(tcp, config).await);
         assert!(
             tokio::time::timeout(Duration::from_millis(500), listener.accept())
                 .await
