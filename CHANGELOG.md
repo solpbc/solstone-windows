@@ -4,7 +4,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.60] - 2026-11-26
 
 ### Added
 
@@ -12,8 +12,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Fixed
 
-- screen video could turn blocky or blurry when what's on screen changed, or grow much larger than needed on some PCs when the screen was still. the solstone app now keeps video quality steady and lets file size follow what's changing on screen, so text stays readable and still screens stay small.
-- when screen and audio are off, or you pause from the tray menu, the solstone app keeps checking in with your journal while this PC is unlocked so "open journal" stays available when your journal is reachable. before this PC reaches your journal, the home page now shows "connecting…" instead of "connected" or "waiting to sync", and if the app needs a restart, screen and audio no longer stay listed as "on" in your journal.
+- on some PCs, screen video could turn blocky or blurry when what's on screen changed; on others it grew much larger than needed when the screen was still. the solstone app now keeps video quality steady and lets file size follow what's changing on screen, so text stays readable and still screens stay small.
+- "open journal" no longer goes unavailable when screen and audio are off or you pause from the tray menu, as long as this PC is unlocked and your journal is reachable. before this PC reaches your journal, the home page now shows "connecting…" instead of "connected" or "waiting to sync", and if the app needs a restart, screen and audio no longer stay listed as "on" in your journal.
 - on a paired PC where you haven't added the solstone extension yet, the browsers tile on the home page now says "ready to set up", with buttons on its page to add it, and switches to "on" once the extension connects. once browser pages have come in, browsers stays "on" or "paused" on the home page and in your journal even when your browser windows are closed, and still shows "needs attention" while paused if there's no room for more browser pages or waiting pages can't reach your journal.
 
 ## [2.0.59] - 2026-11-25
