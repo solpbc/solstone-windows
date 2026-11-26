@@ -47,7 +47,7 @@ pub struct ResumableUploadState {
 }
 
 impl ResumableUploadState {
-    /// Keep the learned ceiling for this upload; another file starts at its advertised size.
+    /// Reconnect using the journal's durable cursor and this file's last working size.
     pub fn reconcile(&mut self, id: &str, offset: u64, total: u64, advertised: u64) -> bool {
         if self.upload_id != id || self.total_bytes != total || offset > total || advertised == 0 {
             return false;
@@ -64,6 +64,27 @@ impl ResumableUploadState {
         }
         self.chunk_bytes = limit;
         self.next_offset = offset;
+        true
+    }
+    /// Only a prompt acknowledgement of a full piece justifies trying twice as much.
+    pub fn acknowledge(
+        &mut self,
+        sent: u64,
+        confirmed: u64,
+        total: u64,
+        advertised: u64,
+        elapsed: std::time::Duration,
+    ) -> bool {
+        if total != self.total_bytes
+            || confirmed > total
+            || self.next_offset.checked_add(sent) != Some(confirmed)
+        {
+            return false;
+        }
+        self.next_offset = confirmed;
+        if sent == self.chunk_bytes && elapsed <= std::time::Duration::from_secs(4) {
+            self.chunk_bytes = self.chunk_bytes.saturating_mul(2).min(advertised);
+        }
         true
     }
 }
@@ -2052,6 +2073,56 @@ mod tests {
             }
         }
         assert_eq!(original.chunk_bytes, 4194304);
+    }
+
+    #[test]
+    fn a_recovered_upload_regrows_only_after_fast_full_piece_acknowledgements() {
+        use std::time::Duration;
+
+        let mut state = ResumableUploadState {
+            journal: "home".into(),
+            upload_id: "upload".into(),
+            next_offset: 0,
+            total_bytes: 32 * 1024 * 1024,
+            chunk_bytes: 256 * 1024,
+            unanswered_bytes: None,
+        };
+        let advertised = 4 * 1024 * 1024;
+        for _ in 0..5 {
+            let end = state.next_offset + state.chunk_bytes;
+            assert!(state.acknowledge(
+                state.chunk_bytes,
+                end,
+                state.total_bytes,
+                advertised,
+                Duration::from_secs(64)
+            ));
+            assert_eq!(state.chunk_bytes, 256 * 1024);
+        }
+        for limit in [
+            512 * 1024,
+            1024 * 1024,
+            2 * 1024 * 1024,
+            advertised,
+            advertised,
+        ] {
+            let end = state.next_offset + state.chunk_bytes;
+            assert!(!state.acknowledge(
+                state.chunk_bytes,
+                end + 1,
+                state.total_bytes,
+                advertised,
+                Duration::ZERO
+            ));
+            assert!(state.acknowledge(
+                state.chunk_bytes,
+                end,
+                state.total_bytes,
+                advertised,
+                Duration::from_secs(1)
+            ));
+            assert_eq!(state.chunk_bytes, limit);
+        }
     }
 
     #[test]

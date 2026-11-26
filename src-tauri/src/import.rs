@@ -639,7 +639,7 @@ async fn stage_resumable_upload(
     };
 
     // 2. Resync an existing remote upload cursor via GET, or create a new session via POST.
-    let (upload_id, mut next_offset, mut chunk_bytes) =
+    let (upload_id, mut next_offset, mut chunk_bytes, mut advertised_chunk_bytes) =
         if let Some(mut existing) = item.upload_for(journal).cloned() {
             match session.get_status(&existing.upload_id).await {
                 Ok(UploadStatusReply::Open {
@@ -660,7 +660,7 @@ async fn stage_resumable_upload(
                         reset_retry_ladder(service, &item.id);
                     }
                     publish(app, service);
-                    (upload_id, next_offset, limit)
+                    (upload_id, next_offset, limit, chunk_bytes)
                 }
                 Ok(UploadStatusReply::UploadNotFound) => {
                     // If all bytes had reached the journal before disconnect, a prior commit
@@ -749,7 +749,7 @@ async fn stage_resumable_upload(
                     persist_item_snapshot(service, item)?;
                     reset_retry_ladder(service, &item.id);
                     publish(app, service);
-                    (open.upload_id, initial_offset, chunk)
+                    (open.upload_id, initial_offset, chunk, chunk)
                 }
                 Ok(UploadCreateReply::AlreadyStaged(saved)) => {
                     session.close().await;
@@ -822,21 +822,27 @@ async fn stage_resumable_upload(
                 }
             };
 
+            let started = std::time::Instant::now();
             match session.put_chunk(&upload_id, next_offset, &bytes).await {
                 Ok(UploadChunkReply::Accepted {
                     next_offset: confirmed,
                     total_bytes,
                     ..
                 }) => {
-                    if total_bytes != item.size || confirmed != next_offset + bytes.len() as u64 {
+                    let state = item.upload.as_mut().expect("open upload");
+                    if !state.acknowledge(
+                        bytes.len() as u64,
+                        confirmed,
+                        total_bytes,
+                        advertised_chunk_bytes,
+                        started.elapsed(),
+                    ) {
                         return Ok(ResumableStageOutcome::PausedTransient);
                     }
-                    next_offset = confirmed;
+                    next_offset = state.next_offset;
+                    chunk_bytes = state.chunk_bytes;
                     chunk_bad_retries = 0;
                     reset_retry_ladder(service, &item.id);
-                    if let Some(state) = item.upload.as_mut() {
-                        state.next_offset = next_offset;
-                    }
                     persist_item_snapshot(service, item)?;
                     publish(app, service);
                 }
@@ -876,6 +882,7 @@ async fn stage_resumable_upload(
                             }
                             next_offset = state.next_offset;
                             chunk_bytes = state.chunk_bytes;
+                            advertised_chunk_bytes = server_chunk;
                             chunk_bad_retries = 0;
                             persist_item_snapshot(service, item)?;
                             publish(app, service);
@@ -987,6 +994,7 @@ async fn stage_resumable_upload(
                         }
                         next_offset = state.next_offset;
                         chunk_bytes = state.chunk_bytes;
+                        advertised_chunk_bytes = advertised;
                         persist_item_snapshot(service, item)?;
                         publish(app, service);
                         continue;
