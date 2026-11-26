@@ -672,7 +672,9 @@ reset_fake_transfer() {
   unset FAKE_GIT_CLEANUP_STATUS FAKE_GIT_HEAD_MISMATCH FAKE_SCP_FAIL
   unset FAKE_SCP_STATUS FAKE_SCP_COPY_TO FAKE_SCP_SOURCE_FILE
   unset FAKE_SCP_BINDING_FAIL
-  unset FAKE_SSH_MODE FAKE_SSH_STATUS FAKE_GIT_RELEASE_DIRTY SOLPBC_WINBUILD_TRAIN
+  unset FAKE_SSH_MODE FAKE_SSH_STATUS FAKE_GIT_RELEASE_DIRTY SOLPBC_WINBUILD_TRAIN \
+    SOLPBC_BOOTSTRAP_HOLDER SOLPBC_BOOTSTRAP_OPERATOR_HOST SOLPBC_CI_CALLER SOLPBC_CI_OPERATOR_HOST \
+    EXTRO_SESSION HOPPER_LID
   unset FAKE_EXPECTED_RELEASE_COMMIT FAKE_LOCK_WITNESS FAKE_RUN_ID
 }
 
@@ -1266,6 +1268,45 @@ assert_not_contains \
   "ssh|"
 unset SOLPBC_WINBUILD_TRAIN
 
+reset_fake_transfer "orchestrator-caller-explicit"
+FAKE_SSH_MODE=success
+SOLPBC_BOOTSTRAP_HOLDER=sess1234
+SOLPBC_BOOTSTRAP_OPERATOR_HOST=driver-box
+export FAKE_SSH_MODE SOLPBC_BOOTSTRAP_HOLDER SOLPBC_BOOTSTRAP_OPERATOR_HOST
+run_fake_orchestrator
+assert_eq "orchestrator with explicit caller exits zero" "0" "$ORCHESTRATOR_STATUS"
+assert_contains \
+  "orchestrator forwards explicit holder and operator host" \
+  "$(cat "$FAKE_WITNESS")" \
+  "set SOLPBC_BOOTSTRAP_HOLDER=sess1234&&set SOLPBC_BOOTSTRAP_OPERATOR_HOST=driver-box&&C:\\sol\\sw-ci.cmd"
+unset SOLPBC_BOOTSTRAP_HOLDER SOLPBC_BOOTSTRAP_OPERATOR_HOST
+
+reset_fake_transfer "orchestrator-caller-untracked"
+FAKE_SSH_MODE=success
+export FAKE_SSH_MODE
+run_fake_orchestrator
+assert_eq "orchestrator without caller env exits zero" "0" "$ORCHESTRATOR_STATUS"
+assert_contains \
+  "orchestrator marks untracked caller explicitly" \
+  "$(cat "$FAKE_WITNESS")" \
+  "set SOLPBC_BOOTSTRAP_HOLDER=untracked:"
+
+reset_fake_transfer "orchestrator-caller-unsafe"
+FAKE_SSH_MODE=success
+SOLPBC_BOOTSTRAP_HOLDER='bad&&del C:\sol'
+export FAKE_SSH_MODE SOLPBC_BOOTSTRAP_HOLDER
+run_fake_orchestrator
+assert_eq "unsafe bootstrap holder refuses" "1" "$ORCHESTRATOR_STATUS"
+assert_contains \
+  "unsafe bootstrap holder explains why" \
+  "$ORCHESTRATOR_OUTPUT" \
+  "SOLPBC_BOOTSTRAP_HOLDER must be"
+assert_not_contains \
+  "unsafe bootstrap holder never reaches the box" \
+  "$(cat "$FAKE_WITNESS")" \
+  "ssh|"
+unset SOLPBC_BOOTSTRAP_HOLDER
+
 reset_fake_transfer "orchestrator-ssh-nonzero"
 FAKE_SSH_MODE=nonzero-success
 export FAKE_SSH_MODE
@@ -1488,6 +1529,8 @@ WIN_REMOTE_HOST=fake@example.invalid \
   SCP="$FAKE_SCP" \
   SSH="$FAKE_SSH" \
   FAKE_RUN_ID=1 \
+  SOLPBC_BOOTSTRAP_HOLDER=holder1111 \
+  SOLPBC_BOOTSTRAP_OPERATOR_HOST=driver-box \
   sh "$REPO_ROOT/scripts/win-host-ci.sh" >"$lock_output_one" 2>&1 &
 lock_pid_one=$!
 lock_started=0
@@ -1533,6 +1576,10 @@ if [ "$lock_attempted" -ne 1 ]; then
   cat "$lock_output_two" >&2
 fi
 assert_eq "second orchestrator attempts the held lock" "1" "$lock_attempted"
+assert_contains \
+  "waiting orchestrator prints the active lock holder" \
+  "$(cat "$lock_output_two")" \
+  "held by holder=holder1111 operator_host=driver-box"
 : > "$FAKE_LOCK_RELEASE"
 if wait "$lock_pid_one"; then
   lock_status_one=0

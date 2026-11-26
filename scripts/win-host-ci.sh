@@ -25,10 +25,38 @@ if [ -n "$winbuild_train" ]; then
   train_set="set SOLPBC_WINBUILD_TRAIN=$winbuild_train&&"
 fi
 
+# Caller metadata for remote build-fence attribution and local lock diagnostics.
+# Explicit SOLPBC_BOOTSTRAP_HOLDER wins; otherwise fall back to an ambient
+# session/job identifier if present, or an explicit untracked local label.
+bootstrap_holder=${SOLPBC_BOOTSTRAP_HOLDER:-${SOLPBC_CI_CALLER:-${EXTRO_SESSION:-${HOPPER_LID:+lode:$HOPPER_LID}}}}
+if [ -z "$bootstrap_holder" ]; then
+  local_user=${USER:-$(id -un 2>/dev/null || printf 'unknown')}
+  local_host=$(uname -n 2>/dev/null || printf 'unknown')
+  bootstrap_holder="untracked:${local_user}@${local_host}"
+fi
+case "$bootstrap_holder" in
+  *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._:@-]*)
+    echo "ERROR: win-host-ci: SOLPBC_BOOTSTRAP_HOLDER must be letters, digits, '.', '_', ':', '@' or '-'" >&2
+    exit 1
+    ;;
+esac
+bootstrap_operator_host=${SOLPBC_BOOTSTRAP_OPERATOR_HOST:-${SOLPBC_CI_OPERATOR_HOST:-$(uname -n 2>/dev/null || printf 'unknown')}}
+case "$bootstrap_operator_host" in
+  ''|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-]*)
+    echo "ERROR: win-host-ci: SOLPBC_BOOTSTRAP_OPERATOR_HOST must be letters, digits, '.', '_' or '-'" >&2
+    exit 1
+    ;;
+esac
+caller_set="set SOLPBC_BOOTSTRAP_HOLDER=$bootstrap_holder&&set SOLPBC_BOOTSTRAP_OPERATOR_HOST=$bootstrap_operator_host&&"
+lock_held=0
+
 cleanup() {
   original_status=$1
   trap - EXIT HUP INT TERM
   set +e
+  if [ "$lock_held" -eq 1 ] && [ -n "${lock_path:-}" ]; then
+    : > "$lock_path"
+  fi
   if [ -n "$ssh_output_file" ]; then
     rm -f "$ssh_output_file"
   fi
@@ -77,19 +105,31 @@ else
 fi
 lock_path=$git_common_dir/solstone-win-host-ci.lock
 
-if exec 9>"$lock_path"; then
+if exec 9>>"$lock_path"; then
   :
 else
   echo "ERROR: win-host-ci: lock file open failed: $lock_path" >&2
   exit 1
 fi
-echo "win-host-ci: waiting for lock $lock_path"
-if flock 9; then
-  :
+if flock -n 9; then
+  echo "win-host-ci: waiting for lock $lock_path"
 else
-  echo "ERROR: win-host-ci: lock acquisition failed: $lock_path" >&2
-  exit 1
+  existing_holder=$(tr '\r\n' '  ' < "$lock_path" 2>/dev/null || true)
+  if [ -n "$existing_holder" ]; then
+    echo "win-host-ci: waiting for lock $lock_path (held by $existing_holder)"
+  else
+    echo "win-host-ci: waiting for lock $lock_path (held by unknown)"
+  fi
+  if flock 9; then
+    :
+  else
+    echo "ERROR: win-host-ci: lock acquisition failed: $lock_path" >&2
+    exit 1
+  fi
 fi
+lock_held=1
+printf 'holder=%s operator_host=%s pid=%s started=%s\n' \
+  "$bootstrap_holder" "$bootstrap_operator_host" "$$" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$lock_path"
 echo "win-host-ci: acquired lock $lock_path"
 
 if WIN_REMOTE_HOST="${WIN_REMOTE_HOST:-}" \
@@ -139,7 +179,7 @@ else
   echo "ERROR: win-host-ci: SSH output file creation failed" >&2
   exit 1
 fi
-remote_command="cmd /d /c \"${train_set}set EXPECTED_RELEASE_COMMIT=$snapshot_sha&&set EXPECTED_CARGO_LOCK_SHA256=$cargo_lock_sha256&&set EXPECTED_UI_PACKAGE_LOCK_SHA256=$ui_package_lock_sha256&&C:\\sol\\sw-ci.cmd\""
+remote_command="cmd /d /c \"${train_set}set EXPECTED_RELEASE_COMMIT=$snapshot_sha&&set EXPECTED_CARGO_LOCK_SHA256=$cargo_lock_sha256&&set EXPECTED_UI_PACKAGE_LOCK_SHA256=$ui_package_lock_sha256&&${caller_set}C:\\sol\\sw-ci.cmd\""
 if "$SSH" \
   -o ControlMaster=auto \
   -o "ControlPath=/tmp/sw-%r@%h:%p" \
