@@ -890,3 +890,464 @@ async fn probe_resumable_import_and_abort_upload_work_over_real_mtls_routes() {
     assert_eq!(aborted, UploadAbortReply::Deleted);
     server.await.unwrap();
 }
+
+async fn bind_window_bridge_for_test(
+    pin: Vec<u8>,
+    port: u16,
+) -> (
+    tempfile::TempDir,
+    pl_transport_win::journal_bridge::JournalBridgeHandle,
+    String,
+) {
+    use std::sync::Mutex;
+
+    #[derive(Debug)]
+    struct ZeroOffset;
+    impl observer_model::LocalOffset for ZeroOffset {
+        fn local_zone(
+            &self,
+            _epoch_secs: u64,
+        ) -> Result<observer_model::LocalZone, observer_model::LocalOffsetError> {
+            Ok(observer_model::LocalZone {
+                utc_offset_seconds: 0,
+                tz: None,
+            })
+        }
+    }
+
+    let cred = direct_credential(pin, port);
+    let binding = pl_transport_win::ack::JournalIdentity::from_credential(&cred).client_cert_sha256;
+    let paired = pl_transport_win::credential::PairedState {
+        credential: Some(cred),
+        ..Default::default()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let state_path = dir.path().join("pairing.json");
+    let journal_version = Arc::new(pl_transport_win::JournalVersionController::new(
+        dir.path().join("jv.json"),
+    ));
+    let sync = Arc::new(Mutex::new(observer_model::SyncSnapshot::default()));
+    let cfg = pl_transport_win::service::SyncConfig {
+        device_label: "window-export-bridge-test".into(),
+        period_secs: 300,
+        segments_root: dir.path().join("segments"),
+        state_path,
+        local_offset: Arc::new(ZeroOffset),
+        journal_version,
+        on_new_confirmation: Arc::new(|| {}),
+        facts_fn: Arc::new(pl_transport_win::RawDeviceFacts::default),
+        confirmation: Arc::new(Mutex::new(binding)),
+        tombstone: Arc::new(Mutex::new(None)),
+        liveness: Default::default(),
+        #[cfg(feature = "awaiting-hold")]
+        awaiting_hold: None,
+    };
+    let access = pl_transport_win::CredentialAccess::bind(&paired, &cfg, sync, None).unwrap();
+    let handle = pl_transport_win::journal_bridge::start_for_window(
+        access,
+        Arc::new(|target| format!("<html>offline:{target}</html>")),
+    )
+    .await
+    .unwrap();
+    let bootstrap = handle.issue_url_for_path("/").unwrap();
+    let (_, req_target) = bootstrap
+        .split_once(&format!("127.0.0.1:{}", handle.port()))
+        .unwrap();
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", handle.port()))
+        .await
+        .unwrap();
+    stream
+        .write_all(
+            format!(
+                "GET {req_target} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+                handle.port()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut resp = Vec::new();
+    stream.read_to_end(&mut resp).await.unwrap();
+    let resp_str = String::from_utf8_lossy(&resp);
+    assert!(resp_str.starts_with("HTTP/1.1 302 Found\r\n"), "{resp_str}");
+    let cookie_pair = resp_str
+        .lines()
+        .find(|line| line.to_ascii_lowercase().starts_with("set-cookie:"))
+        .unwrap()
+        .split_once(':')
+        .unwrap()
+        .1
+        .trim()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    (dir, handle, cookie_pair)
+}
+
+#[tokio::test]
+async fn window_bridge_streams_journal_archive_export_incrementally_and_preserves_other_routes() {
+    let (cert, key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (release_tail_tx, release_tail_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let first_half: Vec<u8> = (0..32_768).map(|i| ((i * 7) % 251) as u8).collect();
+    let second_half: Vec<u8> = (0..32_768).map(|i| ((i * 13 + 5) % 251) as u8).collect();
+    let mut expected_export = Vec::with_capacity(first_half.len() + second_half.len());
+    expected_export.extend_from_slice(&first_half);
+    expected_export.extend_from_slice(&second_half);
+
+    let first_half_for_server = first_half.clone();
+    let second_half_for_server = second_half.clone();
+    let server = tokio::spawn(async move {
+        let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut tls = acceptor.accept(tcp).await.unwrap();
+        let mut decoder = FrameDecoder::new();
+        let mut requests: std::collections::HashMap<u32, Vec<u8>> =
+            std::collections::HashMap::new();
+        let mut buf = [0_u8; 4096];
+        let mut release_tail_rx = Some(release_tail_rx);
+        let mut handled = 0usize;
+
+        while handled < 3 {
+            let n = tls.read(&mut buf).await.unwrap();
+            assert_ne!(n, 0);
+            decoder.feed(&buf[..n]);
+            for frame in decoder.drain().unwrap() {
+                if let Some(pong) = frame.control_pong() {
+                    tls.write_all(&pong.encode().unwrap()).await.unwrap();
+                    tls.flush().await.unwrap();
+                    continue;
+                }
+                if frame.flags & FLAG_DATA != 0 {
+                    requests
+                        .entry(frame.stream_id)
+                        .or_default()
+                        .extend_from_slice(&frame.payload);
+                }
+                if frame.flags & FLAG_CLOSE != 0 {
+                    handled += 1;
+                    let req_bytes = requests.remove(&frame.stream_id).unwrap_or_default();
+                    let req_head = String::from_utf8_lossy(&req_bytes);
+                    if req_head.starts_with("GET /app/import/api/journal-archive/export ") {
+                        let mut chunk1 = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: {}\r\n\r\n",
+                            first_half_for_server.len() + second_half_for_server.len()
+                        )
+                        .into_bytes();
+                        chunk1.extend_from_slice(&first_half_for_server);
+                        tls.write_all(
+                            &Frame::new(frame.stream_id, FLAG_DATA, chunk1)
+                                .encode()
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                        tls.flush().await.unwrap();
+                        release_tail_rx.take().unwrap().await.unwrap();
+                        tls.write_all(
+                            &Frame::new(
+                                frame.stream_id,
+                                FLAG_DATA | FLAG_CLOSE,
+                                second_half_for_server.clone(),
+                            )
+                            .encode()
+                            .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                        tls.flush().await.unwrap();
+                    } else if req_head.starts_with("HEAD /app/import/api/journal-archive/export ") {
+                        let resp =
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: 65536\r\n\r\n";
+                        tls.write_all(
+                            &Frame::new(
+                                frame.stream_id,
+                                FLAG_DATA | FLAG_CLOSE,
+                                resp.as_bytes().to_vec(),
+                            )
+                            .encode()
+                            .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                        tls.flush().await.unwrap();
+                    } else if req_head.starts_with("GET /app/import/api/other ") {
+                        let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\n\r\nhello";
+                        tls.write_all(
+                            &Frame::new(
+                                frame.stream_id,
+                                FLAG_DATA | FLAG_CLOSE,
+                                resp.as_bytes().to_vec(),
+                            )
+                            .encode()
+                            .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                        tls.flush().await.unwrap();
+                    } else {
+                        panic!("unexpected upstream request: {req_head}");
+                    }
+                }
+            }
+        }
+    });
+
+    let (_dir, handle, cookie) = bind_window_bridge_for_test(pin, port).await;
+
+    // 1. Export GET must deliver headers + initial bytes before upstream sends the tail.
+    let mut export_stream = tokio::net::TcpStream::connect(("127.0.0.1", handle.port()))
+        .await
+        .unwrap();
+    export_stream
+        .write_all(
+            format!(
+                "GET /app/import/api/journal-archive/export HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n",
+                handle.port()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut received = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    let header_end = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let n = export_stream.read(&mut chunk).await.unwrap();
+            assert_ne!(n, 0, "stream closed before first chunk arrived");
+            received.extend_from_slice(&chunk[..n]);
+            if let Some(pos) = received.windows(4).position(|w| w == b"\r\n\r\n") {
+                let body_so_far = received.len() - (pos + 4);
+                if body_so_far >= 16_384 {
+                    break pos + 4;
+                }
+            }
+        }
+    })
+    .await
+    .expect("export GET must stream first bytes before upstream completes");
+    let head_str = String::from_utf8_lossy(&received[..header_end]);
+    assert!(head_str.starts_with("HTTP/1.1 200 OK\r\n"), "{head_str}");
+    assert!(
+        head_str
+            .to_ascii_lowercase()
+            .contains("content-length: 65536\r\n"),
+        "{head_str}"
+    );
+    release_tail_tx.send(()).unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        export_stream.read_to_end(&mut received),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(&received[header_end..], expected_export.as_slice());
+
+    // 2. HEAD on the export route and ordinary GETs keep working.
+    let mut head_stream = tokio::net::TcpStream::connect(("127.0.0.1", handle.port()))
+        .await
+        .unwrap();
+    head_stream
+        .write_all(
+            format!(
+                "HEAD /app/import/api/journal-archive/export HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n",
+                handle.port()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut head_resp = Vec::new();
+    head_stream.read_to_end(&mut head_resp).await.unwrap();
+    let head_resp_str = String::from_utf8_lossy(&head_resp);
+    assert!(
+        head_resp_str.starts_with("HTTP/1.1 200 OK\r\n"),
+        "{head_resp_str}"
+    );
+    assert!(
+        head_resp_str
+            .to_ascii_lowercase()
+            .contains("content-length: 65536\r\n"),
+        "{head_resp_str}"
+    );
+    assert!(head_resp_str.ends_with("\r\n\r\n"), "{head_resp_str}");
+
+    let mut other_stream = tokio::net::TcpStream::connect(("127.0.0.1", handle.port()))
+        .await
+        .unwrap();
+    other_stream
+        .write_all(
+            format!(
+                "GET /app/import/api/other HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n",
+                handle.port()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut other_resp = Vec::new();
+    other_stream.read_to_end(&mut other_resp).await.unwrap();
+    let other_resp_str = String::from_utf8_lossy(&other_resp);
+    assert!(
+        other_resp_str.starts_with("HTTP/1.1 200 OK\r\n"),
+        "{other_resp_str}"
+    );
+    assert!(
+        other_resp_str.ends_with("\r\n\r\nhello"),
+        "{other_resp_str}"
+    );
+
+    handle.shutdown_and_wait().await;
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn window_bridge_truncated_export_closes_short_while_other_routes_return_502() {
+    let (cert, key) = self_signed();
+    let pin = spl_core::ca::sha256(cert.as_ref())[..16].to_vec();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let server = tokio::spawn(async move {
+        let acceptor = TlsAcceptor::from(Arc::new(server_config(cert, key)));
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut tls = acceptor.accept(tcp).await.unwrap();
+        let mut decoder = FrameDecoder::new();
+        let mut requests: std::collections::HashMap<u32, Vec<u8>> =
+            std::collections::HashMap::new();
+        let mut buf = [0_u8; 4096];
+        let mut handled = 0usize;
+
+        while handled < 2 {
+            let n = tls.read(&mut buf).await.unwrap();
+            assert_ne!(n, 0);
+            decoder.feed(&buf[..n]);
+            for frame in decoder.drain().unwrap() {
+                if let Some(pong) = frame.control_pong() {
+                    tls.write_all(&pong.encode().unwrap()).await.unwrap();
+                    tls.flush().await.unwrap();
+                    continue;
+                }
+                if frame.flags & FLAG_DATA != 0 {
+                    requests
+                        .entry(frame.stream_id)
+                        .or_default()
+                        .extend_from_slice(&frame.payload);
+                }
+                if frame.flags & FLAG_CLOSE != 0 {
+                    handled += 1;
+                    let req_bytes = requests.remove(&frame.stream_id).unwrap_or_default();
+                    let req_head = String::from_utf8_lossy(&req_bytes);
+                    if req_head.starts_with("GET /app/import/api/journal-archive/export ") {
+                        // Declare 65536 bytes, deliver only 16384, and close early.
+                        let mut resp = b"HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: 65536\r\n\r\n".to_vec();
+                        resp.extend(std::iter::repeat_n(b'Z', 16_384));
+                        tls.write_all(
+                            &Frame::new(frame.stream_id, FLAG_DATA | FLAG_CLOSE, resp)
+                                .encode()
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                        tls.flush().await.unwrap();
+                    } else if req_head.starts_with("GET /app/import/api/other ") {
+                        // Truncated non-streaming response must still be caught and returned as 502.
+                        let mut resp =
+                            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 65536\r\n\r\n"
+                                .to_vec();
+                        resp.extend_from_slice(b"short-body");
+                        tls.write_all(
+                            &Frame::new(frame.stream_id, FLAG_DATA | FLAG_CLOSE, resp)
+                                .encode()
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                        tls.flush().await.unwrap();
+                    } else {
+                        panic!("unexpected upstream request: {req_head}");
+                    }
+                }
+            }
+        }
+    });
+
+    let (_dir, handle, cookie) = bind_window_bridge_for_test(pin, port).await;
+
+    // 1. Truncated streamed export delivers declared Content-Length: 65536 and closes short.
+    let mut export_stream = tokio::net::TcpStream::connect(("127.0.0.1", handle.port()))
+        .await
+        .unwrap();
+    export_stream
+        .write_all(
+            format!(
+                "GET /app/import/api/journal-archive/export HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n",
+                handle.port()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut export_resp = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        export_stream.read_to_end(&mut export_resp),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let header_end = export_resp
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .expect("response headers")
+        + 4;
+    let head_str = String::from_utf8_lossy(&export_resp[..header_end]);
+    assert!(head_str.starts_with("HTTP/1.1 200 OK\r\n"), "{head_str}");
+    assert!(
+        head_str
+            .to_ascii_lowercase()
+            .contains("content-length: 65536\r\n"),
+        "{head_str}"
+    );
+    let body_len = export_resp.len() - header_end;
+    assert!(
+        body_len < 65_536,
+        "truncated export stream must close short of declared length, got {body_len}"
+    );
+
+    // 2. Truncated buffered route still fails closed with 502.
+    let mut other_stream = tokio::net::TcpStream::connect(("127.0.0.1", handle.port()))
+        .await
+        .unwrap();
+    other_stream
+        .write_all(
+            format!(
+                "GET /app/import/api/other HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n",
+                handle.port()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut other_resp = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        other_stream.read_to_end(&mut other_resp),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let other_str = String::from_utf8_lossy(&other_resp);
+    assert!(
+        other_str.starts_with("HTTP/1.1 502 Bad Gateway\r\n"),
+        "{other_str}"
+    );
+
+    handle.shutdown_and_wait().await;
+    server.await.unwrap();
+}

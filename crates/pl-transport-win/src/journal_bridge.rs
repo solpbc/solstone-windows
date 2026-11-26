@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use observer_pl::{
     CAP_COOKIE_NAME, OBSERVER_HANDLE_HEADER, PROTOCOL_VERSION_HEADER, UPSTREAM_COOKIE_PREFIX,
 };
-use spl_core::bridge::BridgeNames;
+use spl_core::bridge::{BridgeNames, RequestHead};
 use spl_transport::client::CarrierOpenError;
 use spl_transport::journal_bridge::{
     self as shared_bridge, BootstrapMode, BridgePolicy, BrowserAuthorizationError, CarrierOpener,
@@ -153,16 +153,30 @@ pub async fn start_observed(
     start_observed_with_facts(access).await
 }
 
+const JOURNAL_ARCHIVE_EXPORT_PATH: &str = "/app/import/api/journal-archive/export";
+
+fn streams_journal_response(head: &RequestHead) -> bool {
+    head.method == "GET" && matches!(head.path(), "/sse/events" | JOURNAL_ARCHIVE_EXPORT_PATH)
+}
+
+fn default_policy() -> BridgePolicy {
+    BridgePolicy {
+        stream_response: Arc::new(streams_journal_response),
+        ..BridgePolicy::default()
+    }
+}
+
 pub async fn start_observed_with_facts(
     access: CredentialAccess,
 ) -> Result<JournalBridgeHandle, BridgeStartError> {
-    start_with_policy(access, BridgePolicy::default()).await
+    start_with_policy(access, default_policy()).await
 }
 
 /// Start a loopback journal bridge for the native WebView2 journal window:
 /// uses single-use path-bound bootstrap tokens (`BootstrapMode::OneTimeToken`)
-/// to avoid the cold-open `/` flash, and serves the calm offline page at
-/// `/_solstone/offline` locally without hitting upstream.
+/// to avoid the cold-open `/` flash, streams SSE and journal archive export
+/// downloads without buffering the full response in memory, and serves the
+/// calm offline page at `/_solstone/offline` locally without hitting upstream.
 pub async fn start_for_window(
     access: CredentialAccess,
     offline_html: Arc<dyn Fn(&str) -> String + Send + Sync>,
@@ -180,7 +194,7 @@ pub async fn start_for_window(
                 None
             }
         }),
-        ..BridgePolicy::default()
+        ..default_policy()
     };
     start_with_policy(access, policy).await
 }
@@ -413,5 +427,40 @@ mod tests {
             )),
             spl_transport::TransportError::TlsAccessDenied
         ));
+    }
+
+    #[test]
+    fn streams_only_sse_and_exact_journal_archive_export_get() {
+        let req = |method: &str, target: &str| RequestHead {
+            method: method.into(),
+            target: target.into(),
+            headers: Vec::new(),
+        };
+        assert!(streams_journal_response(&req("GET", "/sse/events")));
+        assert!(streams_journal_response(&req(
+            "GET",
+            "/app/import/api/journal-archive/export"
+        )));
+        assert!(streams_journal_response(&req(
+            "GET",
+            "/app/import/api/journal-archive/export?id=prepared"
+        )));
+        assert!(!streams_journal_response(&req(
+            "HEAD",
+            "/app/import/api/journal-archive/export"
+        )));
+        assert!(!streams_journal_response(&req(
+            "POST",
+            "/app/import/api/journal-archive/export"
+        )));
+        assert!(!streams_journal_response(&req(
+            "GET",
+            "/app/import/api/journal-archive/export/extra"
+        )));
+        assert!(!streams_journal_response(&req(
+            "GET",
+            "/app/import/api/journal-archive/preview"
+        )));
+        assert!(!streams_journal_response(&req("GET", "/")));
     }
 }
