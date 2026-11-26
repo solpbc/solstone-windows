@@ -12,6 +12,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Fixed
 
+- screen video could turn blocky or blurry when what's on screen changed, or grow much larger than needed on some PCs when the screen was still. the solstone app now keeps video quality steady and lets file size follow what's changing on screen, so text stays readable and still screens stay small.
 - when screen and audio are off, or you pause from the tray menu, the solstone app keeps checking in with your journal while this PC is unlocked so "open journal" stays available when your journal is reachable. before this PC reaches your journal, the home page now shows "connecting…" instead of "connected" or "waiting to sync", and if the app needs a restart, screen and audio no longer stay listed as "on" in your journal.
 - on a paired PC where you haven't added the solstone extension yet, the browsers tile on the home page now says "ready to set up", with buttons on its page to add it, and switches to "on" once the extension connects. once browser pages have come in, browsers stays "on" or "paused" on the home page and in your journal even when your browser windows are closed, and still shows "needs attention" while paused if there's no room for more browser pages or waiting pages can't reach your journal.
 

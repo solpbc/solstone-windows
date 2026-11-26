@@ -24,9 +24,10 @@ mod imp {
     use observer_segment::DEFAULT_SEGMENT_SECS;
     use windows::core::{Interface, GUID, HRESULT, PCWSTR, VARIANT};
     use windows::Win32::Media::MediaFoundation::{
-        eAVEncH264VProfile_High, CODECAPI_AVEncMPVGOPSize, ICodecAPI, IMFAttributes, IMFMediaType,
-        IMFSinkWriter, MFCreateAttributes, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample,
-        MFCreateSinkWriterFromURL, MFMediaType_Video, MFShutdown, MFStartup,
+        eAVEncCommonRateControlMode_Quality, eAVEncH264VProfile_High, CODECAPI_AVEncCommonQuality,
+        CODECAPI_AVEncCommonRateControlMode, CODECAPI_AVEncMPVGOPSize, ICodecAPI, IMFAttributes,
+        IMFMediaType, IMFSinkWriter, MFCreateAttributes, MFCreateMediaType, MFCreateMemoryBuffer,
+        MFCreateSample, MFCreateSinkWriterFromURL, MFMediaType_Video, MFShutdown, MFStartup,
         MFTranscodeContainerType_MPEG4, MFVideoFormat_H264, MFVideoFormat_NV12,
         MFVideoInterlace_Progressive, MFSTARTUP_FULL, MF_E_DXGI_DEVICE_NOT_INITIALIZED,
         MF_E_DXGI_NEW_VIDEO_DEVICE, MF_E_HW_MFT_FAILED_START_STREAMING, MF_E_NEW_VIDEO_DEVICE,
@@ -528,21 +529,32 @@ mod imp {
             })?
         };
         let input_type = input_media_type(&segment.config)?;
+        // Pass quality-based VBR and GOP through SetInputMediaType's
+        // pEncodingParameters so MFTs that read static properties during
+        // initialization (including Microsoft's software H.264 encoder) leave
+        // default CBR. Fall back to None if an MFT rejects encoding parameters
+        // so stream open never fails.
+        let enc_params = encoding_parameters(&segment.config).ok();
         unsafe {
-            writer
-                .SetInputMediaType(stream_index, &input_type, None)
-                .map_err(|error| {
-                    windows_error(
-                        EncoderErrorKind::OpenFailed,
-                        "IMFSinkWriter::SetInputMediaType",
-                        error,
-                    )
-                })?;
+            let set_input = match enc_params.as_ref() {
+                Some(params) => writer
+                    .SetInputMediaType(stream_index, &input_type, params)
+                    .or_else(|_| writer.SetInputMediaType(stream_index, &input_type, None)),
+                None => writer.SetInputMediaType(stream_index, &input_type, None),
+            };
+            set_input.map_err(|error| {
+                windows_error(
+                    EncoderErrorKind::OpenFailed,
+                    "IMFSinkWriter::SetInputMediaType",
+                    error,
+                )
+            })?;
         }
 
-        // MS Learn: CODECAPI_AVEncMPVGOPSize through GetServiceForStream/ICodecAPI.
-        // Some MFTs reject GOP settings; this is best-effort and must not fail the stream.
-        let _ = set_gop_size_best_effort(&writer, stream_index, segment.config.gop_size);
+        // Also apply rate-control, quality, and GOP through ICodecAPI for MFTs
+        // that accept them after SetInputMediaType. Each property is
+        // best-effort and must not fail the stream.
+        apply_codec_api_best_effort(&writer, stream_index, &segment.config);
 
         unsafe {
             writer.BeginWriting().map_err(|error| {
@@ -787,35 +799,62 @@ mod imp {
         Ok(())
     }
 
-    fn set_gop_size_best_effort(
-        writer: &IMFSinkWriter,
-        stream_index: u32,
-        gop_size: u32,
-    ) -> Result<(), EncoderError> {
-        let mut raw = ptr::null_mut();
+    fn encoding_parameters(config: &EncoderConfig) -> Result<IMFAttributes, EncoderError> {
+        let attrs = create_attributes(3)?;
         unsafe {
-            writer
-                .GetServiceForStream(stream_index, &GUID_NULL, &ICodecAPI::IID, &mut raw)
-                .map_err(|error| {
-                    windows_error(
-                        EncoderErrorKind::OpenFailed,
-                        "GetServiceForStream(ICodecAPI)",
-                        error,
+            if config.quality_vbr {
+                attrs
+                    .SetUINT32(
+                        &CODECAPI_AVEncCommonRateControlMode,
+                        eAVEncCommonRateControlMode_Quality.0 as u32,
                     )
-                })?;
-            let codec = ICodecAPI::from_raw(raw as _);
-            let value = VARIANT::from(gop_size);
-            codec
-                .SetValue(&CODECAPI_AVEncMPVGOPSize, &value)
+                    .map_err(|error| {
+                        windows_error(
+                            EncoderErrorKind::OpenFailed,
+                            "set rate control mode parameter",
+                            error,
+                        )
+                    })?;
+                attrs
+                    .SetUINT32(&CODECAPI_AVEncCommonQuality, config.quality)
+                    .map_err(|error| {
+                        windows_error(EncoderErrorKind::OpenFailed, "set quality parameter", error)
+                    })?;
+            }
+            attrs
+                .SetUINT32(&CODECAPI_AVEncMPVGOPSize, config.gop_size)
                 .map_err(|error| {
-                    windows_error(
-                        EncoderErrorKind::OpenFailed,
-                        "ICodecAPI::SetValue(GOP)",
-                        error,
-                    )
+                    windows_error(EncoderErrorKind::OpenFailed, "set GOP parameter", error)
                 })?;
         }
-        Ok(())
+        Ok(attrs)
+    }
+
+    fn apply_codec_api_best_effort(
+        writer: &IMFSinkWriter,
+        stream_index: u32,
+        config: &EncoderConfig,
+    ) {
+        let mut raw = ptr::null_mut();
+        unsafe {
+            if writer
+                .GetServiceForStream(stream_index, &GUID_NULL, &ICodecAPI::IID, &mut raw)
+                .is_err()
+                || raw.is_null()
+            {
+                return;
+            }
+            let codec = ICodecAPI::from_raw(raw as _);
+            if config.quality_vbr {
+                let _ = codec.SetValue(
+                    &CODECAPI_AVEncCommonRateControlMode,
+                    &VARIANT::from(eAVEncCommonRateControlMode_Quality.0 as u32),
+                );
+                let _ =
+                    codec.SetValue(&CODECAPI_AVEncCommonQuality, &VARIANT::from(config.quality));
+            }
+            let _ = codec.SetValue(&CODECAPI_AVEncMPVGOPSize, &VARIANT::from(config.gop_size));
+        }
     }
 
     fn create_attributes(initial_size: u32) -> Result<IMFAttributes, EncoderError> {
@@ -953,6 +992,104 @@ mod imp {
             assert_eq!(health.frames_consumed, 1);
             assert_eq!(health.frames_dropped, 1);
             drop(rx);
+        }
+
+        #[test]
+        fn encoding_parameters_carry_quality_vbr_and_gop() {
+            let _runtime = MfRuntime::new().expect("MF runtime");
+            let config = EncoderConfig::for_frame_size(1920, 1080);
+            let attrs = encoding_parameters(&config).expect("encoding parameters");
+            unsafe {
+                assert_eq!(
+                    attrs
+                        .GetUINT32(&CODECAPI_AVEncCommonRateControlMode)
+                        .expect("rate control mode"),
+                    eAVEncCommonRateControlMode_Quality.0 as u32
+                );
+                assert_eq!(
+                    attrs
+                        .GetUINT32(&CODECAPI_AVEncCommonQuality)
+                        .expect("quality"),
+                    config.quality
+                );
+                assert_eq!(
+                    attrs.GetUINT32(&CODECAPI_AVEncMPVGOPSize).expect("gop"),
+                    config.gop_size
+                );
+            }
+        }
+
+        #[test]
+        fn quality_vbr_encodes_and_finalizes_valid_mp4() {
+            struct TempDirGuard(PathBuf);
+            impl Drop for TempDirGuard {
+                fn drop(&mut self) {
+                    let _ = std::fs::remove_dir_all(&self.0);
+                }
+            }
+
+            let unique = format!(
+                "solstone-encode-test-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            let dir = std::env::temp_dir().join(unique);
+            std::fs::create_dir_all(&dir).unwrap();
+            let _guard = TempDirGuard(dir.clone());
+
+            let (width, height) = (640_u32, 360_u32);
+            let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+            for y in 0..height {
+                for x in 0..width {
+                    let stripe = if ((x / 8) + (y / 8)) % 2 == 0 {
+                        235_u8
+                    } else {
+                        24_u8
+                    };
+                    pixels.extend_from_slice(&[stripe, stripe, stripe, 255]);
+                }
+            }
+            let static_pixels: Arc<[u8]> = Arc::from(pixels);
+
+            let mut encoder = MfScreenEncoder::new();
+            encoder
+                .open(dir.to_str().unwrap(), width, height)
+                .expect("open encoder");
+            for seq in 0..3_u64 {
+                let frame = ScreenFrame {
+                    seq,
+                    arrival_100ns: (seq as i64) * 10_000_000,
+                    width,
+                    height,
+                    pixel_format: ScreenPixelFormat::Rgba8,
+                    pixels: Arc::clone(&static_pixels),
+                };
+                encoder.encode_frame(&frame).expect("encode frame");
+            }
+            encoder.finalize().expect("finalize segment");
+
+            let final_path = dir.join(SCREEN_FILE_NAME);
+            let partial_path = dir.join(format!("{SCREEN_FILE_NAME}{PARTIAL_SUFFIX}"));
+            assert!(final_path.exists(), "final MP4 should exist");
+            assert!(!partial_path.exists(), "partial marker should be renamed");
+            let bytes = std::fs::read(&final_path).unwrap();
+            assert!(
+                bytes.len() > 1024 && bytes.windows(4).any(|w| w == b"ftyp"),
+                "encoded file should be a non-empty MP4 (len={})",
+                bytes.len()
+            );
+            // Under 1 Mbps CBR at 1 fps, 3 frames of 640x360 would inflate to ~375 KB.
+            // Under quality-based VBR, 3 static frames stay well under 150 KB.
+            assert!(
+                bytes.len() < 150_000,
+                "static quality-VBR segment should not inflate like 1 Mbps CBR (len={})",
+                bytes.len()
+            );
+            assert_eq!(encoder.samples_written(), 3);
+            assert_eq!(encoder.last_error(), None);
         }
     }
 }

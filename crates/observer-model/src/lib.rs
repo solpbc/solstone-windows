@@ -369,6 +369,8 @@ pub struct EncoderConfig {
     pub width: u32,
     pub height: u32,
     pub bitrate: u32,
+    pub quality_vbr: bool,
+    pub quality: u32,
     pub frame_rate_num: u32,
     pub frame_rate_den: u32,
     pub pixel_aspect_num: u32,
@@ -388,6 +390,8 @@ impl EncoderConfig {
             width,
             height,
             bitrate: 1_000_000,
+            quality_vbr: true,
+            quality: 60,
             frame_rate_num: 1,
             frame_rate_den: 1,
             pixel_aspect_num: 1,
@@ -1393,6 +1397,8 @@ mod tests {
         assert_eq!(config.width, 1920);
         assert_eq!(config.height, 1080);
         assert_eq!(config.bitrate, 1_000_000);
+        assert!(config.quality_vbr);
+        assert_eq!(config.quality, 60);
         assert_eq!((config.frame_rate_num, config.frame_rate_den), (1, 1));
         assert_eq!((config.pixel_aspect_num, config.pixel_aspect_den), (1, 1));
         assert!(config.progressive);
