@@ -48,6 +48,7 @@ pub enum ExportOpenError {
 
 pub struct OpenedExportStream {
     pub status: u16,
+    pub content_length: Option<u64>,
     pub content_range: Option<String>,
     pub etag: Option<String>,
     pub transport: &'static str,
@@ -655,21 +656,23 @@ impl ExportTransferManager {
                 .map(|m| m.len())
                 .unwrap_or(0);
 
-            if part_len == params.size_bytes {
-                self.verify_and_finalize(generation, &params).await;
-                return;
-            }
-
-            let (range_header, if_range_header, requested_offset) =
-                if part_len > 0 && part_len < params.size_bytes {
-                    (
-                        Some(format!("bytes={part_len}-")),
-                        Some(params.etag.clone()),
-                        part_len,
-                    )
-                } else {
-                    (None, None, 0)
-                };
+            let is_full_partial = part_len == params.size_bytes && params.size_bytes > 0;
+            let (range_header, if_range_header, requested_offset) = if is_full_partial {
+                let last_byte = params.size_bytes - 1;
+                (
+                    Some(format!("bytes={last_byte}-{last_byte}")),
+                    Some(params.etag.clone()),
+                    last_byte,
+                )
+            } else if part_len > 0 && part_len < params.size_bytes {
+                (
+                    Some(format!("bytes={part_len}-")),
+                    Some(params.etag.clone()),
+                    part_len,
+                )
+            } else {
+                (None, None, 0)
+            };
 
             let opened = tokio::select! {
                 res = self.inner.opener.open(
@@ -707,19 +710,109 @@ impl ExportTransferManager {
                     return;
                 }
                 Err(ExportOpenError::TransportUnavailable) => {
-                    self.mark_paused_if_current(generation, "disconnected", None);
+                    self.mark_paused_if_current(generation, "disconnected", Some(part_len));
                     return;
                 }
             };
 
             if self.record_transport_and_check_relay_pause(generation, stream.transport) {
-                self.mark_paused_if_current(generation, "relay_switched", None);
+                self.mark_paused_if_current(generation, "relay_switched", Some(part_len));
                 return;
             }
 
             match stream.status {
-                200 => {}
+                200 => {
+                    if is_full_partial {
+                        let raw_etag = stream
+                            .etag
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|val| !val.is_empty());
+                        let has_validator = raw_etag.is_some();
+                        let length_matches = stream
+                            .content_length
+                            .is_none_or(|len| len == params.size_bytes);
+                        if has_validator || !length_matches {
+                            let validator_matches = has_validator
+                                && matches_strong_etag(raw_etag, &params.etag)
+                                && length_matches;
+                            // Cancel the Range-ignoring 200 body at headers without
+                            // downloading a second full copy of the archive.
+                            drop(stream);
+                            if validator_matches {
+                                self.verify_and_finalize(generation, &params).await;
+                            } else {
+                                self.fail_and_cleanup(generation, "export_copy_unconfirmed");
+                            }
+                            return;
+                        }
+                        // Absent ETag with matching length: fall through to stream the live
+                        // 200 body from byte 0 and verify SHA-256 before publish.
+                    }
+                }
                 206 => {
+                    if is_full_partial {
+                        if !matches_content_range(
+                            stream.content_range.as_deref(),
+                            requested_offset,
+                            params.size_bytes,
+                        ) || !matches_strong_etag(stream.etag.as_deref(), &params.etag)
+                        {
+                            drop(stream);
+                            self.fail_and_cleanup(generation, "export_copy_unconfirmed");
+                            return;
+                        }
+                        let mut probe_bytes: usize = 0;
+                        loop {
+                            let next = tokio::select! {
+                                biased;
+                                _ = wait_control_stop(&mut control_rx) => {
+                                    drop(stream);
+                                    match *control_rx.borrow() {
+                                        ControlSignal::Cancel => {
+                                            let _ = fs::remove_file(&params.part_path);
+                                        }
+                                        ControlSignal::PauseOwner => {
+                                            self.mark_paused_if_current(generation, "owner", Some(part_len));
+                                        }
+                                        ControlSignal::PauseSleep => {
+                                            self.mark_paused_if_current(generation, "sleep", Some(part_len));
+                                        }
+                                        ControlSignal::Run => {}
+                                    }
+                                    return;
+                                }
+                                chunk = stream.body.next_chunk() => chunk,
+                            };
+                            match next {
+                                Ok(Some(bytes)) => {
+                                    probe_bytes = probe_bytes.saturating_add(bytes.len());
+                                    if probe_bytes > 1 {
+                                        drop(stream);
+                                        self.fail_and_cleanup(generation, "checksum_mismatch");
+                                        return;
+                                    }
+                                }
+                                Ok(None) => break,
+                                Err(()) => {
+                                    drop(stream);
+                                    self.mark_paused_if_current(
+                                        generation,
+                                        "disconnected",
+                                        Some(part_len),
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        drop(stream);
+                        if probe_bytes != 1 {
+                            self.mark_paused_if_current(generation, "disconnected", Some(part_len));
+                            return;
+                        }
+                        self.verify_and_finalize(generation, &params).await;
+                        return;
+                    }
                     if !matches_content_range(
                         stream.content_range.as_deref(),
                         requested_offset,
@@ -740,6 +833,10 @@ impl ExportTransferManager {
                     }
                 }
                 416 => {
+                    if is_full_partial {
+                        self.fail_and_cleanup(generation, "export_copy_unconfirmed");
+                        return;
+                    }
                     if !reset_and_retry_once {
                         reset_and_retry_once = true;
                         let _ = fs::remove_file(&params.part_path);
@@ -1459,10 +1556,12 @@ impl ExportStreamOpener for BridgeExportOpener {
                 2 => "relay",
                 _ => "local",
             };
+            let content_length = parsed.content_length;
             let content_range = parsed.content_range.clone();
             let etag = parsed.etag.clone();
             Ok(OpenedExportStream {
                 status,
+                content_length,
                 content_range,
                 etag,
                 transport,
@@ -1526,6 +1625,7 @@ impl ExportByteStream for BridgeHttpBodyStream {
 
 struct ParsedHttpResponse<R> {
     status: u16,
+    content_length: Option<u64>,
     content_range: Option<String>,
     etag: Option<String>,
     body_reader: HttpBodyReader<R>,
@@ -1598,6 +1698,7 @@ async fn read_http_response_head<R: AsyncRead + Unpin>(
     };
     Ok(ParsedHttpResponse {
         status,
+        content_length,
         content_range,
         etag,
         body_reader: HttpBodyReader {
@@ -2047,6 +2148,7 @@ mod tests {
 
         let opener = Arc::new(ScriptedOpener::new(vec![Ok(OpenedExportStream {
             status: 200,
+            content_length: None,
             content_range: None,
             etag: Some(etag.clone()),
             transport: "local",
@@ -2108,6 +2210,7 @@ mod tests {
         let opener = Arc::new(ScriptedOpener::new(vec![
             Ok(OpenedExportStream {
                 status: 200,
+                content_length: None,
                 content_range: None,
                 etag: Some(etag.clone()),
                 transport: "local",
@@ -2117,6 +2220,7 @@ mod tests {
             }),
             Ok(OpenedExportStream {
                 status: 206,
+                content_length: None,
                 content_range: Some(format!(
                     "bytes {split}-{}/{}",
                     payload.len() - 1,
@@ -2130,6 +2234,7 @@ mod tests {
             }),
             Ok(OpenedExportStream {
                 status: 206,
+                content_length: None,
                 content_range: Some(format!(
                     "bytes {split}-{}/{}",
                     payload.len() - 1,
@@ -2188,6 +2293,7 @@ mod tests {
 
         let opener = Arc::new(ScriptedOpener::new(vec![Ok(OpenedExportStream {
             status: 410,
+            content_length: None,
             content_range: None,
             etag: None,
             transport: "local",
@@ -2252,6 +2358,7 @@ mod tests {
         let opener = Arc::new(ScriptedOpener::new(vec![
             Ok(OpenedExportStream {
                 status: 200,
+                content_length: None,
                 content_range: None,
                 etag: Some(etag.clone()),
                 transport: "local",
@@ -2262,6 +2369,7 @@ mod tests {
             // Bogus 206 carrying a mismatched ETag must NOT be appended.
             Ok(OpenedExportStream {
                 status: 206,
+                content_length: None,
                 content_range: Some(format!(
                     "bytes {split}-{}/{}",
                     payload.len() - 1,
@@ -2276,6 +2384,7 @@ mod tests {
             // Fresh 200 retry succeeds cleanly.
             Ok(OpenedExportStream {
                 status: 200,
+                content_length: None,
                 content_range: None,
                 etag: Some(etag.clone()),
                 transport: "local",
@@ -2383,6 +2492,7 @@ mod tests {
         let opener = Arc::new(ScriptedOpener::new(vec![
             Ok(OpenedExportStream {
                 status: 200,
+                content_length: None,
                 content_range: None,
                 etag: Some(etag_a.clone()),
                 transport: "local",
@@ -2392,6 +2502,7 @@ mod tests {
             }),
             Ok(OpenedExportStream {
                 status: 200,
+                content_length: None,
                 content_range: None,
                 etag: Some(etag_b.clone()),
                 transport: "local",
@@ -2505,6 +2616,7 @@ mod tests {
             if prior_cancel {
                 responses.push(Ok(OpenedExportStream {
                     status: 200,
+                    content_length: None,
                     content_range: None,
                     etag: Some(etag.clone()),
                     transport: "local",
@@ -2515,6 +2627,7 @@ mod tests {
             }
             responses.push(Ok(OpenedExportStream {
                 status: 200,
+                content_length: None,
                 content_range: None,
                 etag: Some(etag.clone()),
                 transport: "local",
@@ -2542,6 +2655,7 @@ mod tests {
 
             let daemon2_opener = Arc::new(ScriptedOpener::new(vec![Ok(OpenedExportStream {
                 status: 206,
+                content_length: None,
                 content_range: Some(format!(
                     "bytes {split}-{}/{}",
                     payload.len() - 1,
@@ -2578,6 +2692,335 @@ mod tests {
                 (Some(format!("bytes={split}-")), Some(etag.clone())),
                 "case={case_label}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn recovered_full_partial_probes_live_journal_eligibility_and_preserves_destination() {
+        use std::sync::atomic::AtomicU64;
+
+        struct CountingStream {
+            chunks: VecDeque<Result<Vec<u8>, ()>>,
+            body_chunks_read: Arc<AtomicU64>,
+            body_bytes_read: Arc<AtomicU64>,
+        }
+        impl ExportByteStream for CountingStream {
+            fn next_chunk<'a>(&'a mut self) -> BoxFuture<'a, Result<Option<Vec<u8>>, ()>> {
+                Box::pin(async move {
+                    match self.chunks.pop_front() {
+                        Some(Ok(bytes)) => {
+                            self.body_chunks_read.fetch_add(1, Ordering::SeqCst);
+                            self.body_bytes_read
+                                .fetch_add(bytes.len() as u64, Ordering::SeqCst);
+                            Ok(Some(bytes))
+                        }
+                        Some(Err(())) => Err(()),
+                        None => Ok(None),
+                    }
+                })
+            }
+
+            fn read_bounded<'a>(&'a mut self, max_bytes: usize) -> BoxFuture<'a, Vec<u8>> {
+                Box::pin(async move {
+                    let mut out = Vec::new();
+                    while out.len() < max_bytes {
+                        match self.chunks.pop_front() {
+                            Some(Ok(bytes)) => {
+                                let take = bytes.len().min(max_bytes - out.len());
+                                out.extend_from_slice(&bytes[..take]);
+                            }
+                            _ => break,
+                        }
+                    }
+                    out
+                })
+            }
+        }
+
+        let payload: Vec<u8> = (0usize..(4 * 1024 * 1024))
+            .map(|i| ((i.wrapping_mul(37) + 19) % 251) as u8)
+            .collect();
+        let sha = observer_log::sha256_hex(&payload);
+        let etag = format!("\"{sha}\"");
+        let sentinel = b"existing-owner-zip-must-be-preserved".to_vec();
+        let last_byte = payload.len() - 1;
+        let expected_range = format!("bytes={last_byte}-{last_byte}");
+
+        let make_params = |export_id: &str, dest: &Path| StartExportParams {
+            request_id: export_id.to_owned(),
+            export_id: export_id.to_owned(),
+            download_path: format!("/app/export/api/ready/{export_id}/download"),
+            filename: format!("{export_id}.zip"),
+            size_bytes: payload.len() as u64,
+            sha256: sha.clone(),
+            etag: etag.clone(),
+            destination_path: dest.to_path_buf(),
+        };
+
+        // 1. 206 1-byte matching validator -> verifies local partial & publishes without redownload.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let export_id = "exp_win_full_206";
+            let dest = tmp.path().join("export-206.zip");
+            fs::write(&dest, &sentinel).unwrap();
+            let part = tmp
+                .path()
+                .join(format!(".solstone-export-{export_id}-1.part"));
+            fs::write(&part, &payload).unwrap();
+
+            let bytes_read = Arc::new(AtomicU64::new(0));
+            let opener = Arc::new(ScriptedOpener::new(vec![Ok(OpenedExportStream {
+                status: 206,
+                content_length: Some(1),
+                content_range: Some(format!("bytes {last_byte}-{last_byte}/{}", payload.len())),
+                etag: Some(etag.clone()),
+                transport: "local",
+                body: Box::new(CountingStream {
+                    chunks: VecDeque::from(vec![Ok(vec![payload[last_byte]])]),
+                    body_chunks_read: Arc::new(AtomicU64::new(0)),
+                    body_bytes_read: Arc::clone(&bytes_read),
+                }),
+            })]));
+            let manager = ExportTransferManager::new(
+                opener.clone(),
+                Arc::new(|_| Some(2 * 1024 * 1024)),
+                Arc::new(|from, to| fs::rename(from, to)),
+                Arc::new(|| None),
+            );
+            let _ = manager.start(make_params(export_id, &dest)).await;
+            let done = wait_phase(&manager, export_id, "saved").await;
+            assert!(done.verified);
+            assert_eq!(fs::read(&dest).unwrap(), payload);
+            assert_eq!(bytes_read.load(Ordering::SeqCst), 1);
+            assert!(!has_any_part_file(tmp.path(), export_id));
+            let seen = opener.seen_ranges.lock().unwrap().clone();
+            assert_eq!(
+                seen,
+                vec![(Some(expected_range.clone()), Some(etag.clone()))]
+            );
+        }
+
+        // 2. 410 erasure & 410 expired -> removes .part, preserves original destination.
+        for (export_id, expected_code) in [
+            ("exp_win_410_erased", "export_invalidated_by_erasure"),
+            ("exp_win_410_expired", "export_expired"),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let dest = tmp.path().join(format!("{export_id}.zip"));
+            fs::write(&dest, &sentinel).unwrap();
+            let part = tmp
+                .path()
+                .join(format!(".solstone-export-{export_id}-1.part"));
+            fs::write(&part, &payload).unwrap();
+
+            let opener = Arc::new(ScriptedOpener::new(vec![Ok(OpenedExportStream {
+                status: 410,
+                content_length: None,
+                content_range: None,
+                etag: None,
+                transport: "local",
+                body: Box::new(ScriptedStream {
+                    chunks: VecDeque::from(vec![Ok(
+                        format!(r#"{{"code":"{expected_code}"}}"#).into_bytes()
+                    )]),
+                }),
+            })]));
+            let manager = ExportTransferManager::new(
+                opener,
+                Arc::new(|_| Some(2 * 1024 * 1024)),
+                Arc::new(|from, to| fs::rename(from, to)),
+                Arc::new(|| None),
+            );
+            let _ = manager.start(make_params(export_id, &dest)).await;
+            let err = wait_phase(&manager, export_id, "error").await;
+            assert_eq!(err.error_code.as_deref(), Some(expected_code));
+            assert_eq!(fs::read(&dest).unwrap(), sentinel);
+            assert!(!has_any_part_file(tmp.path(), export_id));
+        }
+
+        // 3. Range-ignoring 200 with MATCHING strong ETag: cancels at headers (0 body bytes read)
+        //    and validates local partial (valid -> saved; corrupt -> checksum_mismatch preserving dest).
+        for corrupt_local in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let export_id = if corrupt_local {
+                "exp_win_200_corrupt"
+            } else {
+                "exp_win_200_match"
+            };
+            let dest = tmp.path().join(format!("{export_id}.zip"));
+            fs::write(&dest, &sentinel).unwrap();
+            let part = tmp
+                .path()
+                .join(format!(".solstone-export-{export_id}-1.part"));
+            let mut local_bytes = payload.clone();
+            if corrupt_local {
+                local_bytes[0] ^= 0xFF;
+            }
+            fs::write(&part, &local_bytes).unwrap();
+
+            let chunks_read = Arc::new(AtomicU64::new(0));
+            let bytes_read = Arc::new(AtomicU64::new(0));
+            let opener = Arc::new(ScriptedOpener::new(vec![Ok(OpenedExportStream {
+                status: 200,
+                content_length: Some(payload.len() as u64),
+                content_range: None,
+                etag: Some(etag.clone()),
+                transport: "local",
+                body: Box::new(CountingStream {
+                    chunks: VecDeque::from(vec![Ok(payload.clone())]),
+                    body_chunks_read: Arc::clone(&chunks_read),
+                    body_bytes_read: Arc::clone(&bytes_read),
+                }),
+            })]));
+            let manager = ExportTransferManager::new(
+                opener,
+                Arc::new(|_| Some(2 * 1024 * 1024)),
+                Arc::new(|from, to| fs::rename(from, to)),
+                Arc::new(|| None),
+            );
+            let _ = manager.start(make_params(export_id, &dest)).await;
+            if corrupt_local {
+                let err = wait_phase(&manager, export_id, "error").await;
+                assert_eq!(err.error_code.as_deref(), Some("checksum_mismatch"));
+                assert_eq!(fs::read(&dest).unwrap(), sentinel);
+            } else {
+                let done = wait_phase(&manager, export_id, "saved").await;
+                assert!(done.verified);
+                assert_eq!(fs::read(&dest).unwrap(), payload);
+            }
+            assert_eq!(chunks_read.load(Ordering::SeqCst), 0);
+            assert_eq!(bytes_read.load(Ordering::SeqCst), 0);
+            assert!(!has_any_part_file(tmp.path(), export_id));
+        }
+
+        // 4. Range-ignoring 200 with CHANGED strong ETag, WEAK ETag, or mismatched length ->
+        //    0 body bytes read, fails export_copy_unconfirmed, preserves destination.
+        for (export_id, server_etag, server_len) in [
+            (
+                "exp_win_200_changed",
+                Some("\"different-etag\"".to_owned()),
+                Some(payload.len() as u64),
+            ),
+            (
+                "exp_win_200_weak",
+                Some(format!("W/{etag}")),
+                Some(payload.len() as u64),
+            ),
+            (
+                "exp_win_200_badlen",
+                Some(etag.clone()),
+                Some((payload.len() + 17) as u64),
+            ),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let dest = tmp.path().join(format!("{export_id}.zip"));
+            fs::write(&dest, &sentinel).unwrap();
+            let part = tmp
+                .path()
+                .join(format!(".solstone-export-{export_id}-1.part"));
+            fs::write(&part, &payload).unwrap();
+
+            let chunks_read = Arc::new(AtomicU64::new(0));
+            let bytes_read = Arc::new(AtomicU64::new(0));
+            let opener = Arc::new(ScriptedOpener::new(vec![Ok(OpenedExportStream {
+                status: 200,
+                content_length: server_len,
+                content_range: None,
+                etag: server_etag,
+                transport: "local",
+                body: Box::new(CountingStream {
+                    chunks: VecDeque::from(vec![Ok(payload.clone())]),
+                    body_chunks_read: Arc::clone(&chunks_read),
+                    body_bytes_read: Arc::clone(&bytes_read),
+                }),
+            })]));
+            let manager = ExportTransferManager::new(
+                opener,
+                Arc::new(|_| Some(2 * 1024 * 1024)),
+                Arc::new(|from, to| fs::rename(from, to)),
+                Arc::new(|| None),
+            );
+            let _ = manager.start(make_params(export_id, &dest)).await;
+            let err = wait_phase(&manager, export_id, "error").await;
+            assert_eq!(err.error_code.as_deref(), Some("export_copy_unconfirmed"));
+            assert_eq!(chunks_read.load(Ordering::SeqCst), 0);
+            assert_eq!(bytes_read.load(Ordering::SeqCst), 0);
+            assert_eq!(fs::read(&dest).unwrap(), sentinel);
+            assert!(!has_any_part_file(tmp.path(), export_id));
+        }
+
+        // 5. Range-ignoring 200 with ABSENT ETag + stale partial -> streams fresh 200 & saves.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let export_id = "exp_win_200_absent";
+            let dest = tmp.path().join(format!("{export_id}.zip"));
+            fs::write(&dest, &sentinel).unwrap();
+            let part = tmp
+                .path()
+                .join(format!(".solstone-export-{export_id}-1.part"));
+            let mut stale = payload.clone();
+            stale[0] ^= 0xAA;
+            fs::write(&part, &stale).unwrap();
+
+            let bytes_read = Arc::new(AtomicU64::new(0));
+            let opener = Arc::new(ScriptedOpener::new(vec![Ok(OpenedExportStream {
+                status: 200,
+                content_length: Some(payload.len() as u64),
+                content_range: None,
+                etag: None,
+                transport: "local",
+                body: Box::new(CountingStream {
+                    chunks: VecDeque::from(vec![Ok(payload.clone())]),
+                    body_chunks_read: Arc::new(AtomicU64::new(0)),
+                    body_bytes_read: Arc::clone(&bytes_read),
+                }),
+            })]));
+            let manager = ExportTransferManager::new(
+                opener,
+                Arc::new(|_| Some(2 * 1024 * 1024)),
+                Arc::new(|from, to| fs::rename(from, to)),
+                Arc::new(|| None),
+            );
+            let _ = manager.start(make_params(export_id, &dest)).await;
+            let done = wait_phase(&manager, export_id, "saved").await;
+            assert!(done.verified);
+            assert_eq!(bytes_read.load(Ordering::SeqCst), payload.len() as u64);
+            assert_eq!(fs::read(&dest).unwrap(), payload);
+            assert!(!has_any_part_file(tmp.path(), export_id));
+        }
+
+        // 6. 206 probe with mismatched/weak ETag -> fails export_copy_unconfirmed, preserves dest.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let export_id = "exp_win_206_badetag";
+            let dest = tmp.path().join(format!("{export_id}.zip"));
+            fs::write(&dest, &sentinel).unwrap();
+            let part = tmp
+                .path()
+                .join(format!(".solstone-export-{export_id}-1.part"));
+            fs::write(&part, &payload).unwrap();
+
+            let opener = Arc::new(ScriptedOpener::new(vec![Ok(OpenedExportStream {
+                status: 206,
+                content_length: Some(1),
+                content_range: Some(format!("bytes {last_byte}-{last_byte}/{}", payload.len())),
+                etag: Some("\"other-etag\"".to_owned()),
+                transport: "local",
+                body: Box::new(ScriptedStream {
+                    chunks: VecDeque::from(vec![Ok(vec![payload[last_byte]])]),
+                }),
+            })]));
+            let manager = ExportTransferManager::new(
+                opener,
+                Arc::new(|_| Some(2 * 1024 * 1024)),
+                Arc::new(|from, to| fs::rename(from, to)),
+                Arc::new(|| None),
+            );
+            let _ = manager.start(make_params(export_id, &dest)).await;
+            let err = wait_phase(&manager, export_id, "error").await;
+            assert_eq!(err.error_code.as_deref(), Some("export_copy_unconfirmed"));
+            assert_eq!(fs::read(&dest).unwrap(), sentinel);
+            assert!(!has_any_part_file(tmp.path(), export_id));
         }
     }
 }
