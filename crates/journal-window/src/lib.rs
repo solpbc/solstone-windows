@@ -7,6 +7,7 @@ use serde_json::Value;
 use url::Url;
 
 pub mod auth_host;
+pub mod export_host;
 pub mod import_host;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

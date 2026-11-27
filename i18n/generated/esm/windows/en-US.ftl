@@ -243,6 +243,8 @@ m77696e646f77732e6578636c7573696f6e732e61637469766974797265646163746564 = { $i18
    *[other] { $display } frames kept out of your journal this session · { $more } more reached your journal with an excluded window blacked out
 }
 
+m77696e646f77732e6578706f72742e736176696e6766726f6d6a6f75726e616c = saving a copy from your journal.
+
 m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74 = { $i18nCategory ->
     [one] { $display } needs attention
    *[other] { $display } need attention

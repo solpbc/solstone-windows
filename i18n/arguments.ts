@@ -295,6 +295,7 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
       "string"
     ]
   ],
+  "windows.export.savingfromjournal": [],
   "windows.health.attentioncount": [
     [
       "count",

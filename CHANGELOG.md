@@ -6,13 +6,17 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- when one piece of a large file stops sending during import, the app checks what your journal received. if that piece didn't arrive, the app can try a smaller one.
+- once your journal supports it, exporting a copy of your journal in the journal window now lets you pick where to save it first, streams it straight to disk while asking windows not to put your PC to sleep on its own, and checks the file before finishing. if your connection drops, your PC goes to sleep, or you pause the save, you can resume where it left off. when it's done, you can show the saved copy in File Explorer.
 
 ### Changed
 
-- exporting your journal from the journal window now streams the download as it arrives instead of holding the whole file in memory.
+- on older journals, exporting your journal from the journal window now streams the download as it arrives instead of holding the whole file in memory.
+
+### Fixed
+
+- when one piece of a large file stops sending during import, the app checks what your journal received. if that piece didn't arrive, the app can try a smaller one.
 
 ## [2.0.60] - 2026-11-26
 

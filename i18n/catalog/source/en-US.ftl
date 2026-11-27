@@ -1547,3 +1547,5 @@ windows.import.errorchecksum = the file didn't arrive intact. try sending it aga
 windows.import.errorexpired = this unfinished import is no longer open in your journal. try again to start over.
 
 windows.import.errorunreadable = the waiting copy on this PC could no longer be read. remove it and choose the file again.
+
+windows.export.savingfromjournal = saving a copy from your journal.

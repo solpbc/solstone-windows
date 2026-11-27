@@ -752,6 +752,12 @@ const MESSAGES = {
       { name: "more", type: "string", min: null, max: null, numericStyle: "ungrouped" },
     ],
   },
+  "windows.export.savingfromjournal": {
+    resourceKey: "m77696e646f77732e6578706f72742e736176696e6766726f6d6a6f75726e616c",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
   "windows.health.attentioncount": {
     resourceKey: "m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74",
     formatIntent: "cardinal",

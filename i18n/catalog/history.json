@@ -1794,6 +1794,18 @@
       }
     },
     {
+      "id": "windows.export.savingfromjournal",
+      "resource": "m77696e646f77732e6578706f72742e736176696e6766726f6d6a6f75726e616c",
+      "namespace": "windows.export",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
       "id": "windows.health.attentioncount",
       "resource": "m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74",
       "namespace": "windows.health",

@@ -3682,6 +3682,13 @@
       ]
     },
     {
+      "id": "windows.export.savingfromjournal",
+      "source": "71cde9992cf1a357f5a91f3e9628ce5b0c0de7127a4522dca4d78acccff43865",
+      "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
+      "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+      "locales": []
+    },
+    {
       "id": "windows.health.attentioncount",
       "source": "ba92d30dc5f0958b4992d92488fb09fb5e4b044c175630819b149adecb006f35",
       "contract": "d47ec32665785fdbc476c9b03fc91c4ac16d1a4edfcc8730fd1fc407ad13c575",

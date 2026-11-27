@@ -301,7 +301,9 @@ pub async fn pair_session<S: crate::windows::JournalSurface>(
 
     let close_journal_window = {
         let surface_ref = surface;
+        let export_manager = std::sync::Arc::clone(&state.export_manager);
         move || {
+            export_manager.cancel_for_unpair();
             surface_ref.close_journal();
             async move {}
         }
@@ -404,6 +406,7 @@ pub async fn answer_pairing_surface<S: crate::windows::JournalSurface>(
         if let Some(s_bridge) = s_bridge {
             s_bridge.handle.shutdown_and_wait().await;
         }
+        state.export_manager.cancel_for_unpair();
         surface.close_journal();
     }
 
@@ -1395,7 +1398,9 @@ pub async fn connect_native_handoff_surface<S: crate::windows::JournalSurface>(
     let _journal_open_guard = state.journal_open_lock.lock().await;
     let close_journal_window = {
         let surface_ref = surface;
+        let export_manager = std::sync::Arc::clone(&state.export_manager);
         move || {
+            export_manager.cancel_for_unpair();
             surface_ref.close_journal();
             async move {}
         }
@@ -1495,7 +1500,9 @@ pub async fn connect_found_journal_surface<S: crate::windows::JournalSurface>(
     let _journal_open_guard = state.journal_open_lock.lock().await;
     let close_journal_window = {
         let surface_ref = surface;
+        let export_manager = std::sync::Arc::clone(&state.export_manager);
         move || {
+            export_manager.cancel_for_unpair();
             surface_ref.close_journal();
             async move {}
         }

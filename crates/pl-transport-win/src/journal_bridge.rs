@@ -155,8 +155,23 @@ pub async fn start_observed(
 
 const JOURNAL_ARCHIVE_EXPORT_PATH: &str = "/app/import/api/journal-archive/export";
 
+pub fn is_export_download_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/app/export/api/ready/") else {
+        return false;
+    };
+    let Some(export_id) = rest.strip_suffix("/download") else {
+        return false;
+    };
+    !export_id.is_empty()
+        && export_id.len() <= 128
+        && export_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
 fn streams_journal_response(head: &RequestHead) -> bool {
-    head.method == "GET" && matches!(head.path(), "/sse/events" | JOURNAL_ARCHIVE_EXPORT_PATH)
+    (head.method == "GET" && matches!(head.path(), "/sse/events" | JOURNAL_ARCHIVE_EXPORT_PATH))
+        || (matches!(head.method.as_str(), "GET" | "HEAD") && is_export_download_path(head.path()))
 }
 
 fn default_policy() -> BridgePolicy {
@@ -444,6 +459,22 @@ mod tests {
         assert!(streams_journal_response(&req(
             "GET",
             "/app/import/api/journal-archive/export?id=prepared"
+        )));
+        assert!(streams_journal_response(&req(
+            "GET",
+            "/app/export/api/ready/exp_20261126_abc-1/download"
+        )));
+        assert!(streams_journal_response(&req(
+            "HEAD",
+            "/app/export/api/ready/exp_20261126_abc-1/download"
+        )));
+        assert!(!streams_journal_response(&req(
+            "POST",
+            "/app/export/api/ready/exp_20261126_abc-1/download"
+        )));
+        assert!(!streams_journal_response(&req(
+            "GET",
+            "/app/export/api/ready/../download"
         )));
         assert!(!streams_journal_response(&req(
             "HEAD",

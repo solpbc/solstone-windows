@@ -3731,6 +3731,36 @@
     {
       "bundle": "windows",
       "call_contract": {
+        "arguments": [],
+        "bundle": "windows",
+        "entry": "render(locale, MessageId, named_args)",
+        "enum_argument": null,
+        "format_passes": 1,
+        "gettext_lookup_key": "windows.export.savingfromjournal\u0004m77696e646f77732e6578706f72742e736176696e6766726f6d6a6f75726e616c",
+        "gettext_plural_key": "m77696e646f77732e6578706f72742e736176696e6766726f6d6a6f75726e616c_plural",
+        "gettext_unsigned_quantity": null,
+        "locale": "en-US",
+        "message_id": "windows.export.savingfromjournal",
+        "resource_key": "m77696e646f77732e6578706f72742e736176696e6766726f6d6a6f75726e616c",
+        "signed_quantity": null
+      },
+      "cardinal": "en",
+      "expectation_kind": "resource-golden",
+      "expected": "saving a copy from your journal.",
+      "folder": null,
+      "inputs": {},
+      "locale": "en-US",
+      "logical_expected": "saving a copy from your journal.",
+      "message_id": "windows.export.savingfromjournal",
+      "own_reader": "rust-api",
+      "own_reader_call": "render(\"en-US\", \"windows.export.savingfromjournal\", &[])",
+      "platform_reader": "pending",
+      "resource_key": "m77696e646f77732e6578706f72742e736176696e6766726f6d6a6f75726e616c",
+      "target": "rust"
+    },
+    {
+      "bundle": "windows",
+      "call_contract": {
         "arguments": [
           {
             "name": "count",

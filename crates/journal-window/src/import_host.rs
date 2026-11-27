@@ -11,6 +11,7 @@ use std::sync::OnceLock;
 use serde_json::{json, Map, Value};
 
 use crate::auth_host::{self, AuthContract, AuthMessage};
+use crate::export_host::{self, ExportContract, ExportMessage};
 use crate::{HostContractError, JournalOrigin};
 
 /// The constants the journal publishes for this contract.
@@ -77,7 +78,7 @@ pub fn import_contract(bytes: &[u8]) -> Result<ImportContract, HostContractError
 /// The adapter installed in every journal document. It acts only in the top
 /// document on the paired origin: WebView2 runs initialization scripts in
 /// frames too, whatever the main-frame-only option says.
-const PAGE_ADAPTER: &str = r#"((contract, auth, origin, nonce, path, ask, answer) => {
+const PAGE_ADAPTER: &str = r#"((contract, auth, exportContract, origin, nonce, path, ask, answer) => {
   if (window !== window.top || location.origin !== origin) return;
   if (window[contract.capability] !== undefined) return;
   const fetch = window.fetch.bind(window);
@@ -93,9 +94,48 @@ const PAGE_ADAPTER: &str = r#"((contract, auth, origin, nonce, path, ask, answer
   const authTypes = auth && auth.version === contract.version && auth.capability === contract.capability
     ? [auth.prepare, auth.authorize, auth.cancel]
     : [];
-  const allTypes = Object.freeze([contract.pick, ...authTypes]);
+  const exportTypes = exportContract && exportContract.version === contract.version && exportContract.capability === contract.capability
+    ? [exportContract.start, exportContract.status, exportContract.pause, exportContract.resume, exportContract.cancel, exportContract.reveal, exportContract.deviceSpace]
+    : [];
+  const allTypes = Object.freeze([contract.pick, ...authTypes, ...exportTypes]);
   const items = new Map();
   let timer;
+  let exportTimer;
+  let activeExportId = null;
+  let lastExportSerial = null;
+  function emitExport(reply) {
+    if (!exportContract || !reply || typeof reply.phase !== 'string') return;
+    const serial = JSON.stringify({
+      export_id: reply.export_id ?? null, phase: reply.phase,
+      bytes_written: reply.bytes_written ?? 0, total_bytes: reply.total_bytes ?? 0,
+      destination_display: reply.destination_display ?? null,
+      pause_reason: reply.pause_reason ?? null, error_code: reply.error_code ?? null,
+      can_reveal: Boolean(reply.can_reveal), verified: Boolean(reply.verified),
+    });
+    if (serial !== lastExportSerial) {
+      lastExportSerial = serial;
+      window.dispatchEvent(new CustomEvent(exportContract.event, {detail:{
+        ...reply, type:exportContract.status,
+      }}));
+    }
+    if (reply.phase === 'transferring' || reply.phase === 'verifying' || reply.phase === 'paused') {
+      activeExportId = reply.export_id || activeExportId;
+      if (!exportTimer) exportTimer = setTimeout(pollExport, reply.phase === 'paused' ? 1000 : 250);
+    } else {
+      activeExportId = null;
+      if (exportTimer) { clearTimeout(exportTimer); exportTimer = undefined; }
+    }
+  }
+  async function pollExport() {
+    exportTimer = undefined;
+    if (!exportContract || !activeExportId) return;
+    try {
+      const reply = await post({type:exportContract.status, id:crypto.randomUUID(), export_id:activeExportId});
+      emitExport(reply);
+    } catch (_) {
+      exportTimer = setTimeout(pollExport, 500);
+    }
+  }
   async function update() {
     let allReview = true;
     for (const [item, record] of items) {
@@ -124,6 +164,11 @@ const PAGE_ADAPTER: &str = r#"((contract, auth, origin, nonce, path, ask, answer
     async send(message) {
       if (!message || typeof message.id !== 'string' || typeof message.type !== 'string') throw new TypeError();
       if (authTypes.includes(message.type)) return await post(message);
+      if (exportTypes.includes(message.type)) {
+        const reply = await post(message);
+        if (message.type !== exportContract.reveal && message.type !== exportContract.deviceSpace) emitExport(reply);
+        return reply;
+      }
       if (message.type !== contract.pick) return {type:contract.unsupported, id:message.id};
       const reply = await post(message);
       for (const item of reply.items || []) items.set(item.item, {id:message.id, name:item.name});
@@ -153,9 +198,10 @@ const PAGE_ADAPTER: &str = r#"((contract, auth, origin, nonce, path, ask, answer
 
 /// The page adapter, bound to one window's origin and secret.
 pub fn page_script(contract: &[u8], origin: &JournalOrigin, nonce: &str) -> String {
-    page_script_with_auth(
+    page_script_with_contracts(
         contract,
         Some(auth_host::bundled_auth_contract()),
+        Some(export_host::bundled_export_contract()),
         origin,
         nonce,
     )
@@ -169,12 +215,33 @@ pub fn page_script_with_auth(
     origin: &JournalOrigin,
     nonce: &str,
 ) -> String {
+    page_script_with_contracts(
+        contract,
+        auth_contract,
+        Some(export_host::bundled_export_contract()),
+        origin,
+        nonce,
+    )
+}
+
+/// The page adapter, bound to one window's origin, secret, optional OAuth
+/// brokerage contract, and optional export host contract.
+pub fn page_script_with_contracts(
+    contract: &[u8],
+    auth_contract: Option<&[u8]>,
+    export_contract: Option<&[u8]>,
+    origin: &JournalOrigin,
+    nonce: &str,
+) -> String {
     let contract: Value = serde_json::from_slice(contract).unwrap_or(Value::Null);
     let auth: Value = auth_contract
         .and_then(|bytes| serde_json::from_slice(bytes).ok())
         .unwrap_or(Value::Null);
+    let export: Value = export_contract
+        .and_then(|bytes| serde_json::from_slice(bytes).ok())
+        .unwrap_or(Value::Null);
     format!(
-        "{PAGE_ADAPTER}({contract}, {auth}, {}, {}, {}, {}, {});",
+        "{PAGE_ADAPTER}({contract}, {auth}, {export}, {}, {}, {}, {}, {});",
         Value::from(origin.ascii()),
         Value::from(nonce),
         Value::from(HOST_PATH),
@@ -217,6 +284,10 @@ pub enum Request {
     Pick(Pick),
     /// An OAuth brokerage message (`auth.prepare`, `auth.authorize`, `auth.cancel`).
     Auth(AuthMessage),
+    /// A journal export host message (`export.*`).
+    Export(ExportMessage),
+    /// An export message whose fields failed validation.
+    ExportInvalid(String),
     /// A pick this app cannot act on as asked.
     Refused(String),
     Unsupported(String),
@@ -235,10 +306,23 @@ fn default_auth_contract() -> Option<&'static AuthContract> {
         .as_ref()
 }
 
+fn default_export_contract() -> Option<&'static ExportContract> {
+    static BUNDLED: OnceLock<Option<ExportContract>> = OnceLock::new();
+    BUNDLED
+        .get_or_init(|| export_host::export_contract(export_host::bundled_export_contract()).ok())
+        .as_ref()
+}
+
 /// Check one request header from the page. `None` did not come from this
 /// window's adapter, and gets no answer but a refusal.
 pub fn parse(contract: &ImportContract, header: &str, nonce: &str) -> Option<Request> {
-    parse_with_auth(contract, default_auth_contract(), header, nonce)
+    parse_with_contracts(
+        contract,
+        default_auth_contract(),
+        default_export_contract(),
+        header,
+        nonce,
+    )
 }
 
 /// Check one request header from the page against the import contract and
@@ -246,6 +330,18 @@ pub fn parse(contract: &ImportContract, header: &str, nonce: &str) -> Option<Req
 pub fn parse_with_auth(
     contract: &ImportContract,
     auth: Option<&AuthContract>,
+    header: &str,
+    nonce: &str,
+) -> Option<Request> {
+    parse_with_contracts(contract, auth, default_export_contract(), header, nonce)
+}
+
+/// Check one request header from the page against the import, OAuth brokerage,
+/// and journal export host contracts.
+pub fn parse_with_contracts(
+    contract: &ImportContract,
+    auth: Option<&AuthContract>,
+    export: Option<&ExportContract>,
     header: &str,
     nonce: &str,
 ) -> Option<Request> {
@@ -267,6 +363,26 @@ pub fn parse_with_auth(
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty() && id.len() <= 128)
         .map(str::to_owned);
+    if let Some(export_contract) = export {
+        if let Some(req_id) = id.clone() {
+            if let Some(parsed) = export_host::parse_message(export_contract, kind, req_id, message)
+            {
+                return Some(match parsed {
+                    Ok(msg) => Request::Export(msg),
+                    Err(bad_id) => Request::ExportInvalid(bad_id),
+                });
+            }
+        } else if kind == export_contract.start
+            || kind == export_contract.status
+            || kind == export_contract.pause
+            || kind == export_contract.resume
+            || kind == export_contract.cancel
+            || kind == export_contract.reveal
+            || kind == export_contract.device_space
+        {
+            return Some(Request::Unsupported(String::new()));
+        }
+    }
     let request = match kind {
         "host.ready" => Request::Ready,
         "host.status" => Request::Status(
@@ -748,5 +864,38 @@ mod tests {
             parse_with_auth(&c, Some(&auth), &no_id, "secret"),
             Some(Request::Unsupported(String::new()))
         );
+    }
+
+    #[test]
+    fn export_messages_route_with_valid_nonce_and_id() {
+        let c = contract();
+        let sha = "b".repeat(64);
+        let start_hdr = envelope(json!({
+            "type": "export.start",
+            "id": "x-1",
+            "export_id": "exp_win_1",
+            "download_path": "/app/export/api/ready/exp_win_1/download",
+            "filename": "solstone-journal-2026-11-26.zip",
+            "size_bytes": 4096,
+            "sha256": sha,
+            "etag": "\"sha256-win\""
+        }));
+        assert!(matches!(
+            parse(&c, &start_hdr, "secret"),
+            Some(Request::Export(ExportMessage::Start(req))) if req.id == "x-1" && req.export_id == "exp_win_1"
+        ));
+        assert!(parse(&c, &start_hdr, "wrong").is_none());
+
+        let space_hdr = envelope(json!({"type": "export.device_space", "id": "sp-1"}));
+        assert!(matches!(
+            parse(&c, &space_hdr, "secret"),
+            Some(Request::Export(ExportMessage::DeviceSpace { id })) if id == "sp-1"
+        ));
+
+        let origin =
+            JournalOrigin::from_url(&Url::parse("http://127.0.0.1:61234/x").unwrap()).unwrap();
+        let script = page_script(bundled_import_contract(), &origin, "nonce");
+        assert!(script.contains(r#""start":"export.start""#));
+        assert!(script.contains(r#""deviceSpace":"export.device_space""#));
     }
 }

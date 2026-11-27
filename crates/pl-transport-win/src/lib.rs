@@ -29,6 +29,7 @@ pub mod coordinator;
 pub mod credential;
 pub mod device_metadata;
 pub mod draft;
+pub mod export_download;
 pub mod handoff;
 pub mod import_client;
 pub mod import_store;

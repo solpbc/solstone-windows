@@ -51,6 +51,8 @@ pub struct AppState {
     pub journal_window: Mutex<journal_window::JournalWindowLabels>,
     /// Per-window loopback bridge backing the external journal window.
     pub journal_bridge: Arc<Mutex<Option<pl_transport_win::journal_bridge::JournalBridgeHandle>>>,
+    /// Native journal export download manager backing `window.solstoneJournalHost` v2.
+    pub export_manager: Arc<pl_transport_win::export_download::ExportTransferManager>,
     pub setup_browser: Arc<Mutex<Option<SetupBrowser>>>,
     pub pairing_admission: std::sync::atomic::AtomicBool,
     /// Capture-exclusion rules controller (shared with the WGC screen source).
@@ -1031,6 +1033,33 @@ pub fn run(
             let pairing_admission = std::sync::atomic::AtomicBool::new(false);
             update_handoff_overlay(&data_root, &sync, &engine.setup_authority(), &pairing_admission);
 
+            let export_loader_app = app.handle().clone();
+            let export_opener = Arc::new(
+                pl_transport_win::export_download::BridgeExportOpener::from_loader(Arc::new(
+                    move || {
+                        let app = export_loader_app.clone();
+                        Box::pin(async move {
+                            let state = app.state::<AppState>();
+                            pl_transport_win::access::load_current_client(&state.credential_access)
+                                .await
+                        })
+                    },
+                )),
+            );
+            let export_manager = Arc::new(
+                pl_transport_win::export_download::ExportTransferManager::new(
+                    export_opener,
+                    Arc::new(platform_win::file_picker::available_disk_bytes),
+                    Arc::new(platform_win::file_picker::replace_file_atomic),
+                    Arc::new(|| {
+                        let hold = platform_win::power_hold::PowerHold::acquire(
+                            &observer_model::i18n::message("windows.export.savingfromjournal", &[]),
+                        );
+                        Some(Box::new(hold) as pl_transport_win::export_download::PowerHoldGuard)
+                    }),
+                ),
+            );
+
             app.manage(AppState {
                 commands: cmd_tx.clone(),
                 health: health.clone(),
@@ -1046,6 +1075,7 @@ pub fn run(
                 journal_open_lock: Arc::new(tokio::sync::Mutex::new(())),
                 journal_window: Mutex::new(Default::default()),
                 journal_bridge: Arc::new(Mutex::new(None)),
+                export_manager: Arc::clone(&export_manager),
                 setup_browser: Arc::new(Mutex::new(None)),
                 pairing_admission,
                 exclusions,
@@ -1375,6 +1405,7 @@ pub fn run(
                 let hotkey_desired = hotkey.desired_handle();
                 let hotkey_outcome = hotkey.outcome_handle();
                 let hotkey = hotkey.clone();
+                let export_manager = Arc::clone(&export_manager);
                 move || {
                     let mut pump =
                         platform_win::NotificationPump::with_hotkey(hotkey_desired, hotkey_outcome);
@@ -1397,6 +1428,7 @@ pub fn run(
                                 }
                                 platform_win::SystemNotification::Suspending => {
                                     crate::import::on_system_suspending();
+                                    export_manager.pause_for_sleep();
                                     Some(EngineCommand::Pause {
                                         reason: PauseReason::SystemSuspending,
                                         duration_secs: None,

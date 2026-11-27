@@ -272,6 +272,18 @@ mod tests {
             journal_open_lock: Arc::new(tokio::sync::Mutex::new(())),
             journal_window: std::sync::Mutex::new(Default::default()),
             journal_bridge: Arc::new(std::sync::Mutex::new(None)),
+            export_manager: Arc::new(
+                pl_transport_win::export_download::ExportTransferManager::new(
+                    Arc::new(
+                        pl_transport_win::export_download::BridgeExportOpener::from_loader(
+                            Arc::new(|| Box::pin(async { None })),
+                        ),
+                    ),
+                    Arc::new(|_| None),
+                    Arc::new(std::fs::rename),
+                    Arc::new(|| None),
+                ),
+            ),
             setup_browser: Arc::new(std::sync::Mutex::new(None)),
             pairing_admission: std::sync::atomic::AtomicBool::new(false),
             exclusions: crate::exclusions::ExclusionController::new(exclusions_path),
