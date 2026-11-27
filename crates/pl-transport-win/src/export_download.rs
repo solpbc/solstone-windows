@@ -11,10 +11,10 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::future::Future;
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -35,6 +35,7 @@ const PLATFORM: &str = "windows";
 const HEAD_CAP: usize = 32 * 1024;
 const MAX_ERROR_BODY_BYTES: usize = 8 * 1024;
 const CHUNK_READ_SIZE: usize = 64 * 1024;
+const VERIFY_CHUNK_BYTES: usize = 256 * 1024;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(60);
 const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
@@ -79,6 +80,8 @@ pub type SpaceProbe = Arc<dyn Fn(&Path) -> Option<u64> + Send + Sync>;
 pub type ReplaceFileFn = Arc<dyn Fn(&Path, &Path) -> io::Result<()> + Send + Sync>;
 pub type PowerHoldGuard = Box<dyn Send + Sync>;
 pub type PowerHoldFactory = Arc<dyn Fn() -> Option<PowerHoldGuard> + Send + Sync>;
+#[cfg(test)]
+type VerifyChunkHook = Arc<dyn Fn(u64) + Send + Sync>;
 
 /// Parameters for starting a native journal export save.
 #[derive(Clone, Debug)]
@@ -171,6 +174,7 @@ struct ActiveTransfer {
     initial_transport: Option<&'static str>,
     allow_relay: bool,
     control_tx: watch::Sender<ControlSignal>,
+    cancel_flag: Arc<AtomicBool>,
 }
 
 struct ExportState {
@@ -200,7 +204,14 @@ struct ExportInner {
     space_probe: SpaceProbe,
     replace_file: ReplaceFileFn,
     power_hold: PowerHoldFactory,
+    /// Serializes destination publication (`replace_file` + `saved` commit)
+    /// against `cancel()` / `cancel_for_unpair()` so a cancelled verification
+    /// can never publish a stale file over a newer attempt or preexisting target.
+    /// Lock order is strictly `publish_lock` -> `state`.
+    publish_lock: Mutex<()>,
     state: Mutex<ExportState>,
+    #[cfg(test)]
+    verify_chunk_hook: Mutex<Option<VerifyChunkHook>>,
 }
 
 #[derive(Clone)]
@@ -221,9 +232,21 @@ impl ExportTransferManager {
                 space_probe,
                 replace_file,
                 power_hold,
+                publish_lock: Mutex::new(()),
                 state: Mutex::new(ExportState::default()),
+                #[cfg(test)]
+                verify_chunk_hook: Mutex::new(None),
             }),
         }
+    }
+
+    #[cfg(test)]
+    fn set_verify_chunk_hook(&self, hook: VerifyChunkHook) {
+        *self
+            .inner
+            .verify_chunk_hook
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(hook);
     }
 
     pub async fn start(&self, req: StartExportParams) -> ExportStatusSnapshot {
@@ -262,12 +285,24 @@ impl ExportTransferManager {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| req.filename.clone());
 
-        let part_path = sibling_part_path(parent, &req.export_id);
-        let existing_part_len = fs::symlink_metadata(&part_path)
-            .ok()
-            .filter(|meta| meta.file_type().is_file())
-            .map(|meta| meta.len())
-            .unwrap_or(0);
+        let discovered_part = {
+            let state = self.lock_state();
+            if state
+                .active
+                .as_ref()
+                .is_some_and(|existing| existing.export_id == req.export_id)
+            {
+                state.active.as_ref().and_then(|existing| {
+                    fs::symlink_metadata(&existing.part_path)
+                        .ok()
+                        .filter(|meta| meta.file_type().is_file() && meta.len() <= req.size_bytes)
+                        .map(|meta| (existing.part_path.clone(), meta.len()))
+                })
+            } else {
+                discover_existing_part_file(parent, &req.export_id, req.size_bytes)
+            }
+        };
+        let existing_part_len = discovered_part.as_ref().map(|(_, len)| *len).unwrap_or(0);
         let remaining_needed = req.size_bytes.saturating_sub(existing_part_len);
         let required = required_device_bytes(remaining_needed);
         if let Some(available) = (self.inner.space_probe)(parent) {
@@ -307,14 +342,43 @@ impl ExportTransferManager {
                     );
                 }
             }
-            if let Some(prev) = state.active.take() {
+            let reused_source = if let Some(prev) = state.active.take() {
                 if prev.export_id != req.export_id {
+                    prev.cancel_flag.store(true, Ordering::Release);
+                    let _ = prev.control_tx.send(ControlSignal::Cancel);
                     let _ = fs::remove_file(&prev.part_path);
+                    discovered_part.map(|(p, _)| p)
+                } else {
+                    Some(prev.part_path)
                 }
-            }
+            } else {
+                discovered_part.map(|(p, _)| p)
+            };
             state.next_generation = state.next_generation.wrapping_add(1);
             let generation = state.next_generation;
+            let part_path = sibling_part_path_for_generation(parent, &req.export_id, generation);
+            let mut adopted_len = 0u64;
+            if let Some(src_part) = reused_source {
+                if src_part == part_path {
+                    adopted_len = fs::symlink_metadata(&part_path)
+                        .ok()
+                        .filter(|m| m.file_type().is_file() && m.len() <= req.size_bytes)
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                } else if fs::symlink_metadata(&src_part)
+                    .ok()
+                    .is_some_and(|m| m.file_type().is_file() && m.len() <= req.size_bytes)
+                    && fs::rename(&src_part, &part_path).is_ok()
+                {
+                    adopted_len = fs::symlink_metadata(&part_path)
+                        .ok()
+                        .filter(|m| m.file_type().is_file() && m.len() <= req.size_bytes)
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                }
+            }
             let (control_tx, _) = watch::channel(ControlSignal::Run);
+            let cancel_flag = Arc::new(AtomicBool::new(false));
             state.active = Some(ActiveTransfer {
                 generation,
                 export_id: req.export_id.clone(),
@@ -329,12 +393,13 @@ impl ExportTransferManager {
                 initial_transport: None,
                 allow_relay: false,
                 control_tx,
+                cancel_flag,
             });
             state.snapshot = ExportStatusSnapshot {
                 id: None,
                 export_id: Some(req.export_id),
                 phase: "transferring".to_owned(),
-                bytes_written: existing_part_len.min(req.size_bytes),
+                bytes_written: adopted_len.min(req.size_bytes),
                 total_bytes: req.size_bytes,
                 destination_display: Some(destination_display),
                 pause_reason: None,
@@ -416,6 +481,7 @@ impl ExportTransferManager {
                     }
                     let (control_tx, _) = watch::channel(ControlSignal::Run);
                     active.control_tx = control_tx;
+                    active.cancel_flag = Arc::new(AtomicBool::new(false));
                     active.size_bytes
                 });
                 if let Some(size_bytes) = active_size {
@@ -439,6 +505,7 @@ impl ExportTransferManager {
     }
 
     pub fn cancel(&self, request_id: &str, export_id: Option<&str>) -> ExportStatusSnapshot {
+        let _publish_guard = self.lock_publish();
         let (part_to_remove, reply) = {
             let mut state = self.lock_state();
             let matches_active = state
@@ -447,6 +514,7 @@ impl ExportTransferManager {
                 .is_some_and(|active| export_id.is_none_or(|id| id == active.export_id));
             if matches_active {
                 let active = state.active.take().expect("active checked");
+                active.cancel_flag.store(true, Ordering::Release);
                 let _ = active.control_tx.send(ControlSignal::Cancel);
                 state.snapshot = ExportStatusSnapshot {
                     id: None,
@@ -478,12 +546,14 @@ impl ExportTransferManager {
     }
 
     pub fn cancel_for_unpair(&self) {
+        let _publish_guard = self.lock_publish();
         let part_to_remove = {
             let mut state = self.lock_state();
             state.saved_export_id = None;
             state.saved_destination = None;
             state.saved_display = None;
             if let Some(active) = state.active.take() {
+                active.cancel_flag.store(true, Ordering::Release);
                 let _ = active.control_tx.send(ControlSignal::Cancel);
                 state.snapshot = ExportStatusSnapshot {
                     id: None,
@@ -526,6 +596,13 @@ impl ExportTransferManager {
 
     pub fn available_space(&self, probe_dir: &Path) -> Option<u64> {
         (self.inner.space_probe)(probe_dir)
+    }
+
+    fn lock_publish(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.inner
+            .publish_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn lock_state(&self) -> std::sync::MutexGuard<'_, ExportState> {
@@ -818,20 +895,64 @@ impl ExportTransferManager {
         let part_path = params.part_path.clone();
         let expected_size = params.size_bytes;
         let expected_sha = params.sha256.clone();
-        let verify_result = tokio::task::spawn_blocking(move || -> io::Result<bool> {
+        let cancel_flag = Arc::clone(&params.cancel_flag);
+        #[cfg(test)]
+        let verify_hook = self
+            .inner
+            .verify_chunk_hook
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        let verify_result = tokio::task::spawn_blocking(move || -> io::Result<VerifyOutcome> {
             let file = File::open(&part_path)?;
-            let (digest, total) = observer_log::hash_reader_sha256(file)?;
-            Ok(total == expected_size && digest.eq_ignore_ascii_case(&expected_sha))
+            let reader = CancelableReader {
+                inner: file,
+                cancel_flag: Arc::clone(&cancel_flag),
+                bytes_read: 0,
+                #[cfg(test)]
+                on_chunk: verify_hook,
+            };
+            let hashed = observer_log::hash_reader_sha256(reader);
+            // `reader` (and its underlying `File`) is dropped here before any unlink attempt
+            // so Windows releases the file handle promptly on cancellation.
+            match hashed {
+                Ok((digest, total)) => {
+                    if cancel_flag.load(Ordering::Acquire) {
+                        let _ = fs::remove_file(&part_path);
+                        Ok(VerifyOutcome::Cancelled)
+                    } else if total == expected_size && digest.eq_ignore_ascii_case(&expected_sha) {
+                        Ok(VerifyOutcome::Matched)
+                    } else {
+                        Ok(VerifyOutcome::Mismatch)
+                    }
+                }
+                Err(error)
+                    if error.kind() == io::ErrorKind::Interrupted
+                        || cancel_flag.load(Ordering::Acquire) =>
+                {
+                    let _ = fs::remove_file(&part_path);
+                    Ok(VerifyOutcome::Cancelled)
+                }
+                Err(error) => Err(error),
+            }
         })
         .await;
 
         match verify_result {
-            Ok(Ok(true)) => {}
-            Ok(Ok(false)) => {
+            Ok(Ok(VerifyOutcome::Matched)) => {}
+            Ok(Ok(VerifyOutcome::Cancelled)) => {
+                let _ = fs::remove_file(&params.part_path);
+                return;
+            }
+            Ok(Ok(VerifyOutcome::Mismatch)) => {
                 self.fail_and_cleanup(generation, "checksum_mismatch");
                 return;
             }
             Ok(Err(_)) | Err(_) => {
+                if params.cancel_flag.load(Ordering::Acquire) {
+                    let _ = fs::remove_file(&params.part_path);
+                    return;
+                }
                 self.fail_and_cleanup(generation, "dest_write_failed");
                 return;
             }
@@ -840,47 +961,76 @@ impl ExportTransferManager {
         if self.check_pairing_lost(generation, &params.binding).await {
             return;
         }
-        if *params.control_rx.borrow() == ControlSignal::Cancel {
+        if params.cancel_flag.load(Ordering::Acquire)
+            || *params.control_rx.borrow() == ControlSignal::Cancel
+        {
             let _ = fs::remove_file(&params.part_path);
             return;
         }
 
+        // Publish under `publish_lock -> state` so a concurrent `cancel()` or
+        // `cancel_for_unpair()` can never race with `replace_file` and let a
+        // cancelled generation clobber the destination or a newer retry.
+        let inner = Arc::clone(&self.inner);
         let part_path = params.part_path.clone();
         let dest_path = params.destination_path.clone();
-        let replace = Arc::clone(&self.inner.replace_file);
-        let rename_result =
-            tokio::task::spawn_blocking(move || replace(&part_path, &dest_path)).await;
-        match rename_result {
-            Ok(Ok(())) => {
-                let mut state = self.lock_state();
-                if !state
-                    .active
-                    .as_ref()
-                    .is_some_and(|a| a.generation == generation)
+        let cancel_flag = Arc::clone(&params.cancel_flag);
+        let publish_result = tokio::task::spawn_blocking(move || -> PublishOutcome {
+            let _publish_guard = inner
+                .publish_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            {
+                let state = inner
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if cancel_flag.load(Ordering::Acquire)
+                    || !state
+                        .active
+                        .as_ref()
+                        .is_some_and(|a| a.generation == generation)
                 {
-                    return;
+                    let _ = fs::remove_file(&part_path);
+                    return PublishOutcome::Cancelled;
                 }
-                let active = state.active.take().expect("active checked");
-                state.saved_export_id = Some(active.export_id.clone());
-                state.saved_destination = Some(active.destination_path);
-                state.saved_display = Some(active.destination_display.clone());
-                state.snapshot = ExportStatusSnapshot {
-                    id: None,
-                    export_id: Some(active.export_id),
-                    phase: "saved".to_owned(),
-                    bytes_written: active.size_bytes,
-                    total_bytes: active.size_bytes,
-                    destination_display: Some(active.destination_display),
-                    pause_reason: None,
-                    error_code: None,
-                    required_bytes: None,
-                    available_bytes: None,
-                    can_reveal: true,
-                    verified: true,
-                    platform: PLATFORM,
-                };
             }
-            Ok(Err(error)) => {
+            match (inner.replace_file)(&part_path, &dest_path) {
+                Ok(()) => {
+                    let mut state = inner
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if let Some(active) = state.active.take_if(|a| a.generation == generation) {
+                        state.saved_export_id = Some(active.export_id.clone());
+                        state.saved_destination = Some(active.destination_path);
+                        state.saved_display = Some(active.destination_display.clone());
+                        state.snapshot = ExportStatusSnapshot {
+                            id: None,
+                            export_id: Some(active.export_id),
+                            phase: "saved".to_owned(),
+                            bytes_written: active.size_bytes,
+                            total_bytes: active.size_bytes,
+                            destination_display: Some(active.destination_display),
+                            pause_reason: None,
+                            error_code: None,
+                            required_bytes: None,
+                            available_bytes: None,
+                            can_reveal: true,
+                            verified: true,
+                            platform: PLATFORM,
+                        };
+                    }
+                    PublishOutcome::Published
+                }
+                Err(error) => PublishOutcome::IoError(error),
+            }
+        })
+        .await;
+
+        match publish_result {
+            Ok(PublishOutcome::Published | PublishOutcome::Cancelled) => {}
+            Ok(PublishOutcome::IoError(error)) => {
                 let code = if is_disk_space_io_error(&error) {
                     "insufficient_device_space"
                 } else {
@@ -909,6 +1059,7 @@ impl ExportTransferManager {
             part_path: active.part_path.clone(),
             binding: active.binding.clone(),
             control_rx: active.control_tx.subscribe(),
+            cancel_flag: Arc::clone(&active.cancel_flag),
         })
     }
 
@@ -951,6 +1102,7 @@ impl ExportTransferManager {
                 return true;
             }
             let active = state.active.take().expect("active checked");
+            active.cancel_flag.store(true, Ordering::Release);
             let _ = active.control_tx.send(ControlSignal::Cancel);
             state.snapshot = ExportStatusSnapshot {
                 id: None,
@@ -1053,6 +1205,54 @@ struct RunParams {
     part_path: PathBuf,
     binding: String,
     control_rx: watch::Receiver<ControlSignal>,
+    cancel_flag: Arc<AtomicBool>,
+}
+
+enum VerifyOutcome {
+    Matched,
+    Mismatch,
+    Cancelled,
+}
+
+enum PublishOutcome {
+    Published,
+    Cancelled,
+    IoError(io::Error),
+}
+
+struct CancelableReader<R> {
+    inner: R,
+    cancel_flag: Arc<AtomicBool>,
+    bytes_read: u64,
+    #[cfg(test)]
+    on_chunk: Option<VerifyChunkHook>,
+}
+
+impl<R: Read> Read for CancelableReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.cancel_flag.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "verification cancelled",
+            ));
+        }
+        let limit = buf.len().min(VERIFY_CHUNK_BYTES);
+        let n = self.inner.read(&mut buf[..limit])?;
+        self.bytes_read = self.bytes_read.saturating_add(n as u64);
+        #[cfg(test)]
+        if n > 0 {
+            if let Some(hook) = &self.on_chunk {
+                hook(self.bytes_read);
+            }
+        }
+        if self.cancel_flag.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "verification cancelled",
+            ));
+        }
+        Ok(n)
+    }
 }
 
 /// Production opener driving streaming export downloads over the shared SPL
@@ -1564,8 +1764,68 @@ fn open_part_file(part_path: &Path, start_offset: u64) -> io::Result<File> {
     Ok(file)
 }
 
-fn sibling_part_path(parent: &Path, export_id: &str) -> PathBuf {
-    parent.join(format!(".solstone-export-{export_id}.part"))
+fn sibling_part_path_for_generation(parent: &Path, export_id: &str, generation: u64) -> PathBuf {
+    parent.join(format!(".solstone-export-{export_id}-{generation}.part"))
+}
+
+fn is_part_file_for_export(file_name: &str, export_id: &str) -> bool {
+    let prefix = format!(".solstone-export-{export_id}");
+    if file_name == format!("{prefix}.part") {
+        return true;
+    }
+    let Some(rest) = file_name.strip_prefix(&format!("{prefix}-")) else {
+        return false;
+    };
+    let Some(gen_str) = rest.strip_suffix(".part") else {
+        return false;
+    };
+    !gen_str.is_empty() && gen_str.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Discover the largest regular non-symlink on-disk partial for `export_id`
+/// inside `parent` (supporting both legacy unsuffixed `.part` and per-generation
+/// `.solstone-export-<id>-<gen>.part` files) so daemon/app restarts credit the
+/// already-written bytes in preflight and resume from the exact byte offset.
+fn discover_existing_part_file(
+    parent: &Path,
+    export_id: &str,
+    expected_size: u64,
+) -> Option<(PathBuf, u64)> {
+    let entries = fs::read_dir(parent).ok()?;
+    let mut best: Option<(PathBuf, u64)> = None;
+    let mut extras: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !is_part_file_for_export(&name, export_id) {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.file_type().is_file() {
+            continue;
+        }
+        let len = meta.len();
+        if len > expected_size {
+            extras.push(path);
+            continue;
+        }
+        match &best {
+            Some((_, best_len)) if len <= *best_len => extras.push(path),
+            Some((prev_path, _)) => {
+                extras.push(prev_path.clone());
+                best = Some((path, len));
+            }
+            None => best = Some((path, len)),
+        }
+    }
+    for stale in extras {
+        let _ = fs::remove_file(stale);
+    }
+    best
 }
 
 pub fn required_device_bytes(remaining_bytes: u64) -> u64 {
@@ -1826,7 +2086,7 @@ mod tests {
         assert!(saved.verified);
         assert!(saved.can_reveal);
         assert_eq!(fs::read(&dest).unwrap(), payload);
-        assert!(!sibling_part_path(tmp.path(), "exp_win_full").exists());
+        assert!(!has_any_part_file(tmp.path(), "exp_win_full"));
         assert_eq!(hold_acquired.load(Ordering::Acquire), 1);
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(hold_active.load(Ordering::Acquire), 0);
@@ -1977,7 +2237,7 @@ mod tests {
             Some("export_invalidated_by_erasure")
         );
         assert_eq!(fs::read(&dest).unwrap(), b"intact-bytes");
-        assert!(!sibling_part_path(tmp.path(), "exp_win_410").exists());
+        assert!(!has_any_part_file(tmp.path(), "exp_win_410"));
     }
 
     #[tokio::test]
@@ -2070,5 +2330,254 @@ mod tests {
             out.extend_from_slice(&chunk);
         }
         assert_eq!(out, b"abcd");
+    }
+
+    fn has_any_part_file(parent: &Path, export_id: &str) -> bool {
+        fs::read_dir(parent)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| is_part_file_for_export(name, export_id))
+            })
+    }
+
+    fn build_valid_zip_bytes(min_size: usize) -> Vec<u8> {
+        let mut cursor = io::Cursor::new(Vec::new());
+        {
+            let mut zw = zip::ZipWriter::new(&mut cursor);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zw.start_file("journal.txt", options).unwrap();
+            let mut payload = vec![0u8; min_size];
+            for (idx, b) in payload.iter_mut().enumerate() {
+                *b = ((idx.wrapping_mul(31).wrapping_add(17)) & 0xff) as u8;
+            }
+            zw.write_all(&payload).unwrap();
+            zw.finish().unwrap();
+        }
+        cursor.into_inner()
+    }
+
+    #[tokio::test]
+    async fn cancel_during_verification_stops_promptly_preserves_destination_and_allows_fresh_save()
+    {
+        use std::sync::atomic::AtomicU64;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("solstone-journal-cancel-verify.zip");
+        fs::write(&dest, b"preexisting-archive-bytes").unwrap();
+
+        let payload_a = vec![0x5Au8; 16 * 1024 * 1024];
+        let sha_a = observer_log::sha256_hex(&payload_a);
+        let etag_a = format!("\"sha256-{sha_a}\"");
+
+        let payload_b = build_valid_zip_bytes(512 * 1024);
+        let sha_b = observer_log::sha256_hex(&payload_b);
+        let etag_b = format!("\"sha256-{sha_b}\"");
+
+        let opener = Arc::new(ScriptedOpener::new(vec![
+            Ok(OpenedExportStream {
+                status: 200,
+                content_range: None,
+                etag: Some(etag_a.clone()),
+                transport: "local",
+                body: Box::new(ScriptedStream {
+                    chunks: VecDeque::from(vec![Ok(payload_a.clone())]),
+                }),
+            }),
+            Ok(OpenedExportStream {
+                status: 200,
+                content_range: None,
+                etag: Some(etag_b.clone()),
+                transport: "local",
+                body: Box::new(ScriptedStream {
+                    chunks: VecDeque::from(vec![Ok(payload_b.clone())]),
+                }),
+            }),
+        ]));
+        let manager = ExportTransferManager::new(
+            opener,
+            Arc::new(|_| Some(512 * 1024 * 1024)),
+            Arc::new(|from, to| fs::rename(from, to)),
+            Arc::new(|| None),
+        );
+
+        let max_bytes_verified = Arc::new(AtomicU64::new(0));
+        let cancel_fired = Arc::new(AtomicBool::new(false));
+        let mgr_for_hook = manager.clone();
+        let max_clone = Arc::clone(&max_bytes_verified);
+        let fired_clone = Arc::clone(&cancel_fired);
+        manager.set_verify_chunk_hook(Arc::new(move |bytes_read| {
+            max_clone.fetch_max(bytes_read, Ordering::AcqRel);
+            if !fired_clone.swap(true, Ordering::AcqRel) {
+                let _ = mgr_for_hook.cancel("cv1", Some("exp_win_verify_cancel"));
+            }
+        }));
+
+        let _ = manager
+            .start(StartExportParams {
+                request_id: "s_vc1".into(),
+                export_id: "exp_win_verify_cancel".into(),
+                download_path: "/app/export/api/ready/exp_win_verify_cancel/download".into(),
+                filename: "solstone-journal-cancel-verify.zip".into(),
+                size_bytes: payload_a.len() as u64,
+                sha256: sha_a,
+                etag: etag_a,
+                destination_path: dest.clone(),
+            })
+            .await;
+
+        let cancelled = wait_phase(&manager, "exp_win_verify_cancel", "cancelled").await;
+        assert_eq!(cancelled.phase, "cancelled");
+
+        // Wait briefly for the blocking worker to drop its File handle and unlink the .part file.
+        for _ in 0..100 {
+            if !has_any_part_file(tmp.path(), "exp_win_verify_cancel") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !has_any_part_file(tmp.path(), "exp_win_verify_cancel"),
+            "cancelled worker must release handle and remove .part file"
+        );
+        let verified_before_stop = max_bytes_verified.load(Ordering::Acquire);
+        assert!(
+            verified_before_stop > 0 && verified_before_stop <= 1024 * 1024,
+            "verification should stop promptly after cancel, read {verified_before_stop} bytes"
+        );
+        assert_eq!(fs::read(&dest).unwrap(), b"preexisting-archive-bytes");
+
+        // Now start a fresh save to the same destination and verify the resulting ZIP reopens.
+        *manager.inner.verify_chunk_hook.lock().unwrap() = None;
+        let _ = manager
+            .start(StartExportParams {
+                request_id: "s_vc2".into(),
+                export_id: "exp_win_verify_cancel".into(),
+                download_path: "/app/export/api/ready/exp_win_verify_cancel/download".into(),
+                filename: "solstone-journal-cancel-verify.zip".into(),
+                size_bytes: payload_b.len() as u64,
+                sha256: sha_b,
+                etag: etag_b,
+                destination_path: dest.clone(),
+            })
+            .await;
+        let saved = wait_phase(&manager, "exp_win_verify_cancel", "saved").await;
+        assert!(saved.verified);
+        assert_eq!(fs::read(&dest).unwrap(), payload_b);
+        assert!(!has_any_part_file(tmp.path(), "exp_win_verify_cancel"));
+        let mut archive = zip::ZipArchive::new(File::open(&dest).unwrap()).unwrap();
+        assert_eq!(archive.len(), 1);
+        assert_eq!(archive.by_index(0).unwrap().name().unwrap(), "journal.txt");
+    }
+
+    #[tokio::test]
+    async fn restart_recovers_on_disk_partial_from_first_and_later_generations_under_tight_space() {
+        let payload: Vec<u8> = (0usize..(16 * 1024 * 1024))
+            .map(|i| ((i.wrapping_mul(17).wrapping_add(3)) & 0xff) as u8)
+            .collect();
+        let sha = observer_log::sha256_hex(&payload);
+        let etag = format!("\"sha256-{sha}\"");
+        let split = 12 * 1024 * 1024usize;
+        let tight_free: u64 = 5 * 1024 * 1024; // 4 MiB remaining + 1 MiB reserve
+
+        for (case_label, prior_cancel) in [("gen1", false), ("later_gen", true)] {
+            let tmp = tempfile::tempdir().unwrap();
+            let dest = tmp.path().join("restart.zip");
+            let export_id = format!("exp_win_restart_{case_label}");
+            let params = StartExportParams {
+                request_id: format!("r_{case_label}"),
+                export_id: export_id.clone(),
+                download_path: format!("/app/export/api/ready/{export_id}/download"),
+                filename: "restart.zip".into(),
+                size_bytes: payload.len() as u64,
+                sha256: sha.clone(),
+                etag: etag.clone(),
+                destination_path: dest.clone(),
+            };
+
+            let mut responses = Vec::new();
+            if prior_cancel {
+                responses.push(Ok(OpenedExportStream {
+                    status: 200,
+                    content_range: None,
+                    etag: Some(etag.clone()),
+                    transport: "local",
+                    body: Box::new(ScriptedStream {
+                        chunks: VecDeque::from(vec![Ok(payload[..65536].to_vec()), Err(())]),
+                    }),
+                }));
+            }
+            responses.push(Ok(OpenedExportStream {
+                status: 200,
+                content_range: None,
+                etag: Some(etag.clone()),
+                transport: "local",
+                body: Box::new(ScriptedStream {
+                    chunks: VecDeque::from(vec![Ok(payload[..split].to_vec()), Err(())]),
+                }),
+            }));
+
+            let daemon1 = ExportTransferManager::new(
+                Arc::new(ScriptedOpener::new(responses)),
+                Arc::new(|_| Some(512 * 1024 * 1024)),
+                Arc::new(|from, to| fs::rename(from, to)),
+                Arc::new(|| None),
+            );
+            if prior_cancel {
+                let _ = daemon1.start(params.clone()).await;
+                let _ = wait_phase(&daemon1, &export_id, "paused").await;
+                let _ = daemon1.cancel("c0", Some(&export_id));
+            }
+
+            let _ = daemon1.start(params.clone()).await;
+            let paused = wait_phase(&daemon1, &export_id, "paused").await;
+            assert_eq!(paused.bytes_written, split as u64, "case={case_label}");
+            drop(daemon1); // Simulate app restart: in-memory active state is gone.
+
+            let daemon2_opener = Arc::new(ScriptedOpener::new(vec![Ok(OpenedExportStream {
+                status: 206,
+                content_range: Some(format!(
+                    "bytes {split}-{}/{}",
+                    payload.len() - 1,
+                    payload.len()
+                )),
+                etag: Some(etag.clone()),
+                transport: "local",
+                body: Box::new(ScriptedStream {
+                    chunks: VecDeque::from(vec![Ok(payload[split..].to_vec())]),
+                }),
+            })]));
+            let daemon2 = ExportTransferManager::new(
+                daemon2_opener.clone(),
+                Arc::new(move |_| Some(tight_free)),
+                Arc::new(|from, to| fs::rename(from, to)),
+                Arc::new(|| None),
+            );
+            let resp = daemon2.start(params).await;
+            assert_eq!(resp.phase, "transferring", "case={case_label}: {resp:?}");
+            assert_eq!(resp.bytes_written, split as u64, "case={case_label}");
+
+            let saved = wait_phase(&daemon2, &export_id, "saved").await;
+            assert!(saved.verified, "case={case_label}");
+            assert_eq!(fs::read(&dest).unwrap(), payload, "case={case_label}");
+            assert!(
+                !has_any_part_file(tmp.path(), &export_id),
+                "case={case_label}"
+            );
+
+            let seen = daemon2_opener.seen_ranges.lock().unwrap().clone();
+            assert_eq!(seen.len(), 1, "case={case_label}");
+            assert_eq!(
+                seen[0],
+                (Some(format!("bytes={split}-")), Some(etag.clone())),
+                "case={case_label}"
+            );
+        }
     }
 }
