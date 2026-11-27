@@ -280,7 +280,7 @@ mod tests {
                         ),
                     ),
                     Arc::new(|_| None),
-                    Arc::new(std::fs::rename),
+                    Arc::new(|from, to| std::fs::rename(from, to)),
                     Arc::new(|| None),
                 ),
             ),
