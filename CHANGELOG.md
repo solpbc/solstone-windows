@@ -4,11 +4,11 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.61] - 2026-11-27
 
 ### Added
 
-- once your journal supports it, exporting a copy of your journal in the journal window now lets you pick where to save it first, streams it straight to disk while asking windows not to put your PC to sleep on its own, and checks the file before finishing. if your connection drops, your PC goes to sleep, or you pause the save, you can resume where it left off. when it's done, you can show the saved copy in File Explorer.
+- once your journal supports it, exporting a copy of your journal in the journal window now lets you pick where to save it first. the solstone app then streams it straight to disk, asks windows not to put your PC to sleep on its own, and checks the saved copy before finishing. if your connection drops, your PC goes to sleep, or you pause the save, you can resume where it left off. when it's done, you can show the saved copy in File Explorer.
 
 ### Changed
 
@@ -16,7 +16,7 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Fixed
 
-- when one piece of a large file stops sending during import, the app checks what your journal received. if that piece didn't arrive, the app can try a smaller one.
+- on a slow connection, a large import could keep sending the same piece again and again without moving forward. the solstone app now checks what your journal received and, if nothing arrived, sends a smaller piece.
 
 ## [2.0.60] - 2026-11-26
 
