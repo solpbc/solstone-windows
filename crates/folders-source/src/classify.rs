@@ -218,6 +218,54 @@ pub fn classify_text_file(bytes: &[u8], supported: &SupportedList) -> FileKind {
     }
 }
 
+// Journal-advertised transcript extensions overlap notes and ordinary files.
+// Admit structured exports only when their conversation layout is present.
+fn transcript_layout(ext: &str, bytes: Option<&[u8]>) -> bool {
+    if matches!(ext, "srt" | "vtt") {
+        return true;
+    }
+    use crate::structured_exports::*;
+    let Some(text) = bytes.and_then(decode_structured_utf8) else {
+        return false;
+    };
+    match ext {
+        "json" => {
+            parse_slack_json(text).is_some()
+                || parse_telegram_json(text).is_some()
+                || parse_whisper_json(text).is_some()
+                || parse_macwhisper_json(text).is_some()
+                || parse_podcast_transcript_json(text).is_some()
+        }
+        "csv" => parse_fireflies_csv(text).is_some(),
+        "tsv" => parse_whisper_tsv(text).is_some(),
+        "html" => parse_telegram_html(text).is_some(),
+        "md" | "markdown" | "txt" | "log" => {
+            let mut speakers = BTreeSet::new();
+            for line in text.lines().take(256) {
+                if let Some((role, body)) = line.trim().split_once(':') {
+                    let role = role.trim_matches('*').to_ascii_lowercase();
+                    if !body.trim_matches('*').trim().is_empty()
+                        && matches!(
+                            role.as_str(),
+                            "user"
+                                | "assistant"
+                                | "human"
+                                | "system"
+                                | "chatgpt"
+                                | "claude"
+                                | "gemini"
+                        )
+                    {
+                        speakers.insert(role);
+                    }
+                }
+            }
+            speakers.len() >= 2
+        }
+        _ => false,
+    }
+}
+
 /// Deterministic sorting table: assigns a file kind and decides whether file
 /// bytes are sent (`Content`), only metadata goes (`MetadataOnly`), or the
 /// file is ignored (`Ignore`).
@@ -238,6 +286,10 @@ pub fn classify_file(
 
     let file_kind = if is_screenshot && is_image {
         FileKind::Screenshot
+    } else if supported.transcript_extensions.contains(ext_str)
+        && transcript_layout(ext_str, note_bytes)
+    {
+        FileKind::Transcript
     } else if supported.note_extensions.contains(ext_str) {
         if size_bytes > supported.max_note_bytes {
             FileKind::Document
@@ -248,8 +300,6 @@ pub fn classify_file(
         }
     } else if supported.document_extensions.contains(ext_str) {
         FileKind::Document
-    } else if supported.transcript_extensions.contains(ext_str) {
-        FileKind::Transcript
     } else if is_image {
         FileKind::Photo
     } else {
@@ -306,19 +356,19 @@ pub fn detect_overlap(
             });
         }
     }
-    if let Some((path, name)) = obsidian {
-        if paths_overlap(&canonical, &normalize_path(path)) {
-            return OverlapOutcome::Overlap(OverlapTarget::Obsidian {
-                name: name.to_owned(),
-            });
-        }
+    if let Some((path, name)) = obsidian
+        && paths_overlap(&canonical, &normalize_path(path))
+    {
+        return OverlapOutcome::Overlap(OverlapTarget::Obsidian {
+            name: name.to_owned(),
+        });
     }
-    if let Some((path, name)) = screenshots {
-        if paths_overlap(&canonical, &normalize_path(path)) {
-            return OverlapOutcome::Overlap(OverlapTarget::Screenshots {
-                name: name.to_owned(),
-            });
-        }
+    if let Some((path, name)) = screenshots
+        && paths_overlap(&canonical, &normalize_path(path))
+    {
+        return OverlapOutcome::Overlap(OverlapTarget::Screenshots {
+            name: name.to_owned(),
+        });
     }
     OverlapOutcome::None
 }
@@ -462,6 +512,61 @@ mod tests {
         assert_eq!(
             classify_text_file(structured.as_bytes(), &supported),
             FileKind::Document
+        );
+    }
+
+    #[test]
+    fn negotiated_office_and_transcripts_respect_content_layout_and_kind_selection() {
+        let rules = crate::wire::parse_supported_list(br#"{"ruleset_version":9,"kinds":{"documents":{"extensions":["pdf","md","docx"]},"transcripts":{"extensions":["srt","txt","json","tsv","csv","html"]}}}"#).unwrap();
+        let all = FolderKinds::default();
+        let off = FolderKinds {
+            transcripts: false,
+            ..all
+        };
+        let slack =
+            br#"[{"type":"message","text":"hello","ts":"1743494400.000100","user":"U111AAA"}]"#;
+        for (ext, input) in [
+            ("json", slack.as_slice()),
+            ("tsv", b"start\tend\ttext\n100\t300\thello".as_slice()),
+            ("txt", b"user: hello\nassistant: hi".as_slice()),
+        ] {
+            assert_eq!(
+                classify_file(
+                    Some(ext),
+                    input.len() as u64,
+                    false,
+                    Some(input),
+                    all,
+                    &rules
+                ),
+                (FileKind::Transcript, DeliveryMode::Content)
+            );
+            assert_eq!(
+                classify_file(
+                    Some(ext),
+                    input.len() as u64,
+                    false,
+                    Some(input),
+                    off,
+                    &rules
+                ),
+                (FileKind::Transcript, DeliveryMode::MetadataOnly)
+            );
+        }
+        assert_eq!(
+            classify_file(
+                Some("json"),
+                21,
+                false,
+                Some(br#"{"port":8080}"#),
+                all,
+                &rules
+            ),
+            (FileKind::Other, DeliveryMode::MetadataOnly)
+        );
+        assert_eq!(
+            classify_file(Some("docx"), 100, false, None, all, &rules),
+            (FileKind::Document, DeliveryMode::Content)
         );
     }
 

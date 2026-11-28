@@ -14,14 +14,15 @@ pub mod engine;
 pub mod note_diff;
 pub mod platform;
 pub mod stamp;
+mod structured_exports;
 pub mod types;
 pub mod wire;
 pub mod worker;
 pub mod zone_identifier;
 
 pub use engine::{
-    stage_delivery, DeliveryOutcome, Engine, IntakeHook, OverlapContext, PendingEvent,
-    SegmentDelivery, StagedContentFile, MAX_ESTIMATE_ITEMS, MAX_UPLOAD_CONTENT_PARTS,
+    DeliveryOutcome, Engine, IntakeHook, MAX_ESTIMATE_ITEMS, MAX_UPLOAD_CONTENT_PARTS,
+    OverlapContext, PendingEvent, SegmentDelivery, StagedContentFile, stage_delivery,
 };
 pub use platform::{ConvertedImage, FolderPlatform};
 pub use screenshots_source::Span;
@@ -34,12 +35,12 @@ pub use types::{
     PlatformMetadata, PreviewSummary, SupportedList,
 };
 pub use wire::{
-    outcome_for, parse_estimate, parse_facets, parse_supported_list, FolderDeliveryReply,
-    FolderTransport, CAPABILITY, SOURCE,
+    CAPABILITY, FolderDeliveryReply, FolderTransport, SOURCE, outcome_for, parse_estimate,
+    parse_facets, parse_supported_list,
 };
 pub use worker::{FoldersHandle, OverlapProvider, Paused};
 pub use zone_identifier::{
-    extension_lower, guess_mime, origin_domain, parse_zone_identifier, ZoneIdentifier,
+    ZoneIdentifier, extension_lower, guess_mime, origin_domain, parse_zone_identifier,
 };
 
 use std::future::Future;
@@ -75,8 +76,8 @@ mod tests {
     use std::ffi::OsString;
     use std::fs;
     use std::path::Path;
-    use std::sync::atomic::{AtomicI64, Ordering};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicI64, Ordering};
 
     struct FakePlatform {
         ms: AtomicI64,
@@ -138,12 +139,12 @@ mod tests {
                 .collect()
         }
 
-        fn read_zone_identifier(&self, path: &Path) -> Option<ZoneIdentifier> {
+        fn read_zone_identifier(&self, _root: &Path, path: &Path) -> Option<ZoneIdentifier> {
             let key = classify::normalize_path(path);
             self.zones.lock().unwrap().get(&key).cloned()
         }
 
-        fn is_screenshot(&self, path: &Path, _ext: Option<&str>) -> bool {
+        fn is_screenshot(&self, _root: &Path, path: &Path, _ext: Option<&str>) -> bool {
             path.file_stem()
                 .and_then(|s| s.to_str())
                 .is_some_and(screenshots_source::rules::has_name_stamp)
@@ -251,23 +252,25 @@ mod tests {
             }]
         );
 
-        let delivery = engine.next_delivery(false).unwrap();
-        let (meta, parts) = stage_delivery(&delivery, &*platform).unwrap();
-        assert_eq!(meta.v, 1);
-        assert_eq!(meta.id, id);
-        assert_eq!(meta.name, "Downloads");
-        assert_eq!(meta.facet.as_deref(), Some("work"));
-        // 1 activity JSONL + 5 content parts (md, pdf, vtt, converted png, converted jpg)
-        assert_eq!(parts.len(), 6);
-        assert!(parts[0].filename.starts_with("folder_"));
-        assert!(parts[0].filename.ends_with(".jsonl"));
-        // Both convertible images went through platform.convert_image
+        let mut content = Vec::new();
+        let mut jsonl = String::new();
+        while let Some(delivery) = engine.next_delivery(false) {
+            let (meta, parts) = stage_delivery(&delivery, &*platform).unwrap();
+            assert_eq!(meta.v, 1);
+            assert_eq!(meta.id, id);
+            assert_eq!(meta.name, "Downloads");
+            assert_eq!(meta.facet.as_deref(), Some("work"));
+            assert!(parts[0].filename.starts_with("folder_"));
+            assert!(parts[0].filename.ends_with(".jsonl"));
+            jsonl.push_str(std::str::from_utf8(&parts[0].bytes).unwrap());
+            content.extend(parts.into_iter().skip(1));
+            engine.record_outcome(&delivery, DeliveryOutcome::Delivered);
+        }
+        assert_eq!(content.len(), 5);
         assert_eq!(platform.converted.lock().unwrap().len(), 2);
-        assert!(parts.iter().any(|p| p.filename.ends_with(".png")));
-        assert!(parts.iter().any(|p| p.filename.ends_with(".jpg")));
+        assert!(content.iter().any(|p| p.filename.ends_with(".png")));
+        assert!(content.iter().any(|p| p.filename.ends_with(".jpg")));
 
-        // Verify Zone.Identifier fields landed on the installer.exe activity line
-        let jsonl = std::str::from_utf8(&parts[0].bytes).unwrap();
         let exe_line: serde_json::Value = jsonl
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
@@ -283,9 +286,6 @@ mod tests {
             exe_line["platform"]["referrer_url"],
             "https://releases.example.org/download"
         );
-
-        engine.record_outcome(&delivery, DeliveryOutcome::Delivered);
-        assert!(engine.next_delivery(false).is_none());
     }
 
     #[test]
@@ -534,6 +534,118 @@ mod tests {
         fs::remove_file(folder.join("ephemeral.md")).unwrap();
         engine.scan_all();
         platform.advance_ms(600_000);
+        assert!(engine.next_delivery(false).is_none());
+    }
+    #[test]
+    fn confirmed_queue_follows_pairing_without_starting_history_or_resuming_pause() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("selected");
+        let state = dir.path().join("app");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+            + 600_000;
+        let platform = FakePlatform::new(now, 0, dir.path().to_owned());
+        write_settled(&root.join("waiting.txt"), b"confirmed while offline");
+        let mut engine = Engine::open(state.clone(), platform.clone());
+        let id = engine.begin_setup(&root, None).unwrap();
+        engine.confirm_folder(&id, Span::All).unwrap();
+        engine.restart_setup();
+        write_settled(&root.join("new-history.txt"), b"belongs to new setup");
+        let mut engine = Engine::open(state, platform.clone());
+        engine.scan_all();
+        assert_eq!(engine.folders()[0].mode, FolderMode::SettingUp);
+        assert!(engine.next_delivery(true).is_none());
+        let held = engine.next_delivery(false).unwrap();
+        assert_eq!(
+            held.events
+                .iter()
+                .map(|ev| ev.rel_path.as_str())
+                .collect::<Vec<_>>(),
+            ["waiting.txt"]
+        );
+        engine.record_outcome(&held, DeliveryOutcome::Delivered);
+        assert!(engine.next_delivery(false).is_none());
+        engine.confirm_folder(&id, Span::All).unwrap();
+        engine.pause_folder(&id);
+        engine.restart_setup();
+        assert!(engine.next_delivery(false).is_none());
+        engine.confirm_folder(&id, Span::All).unwrap();
+        assert!(engine.next_delivery(false).is_none());
+        assert!(engine.resume_folder(&id));
+        let history = engine.next_delivery(false).unwrap();
+        assert!(
+            history
+                .events
+                .iter()
+                .any(|ev| ev.rel_path == "new-history.txt")
+        );
+    }
+
+    #[test]
+    fn offline_confirmation_uses_negotiated_kinds_before_first_upload() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("selected");
+        let platform = FakePlatform::new(2_000_000_000_000, 0, dir.path().to_owned());
+        write_settled(&root.join("read.docx"), b"document");
+        write_settled(&root.join("chat.txt"), b"user: hello\nassistant: hi");
+        let mut engine = Engine::open(dir.path().join("app"), platform.clone());
+        let id = engine.begin_setup(&root, None).unwrap();
+        engine.set_kinds(
+            &id,
+            FolderKinds {
+                transcripts: false,
+                ..FolderKinds::default()
+            },
+        );
+        engine.confirm_folder(&id, Span::All).unwrap();
+        let mut rules = SupportedList::default();
+        rules.document_extensions.insert("docx".into());
+        rules.transcript_extensions.insert("txt".into());
+        engine.set_supported_list(rules);
+        let mut delivery = engine.next_delivery(false).unwrap();
+        let chat = delivery
+            .events
+            .iter()
+            .find(|ev| ev.rel_path == "chat.txt")
+            .unwrap();
+        assert_eq!(
+            (chat.kind, chat.delivery),
+            (FileKind::Transcript, DeliveryMode::MetadataOnly)
+        );
+        assert!(chat.note_payload.is_none());
+        assert_eq!(delivery.content_files.len(), 1);
+        assert_eq!(delivery.content_files[0].kind, FileKind::Document);
+        delivery.folder_name = "日".repeat(100);
+        let (meta, _) = stage_delivery(&delivery, &*platform).unwrap();
+        assert_eq!(meta.name, "日".repeat(42));
+    }
+
+    #[test]
+    fn staging_rechecks_a_queued_note_and_splits_dense_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("selected");
+        let platform = FakePlatform::new(2_000_000_000_000, 0, dir.path().to_owned());
+        for i in 0..300 {
+            write_settled(&root.join(format!("item-{i}.bin")), b"metadata only");
+        }
+        let mut engine = Engine::open(dir.path().join("app"), platform.clone());
+        let id = engine.begin_setup(&root, None).unwrap();
+        engine.confirm_folder(&id, Span::All).unwrap();
+        let mut received = 0;
+        while let Some(delivery) = engine.next_delivery(false) {
+            assert!(delivery.events.len() < 300);
+            received += delivery.events.len();
+            engine.record_outcome(&delivery, DeliveryOutcome::Delivered);
+        }
+        assert_eq!(received, 300);
+        write_settled(&root.join("note.md"), b"private draft");
+        engine.scan_all();
+        let delivery = engine.next_delivery(false).unwrap();
+        fs::remove_file(root.join("note.md")).unwrap();
+        assert!(stage_delivery(&delivery, &*platform).is_err());
+        engine.scan_all();
         assert!(engine.next_delivery(false).is_none());
     }
 }

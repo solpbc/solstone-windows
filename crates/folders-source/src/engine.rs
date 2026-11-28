@@ -20,13 +20,13 @@ use screenshots_source::Span;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use solstone_folder_sync::files::{
-    hash_local_file, is_placeholder, read_local, settled, sha256_hex, visit_directory, ListingError,
+    ListingError, is_placeholder, settled, sha256_hex, visit_directory,
 };
 
 use crate::classify::{
-    classify_file, detect_overlap, folder_label, folder_name, is_junk_entry, is_partial_download,
-    join_rel_path, normalize_path, paths_equal, strip_verbatim_prefix, symlink_stays_inside,
-    OverlapOutcome,
+    OverlapOutcome, classify_file, detect_overlap, folder_label, folder_name, is_junk_entry,
+    is_partial_download, join_rel_path, normalize_path, paths_equal, strip_verbatim_prefix,
+    symlink_stays_inside,
 };
 use crate::note_diff::net_line_diff;
 use crate::platform::FolderPlatform;
@@ -34,14 +34,15 @@ use crate::stamp::{Stamp, Window};
 use crate::types::{
     ActivityVerb, BackfillEstimate, DeliveryMode, EstimateItem, FacetOption, FacetsAvailability,
     FileKind, FolderAttention, FolderDeclaration, FolderDeclaredState, FolderKinds, FolderMode,
-    FolderSummary, FoldersDocument, OverlapTarget, PathCheckResult, PlatformMetadata,
-    PreviewSummary, SupportedList, MAX_CONTENT_BYTES,
+    FolderSummary, FoldersDocument, MAX_CONTENT_BYTES, OverlapTarget, PathCheckResult,
+    PlatformMetadata, PreviewSummary, SupportedList,
 };
 use crate::zone_identifier::{extension_lower, guess_mime, origin_domain, system_time_ms};
 
 const LEDGER_FILE: &str = "ledger.json";
 const LEDGER_VERSION: u32 = 1;
 const SETTLE_MS: i64 = 2_000;
+const TEXT_SAMPLE_LIMIT: u64 = 32 * 1024 * 1024;
 const DAY_MS: i64 = 86_400_000;
 const RETRY_MS: [i64; 4] = [30_000, 120_000, 600_000, 1_800_000];
 /// Maximum companion content files per protocol-v3 folder segment upload
@@ -130,6 +131,8 @@ pub struct FolderRecord {
     pub mode: FolderMode,
     #[serde(default)]
     pub returning: bool,
+    #[serde(default)]
+    held_paused: bool,
     #[serde(default)]
     pub kinds: FolderKinds,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -269,6 +272,51 @@ impl Engine {
     }
 
     pub fn set_supported_list(&mut self, supported: SupportedList) {
+        if self.supported == supported {
+            return;
+        }
+        // Entries confirmed offline must obey the negotiated kinds before upload.
+        for folder in &mut self.ledger.folders {
+            folder.pending.retain_mut(|ev| {
+                if ev.verb == ActivityVerb::Removed {
+                    return true;
+                }
+                let ext = ev.metadata.extension.as_deref();
+                let sample = if needs_text_sample(ext, &supported)
+                    && ev.metadata.size_bytes <= supported.max_content_bytes.min(TEXT_SAMPLE_LIMIT)
+                {
+                    let path = join_rel_path(&folder.path, &ev.rel_path);
+                    self.platform
+                        .read_file(
+                            &folder.path,
+                            &path,
+                            supported.max_content_bytes.min(TEXT_SAMPLE_LIMIT),
+                        )
+                        .ok()
+                } else {
+                    None
+                };
+                let (kind, delivery) = classify_file(
+                    ext,
+                    ev.metadata.size_bytes,
+                    ev.kind == FileKind::Screenshot,
+                    sample.as_deref(),
+                    folder.kinds,
+                    &supported,
+                );
+                if kind != ev.kind || delivery != DeliveryMode::Content {
+                    ev.note_payload = None;
+                    ev.note_is_diff = false;
+                }
+                ev.kind = kind;
+                ev.delivery = delivery;
+                if let Some(tracked) = folder.files.get_mut(&ev.rel_path) {
+                    tracked.kind = kind;
+                    tracked.delivery = delivery;
+                }
+                delivery != DeliveryMode::Ignore
+            });
+        }
         self.supported = supported;
     }
 
@@ -386,6 +434,7 @@ impl Engine {
             label,
             mode: FolderMode::SettingUp,
             returning: false,
+            held_paused: false,
             kinds: FolderKinds::default(),
             facet: None,
             overlap,
@@ -508,10 +557,16 @@ impl Engine {
                 continue;
             }
             let note_bytes =
-                if is_note_candidate(file.metadata.extension.as_deref(), &self.supported)
-                    && file.size_bytes <= self.supported.max_note_bytes
+                if needs_text_sample(file.metadata.extension.as_deref(), &self.supported)
+                    && file.size_bytes <= self.supported.max_content_bytes.min(TEXT_SAMPLE_LIMIT)
                 {
-                    read_local(&file.abs_path).ok()
+                    self.platform
+                        .read_file(
+                            &root,
+                            &file.abs_path,
+                            self.supported.max_content_bytes.min(TEXT_SAMPLE_LIMIT),
+                        )
+                        .ok()
                 } else {
                     None
                 };
@@ -592,10 +647,10 @@ impl Engine {
 
     /// Replace the cached preview estimate with the journal's own estimate.
     pub fn set_journal_estimate(&mut self, folder_id: &str, estimate: BackfillEstimate) {
-        if let Some(folder) = self.ledger.folders.iter_mut().find(|f| f.id == folder_id) {
-            if let Some(preview) = folder.preview.as_mut() {
-                preview.estimate = Some(estimate);
-            }
+        if let Some(folder) = self.ledger.folders.iter_mut().find(|f| f.id == folder_id)
+            && let Some(preview) = folder.preview.as_mut()
+        {
+            preview.estimate = Some(estimate);
         }
     }
 
@@ -619,7 +674,12 @@ impl Engine {
         let walk = walk_folder(&root, &*self.platform).map_err(|_| "unreadable".to_owned())?;
 
         let folder = &mut self.ledger.folders[idx];
-        folder.mode = FolderMode::On;
+        folder.mode = if folder.held_paused {
+            FolderMode::Paused
+        } else {
+            FolderMode::On
+        };
+        folder.held_paused = false;
         folder.returning = true;
         folder.folder_seen = true;
         folder.attention = None;
@@ -630,13 +690,19 @@ impl Engine {
             None => from_ms,
         });
 
+        let held: BTreeSet<String> = folder
+            .pending
+            .iter()
+            .map(|ev| ev.rel_path.clone())
+            .collect();
         let mut queued_now = 0u64;
         for file in walk.files {
-            if folder
-                .files
-                .get(&file.rel_path)
-                .is_some_and(|existing| existing.delivered_to_journal)
-            {
+            if held.contains(&file.rel_path) {
+                continue;
+            }
+            if folder.files.get(&file.rel_path).is_some_and(|existing| {
+                existing.delivered_to_journal || existing.pending_revision_save_ms.is_some()
+            }) {
                 continue;
             }
             if file.metadata.modified_ms < from_ms {
@@ -662,10 +728,16 @@ impl Engine {
             }
 
             let note_bytes =
-                if is_note_candidate(file.metadata.extension.as_deref(), &self.supported)
-                    && file.size_bytes <= self.supported.max_note_bytes
+                if needs_text_sample(file.metadata.extension.as_deref(), &self.supported)
+                    && file.size_bytes <= self.supported.max_content_bytes.min(TEXT_SAMPLE_LIMIT)
                 {
-                    read_local(&file.abs_path).ok()
+                    self.platform
+                        .read_file(
+                            &root,
+                            &file.abs_path,
+                            self.supported.max_content_bytes.min(TEXT_SAMPLE_LIMIT),
+                        )
+                        .ok()
                 } else {
                     None
                 };
@@ -685,7 +757,10 @@ impl Engine {
                 if let Some(ref nb) = note_bytes {
                     Some(sha256_hex(nb))
                 } else {
-                    hash_local_file(&file.abs_path).ok()
+                    self.platform
+                        .read_file(&root, &file.abs_path, self.supported.max_content_bytes)
+                        .map(|b| sha256_hex(&b))
+                        .ok()
                 }
             } else {
                 None
@@ -750,7 +825,9 @@ impl Engine {
         }
 
         if queued_now > 0 {
-            folder.backfill_total = folder.backfill_done.saturating_add(queued_now);
+            folder.backfill_total = folder
+                .backfill_done
+                .saturating_add(folder.pending.iter().filter(|ev| ev.backfill).count() as u64);
         }
         let _ = self.save();
         Ok(())
@@ -824,23 +901,23 @@ impl Engine {
 
     /// Pairing principle 9: a new journal pairing restarts first setup on all
     /// active/paused folders while keeping the owner's granted folders, kinds,
-    /// and facet choice. Pending items from the old pairing never cross over.
+    /// facet choice and previously confirmed work for the next marked journal.
     pub fn restart_setup(&mut self) {
         for folder in &mut self.ledger.folders {
             if matches!(folder.mode, FolderMode::On | FolderMode::Paused) {
+                folder.held_paused = folder.mode == FolderMode::Paused;
                 folder.mode = FolderMode::SettingUp;
                 folder.returning = true;
             }
-            folder.pending.clear();
-            folder.backfill_total = 0;
-            folder.backfill_done = 0;
+            for event in &mut folder.pending {
+                event.tries = 0;
+                event.retry_at_ms = None;
+            }
             folder.span_from_ms = None;
             folder.preview = None;
             for tracked in folder.files.values_mut() {
                 tracked.delivered_to_journal = false;
                 tracked.last_sent_hash = None;
-                tracked.pending_revision_save_ms = None;
-                tracked.pending_revision_hash = None;
             }
         }
         let _ = self.save();
@@ -856,11 +933,14 @@ impl Engine {
 
         for idx in 0..self.ledger.folders.len() {
             let mode = self.ledger.folders[idx].mode;
-            if !matches!(mode, FolderMode::On | FolderMode::Paused) {
-                continue;
+            if matches!(mode, FolderMode::On | FolderMode::Paused) {
+                dirty |= self.scan_one(idx, now_ms);
             }
-            if self.scan_one(idx, now_ms) {
-                dirty = true;
+            if matches!(
+                mode,
+                FolderMode::On | FolderMode::Paused | FolderMode::SettingUp
+            ) {
+                dirty |= self.enqueue_due_revisions(idx, now_ms);
             }
         }
         if dirty {
@@ -955,23 +1035,27 @@ impl Engine {
                 }
             }
             // 2. Content hash match (when size matches and old had a content hash)
-            if matched_old.is_none() && disappeared_sizes.contains(&cand.size_bytes) {
-                if let Ok(cand_hash) = hash_local_file(&cand.abs_path) {
-                    for old_rel in &disappeared_paths {
-                        if matched_disappeared.contains(old_rel) {
-                            continue;
-                        }
-                        if self.ledger.folders[idx]
-                            .files
-                            .get(old_rel)
-                            .is_some_and(|old| {
-                                old.size_bytes == cand.size_bytes
-                                    && old.content_hash.as_deref() == Some(cand_hash.as_str())
-                            })
-                        {
-                            matched_old = Some(old_rel.clone());
-                            break;
-                        }
+            if matched_old.is_none()
+                && disappeared_sizes.contains(&cand.size_bytes)
+                && let Ok(cand_hash) = self
+                    .platform
+                    .read_file(&root, &cand.abs_path, self.supported.max_content_bytes)
+                    .map(|b| sha256_hex(&b))
+            {
+                for old_rel in &disappeared_paths {
+                    if matched_disappeared.contains(old_rel) {
+                        continue;
+                    }
+                    if self.ledger.folders[idx]
+                        .files
+                        .get(old_rel)
+                        .is_some_and(|old| {
+                            old.size_bytes == cand.size_bytes
+                                && old.content_hash.as_deref() == Some(cand_hash.as_str())
+                        })
+                    {
+                        matched_old = Some(old_rel.clone());
+                        break;
                     }
                 }
             }
@@ -1039,10 +1123,10 @@ impl Engine {
                 let Some(old) = self.ledger.folders[idx].files.remove(&old_rel) else {
                     continue;
                 };
+                self.ledger.folders[idx]
+                    .pending
+                    .retain(|ev| ev.rel_path != old_rel);
                 if !old.delivered_to_journal {
-                    self.ledger.folders[idx]
-                        .pending
-                        .retain(|ev| ev.rel_path != old_rel);
                     changed = true;
                 } else if !old.excluded_before_span {
                     let ev_stamp = self.platform.stamp_at(now_ms);
@@ -1088,10 +1172,16 @@ impl Engine {
         let folder_id = self.ledger.folders[idx].id.clone();
         for file in remaining_new {
             let note_bytes =
-                if is_note_candidate(file.metadata.extension.as_deref(), &self.supported)
-                    && file.size_bytes <= self.supported.max_note_bytes
+                if needs_text_sample(file.metadata.extension.as_deref(), &self.supported)
+                    && file.size_bytes <= self.supported.max_content_bytes.min(TEXT_SAMPLE_LIMIT)
                 {
-                    read_local(&file.abs_path).ok()
+                    self.platform
+                        .read_file(
+                            &root,
+                            &file.abs_path,
+                            self.supported.max_content_bytes.min(TEXT_SAMPLE_LIMIT),
+                        )
+                        .ok()
                 } else {
                     None
                 };
@@ -1110,7 +1200,10 @@ impl Engine {
                 if let Some(ref nb) = note_bytes {
                     Some(sha256_hex(nb))
                 } else {
-                    hash_local_file(&file.abs_path).ok()
+                    self.platform
+                        .read_file(&root, &file.abs_path, self.supported.max_content_bytes)
+                        .map(|b| sha256_hex(&b))
+                        .ok()
                 }
             } else {
                 None
@@ -1173,10 +1266,16 @@ impl Engine {
         // documents/transcripts enter the one-hour revision cool-down.
         for file in modified_candidates {
             let note_bytes =
-                if is_note_candidate(file.metadata.extension.as_deref(), &self.supported)
-                    && file.size_bytes <= self.supported.max_note_bytes
+                if needs_text_sample(file.metadata.extension.as_deref(), &self.supported)
+                    && file.size_bytes <= self.supported.max_content_bytes.min(TEXT_SAMPLE_LIMIT)
                 {
-                    read_local(&file.abs_path).ok()
+                    self.platform
+                        .read_file(
+                            &root,
+                            &file.abs_path,
+                            self.supported.max_content_bytes.min(TEXT_SAMPLE_LIMIT),
+                        )
+                        .ok()
                 } else {
                     None
                 };
@@ -1195,7 +1294,10 @@ impl Engine {
                 if let Some(ref nb) = note_bytes {
                     Some(sha256_hex(nb))
                 } else {
-                    hash_local_file(&file.abs_path).ok()
+                    self.platform
+                        .read_file(&root, &file.abs_path, self.supported.max_content_bytes)
+                        .map(|b| sha256_hex(&b))
+                        .ok()
                 }
             } else {
                 None
@@ -1271,11 +1373,14 @@ impl Engine {
                     changed = true;
                 }
                 (FileKind::Document | FileKind::Transcript, DeliveryMode::Content, true) => {
-                    if new_hash.as_deref() != tracked.last_sent_hash.as_deref() {
+                    if new_hash.as_deref() == tracked.last_sent_hash.as_deref() {
+                        tracked.pending_revision_save_ms = None;
+                        tracked.pending_revision_hash = None;
+                    } else {
                         tracked.pending_revision_save_ms = Some(ev_ms);
                         tracked.pending_revision_hash = new_hash;
-                        changed = true;
                     }
+                    changed = true;
                 }
                 (FileKind::Document | FileKind::Transcript, DeliveryMode::Content, false) => {
                     self.ledger.folders[idx]
@@ -1335,7 +1440,13 @@ impl Engine {
             }
         }
 
-        // Check one-hour revision cool-downs across all tracked documents & transcripts.
+        changed
+    }
+
+    fn enqueue_due_revisions(&mut self, idx: usize, now_ms: i64) -> bool {
+        let mut changed = false;
+        let root = self.ledger.folders[idx].path.clone();
+        let folder_id = self.ledger.folders[idx].id.clone();
         let rev_wait_ms = self.supported.document_revision_cooldown_ms;
         let due_revisions: Vec<(String, i64, FileKind, Option<String>)> = self.ledger.folders[idx]
             .files
@@ -1357,19 +1468,13 @@ impl Engine {
 
         for (rel_path, save_ms, kind, rev_hash) in due_revisions {
             let abs_path = join_rel_path(&root, &rel_path);
-            let Ok(sym_meta) = fs::symlink_metadata(&abs_path) else {
+            let Ok(handle) = self.platform.open_file(&root, &abs_path) else {
                 continue;
             };
-            if is_placeholder(&sym_meta) {
-                continue;
-            }
-            let Ok(fs_meta) = fs::metadata(&abs_path) else {
+            let Ok(fs_meta) = handle.metadata() else {
                 continue;
             };
-            if is_placeholder(&fs_meta) {
-                continue;
-            }
-            let metadata = collect_metadata(&abs_path, &fs_meta, &*self.platform);
+            let metadata = collect_metadata(&root, &abs_path, &fs_meta, &*self.platform);
             let ev_stamp = self.platform.stamp_at(save_ms);
             let event_id = event_id_for(&folder_id, &rel_path, ActivityVerb::Revised, save_ms);
             self.ledger.folders[idx].pending.push(PendingEvent {
@@ -1411,74 +1516,81 @@ impl Engine {
             return None;
         }
         let now_ms = self.platform.now_ms();
-        let mut best_key: Option<(usize, Window)> = None;
-
+        let mut windows: BTreeMap<(Window, usize), Vec<&PendingEvent>> = BTreeMap::new();
         for (idx, folder) in self.ledger.folders.iter().enumerate() {
-            if folder.mode != FolderMode::On || folder.attention.is_some() {
+            let can_deliver = folder.mode == FolderMode::On
+                || (folder.mode == FolderMode::SettingUp && !folder.held_paused);
+            if !can_deliver || folder.attention.is_some() {
                 continue;
             }
-            for ev in &folder.pending {
-                if ev.window_end_ms > now_ms {
-                    continue;
-                }
-                if ev.retry_at_ms.is_some_and(|at| at > now_ms) {
-                    continue;
-                }
-                let replace = match &best_key {
-                    None => true,
-                    Some((_, best_win)) => ev.window > *best_win,
-                };
-                if replace {
-                    best_key = Some((idx, ev.window.clone()));
+            for event in &folder.pending {
+                if event.window_end_ms <= now_ms && event.retry_at_ms.is_none_or(|at| at <= now_ms)
+                {
+                    windows
+                        .entry((event.window.clone(), idx))
+                        .or_default()
+                        .push(event);
                 }
             }
         }
-
-        let (idx, window) = best_key?;
-        let folder = &mut self.ledger.folders[idx];
-        let mut events: Vec<PendingEvent> = folder
-            .pending
-            .iter()
-            .filter(|ev| {
-                ev.window == window
-                    && ev.window_end_ms <= now_ms
-                    && ev.retry_at_ms.is_none_or(|at| at <= now_ms)
+        windows
+            .into_iter()
+            .rev()
+            .find_map(|((window, idx), events)| {
+                self.select_window(&self.ledger.folders[idx], window, events)
             })
-            .cloned()
-            .collect();
+    }
+
+    fn select_window(
+        &self,
+        folder: &FolderRecord,
+        window: Window,
+        mut events: Vec<&PendingEvent>,
+    ) -> Option<SegmentDelivery> {
         events.sort_by(|a, b| {
             a.event_ms
                 .cmp(&b.event_ms)
                 .then_with(|| a.rel_path.cmp(&b.rel_path))
         });
 
-        let mut dropped_ids: BTreeSet<String> = BTreeSet::new();
-        let mut selected_events: Vec<PendingEvent> = Vec::with_capacity(events.len());
+        let mut selected_events: Vec<PendingEvent> = Vec::with_capacity(events.len().min(256));
         let mut staged_files = Vec::new();
+        let mut staged_bytes = 0u64;
         for ev in events {
-            if ev.delivery != DeliveryMode::Content {
-                selected_events.push(ev);
-                continue;
-            }
-            if staged_files.len() >= MAX_UPLOAD_CONTENT_PARTS {
-                continue;
+            // Bounded well below the wire line/byte caps, including two long origin URLs per row.
+            if selected_events.len() >= 256 {
+                break;
             }
             let disk_path = join_rel_path(&folder.path, &ev.rel_path);
-            let exists = disk_path.is_file();
-            if !exists {
-                let delivered = folder
-                    .files
-                    .get(&ev.rel_path)
-                    .is_some_and(|t| t.delivered_to_journal);
-                if !delivered {
-                    dropped_ids.insert(ev.id.clone());
-                    folder.files.remove(&ev.rel_path);
-                    continue;
-                }
+            // Only a complete scan may infer a removal. Skip a stale event here
+            // when its path can no longer be opened, including during first setup.
+            if ev.verb != ActivityVerb::Removed
+                && self.platform.open_file(&folder.path, &disk_path).is_err()
+            {
+                continue;
+            }
+            if ev.delivery != DeliveryMode::Content {
+                selected_events.push(ev.clone());
+                continue;
+            }
+            if staged_files.len() >= MAX_UPLOAD_CONTENT_PARTS
+                || staged_bytes.saturating_add(ev.metadata.size_bytes) > MAX_CONTENT_BYTES
+            {
+                continue;
             }
             let ext = ev.metadata.extension.as_deref().unwrap_or("");
             let needs_image_convert = matches!(ev.kind, FileKind::Screenshot | FileKind::Photo)
                 && self.supported.convertible_image_extensions.contains(ext);
+            // Compressed images can expand up to the entire content allowance.
+            // Reserve that space until the converter has measured its output.
+            if needs_image_convert && !staged_files.is_empty() {
+                continue;
+            }
+            staged_bytes = if needs_image_convert {
+                MAX_CONTENT_BYTES
+            } else {
+                staged_bytes.saturating_add(ev.metadata.size_bytes)
+            };
             staged_files.push(StagedContentFile {
                 event_id: ev.id.clone(),
                 rel_path: ev.rel_path.clone(),
@@ -1490,7 +1602,7 @@ impl Engine {
                 is_revision: ev.is_revision,
                 needs_image_convert,
             });
-            selected_events.push(ev);
+            selected_events.push(ev.clone());
         }
 
         let folder_id = folder.id.clone();
@@ -1499,12 +1611,8 @@ impl Engine {
         let facet = folder.facet.as_ref().map(|f| f.name.clone());
         let kinds = folder.kinds;
 
-        if !dropped_ids.is_empty() {
-            folder.pending.retain(|ev| !dropped_ids.contains(&ev.id));
-            let _ = self.save();
-            if selected_events.is_empty() {
-                return None;
-            }
+        if selected_events.is_empty() {
+            return None;
         }
 
         Some(SegmentDelivery {
@@ -1570,10 +1678,11 @@ impl Engine {
                         if ev.content_hash.is_some() {
                             tracked.last_sent_hash = ev.content_hash.clone();
                         }
-                        if ev.kind == FileKind::Note && ev.delivery == DeliveryMode::Content {
-                            if let Some(ref text) = ev.note_payload {
-                                tracked.last_note_text = Some(text.clone());
-                            }
+                        if ev.kind == FileKind::Note
+                            && ev.delivery == DeliveryMode::Content
+                            && let Some(ref text) = ev.note_payload
+                        {
+                            tracked.last_note_text = Some(text.clone());
                         }
                     }
                 }
@@ -1721,8 +1830,18 @@ pub fn stage_delivery(
     let mut staged_parts: HashMap<&str, (String, String)> = HashMap::new();
     let mut companion_parts: Vec<FilePart> = Vec::new();
     let mut next_index = 1usize;
+    let mut remaining = MAX_CONTENT_BYTES;
 
     for content in &delivery.content_files {
+        let bytes = platform.read_file(&delivery.folder_root, &content.disk_path, remaining)?;
+        if content.note_payload.is_none()
+            && content
+                .content_hash
+                .as_ref()
+                .is_some_and(|hash| *hash != sha256_hex(&bytes))
+        {
+            return Err(io::Error::other("file changed since scan"));
+        }
         let orig_ext = Path::new(&content.rel_path)
             .extension()
             .and_then(|e| e.to_str())
@@ -1732,7 +1851,11 @@ pub fn stage_delivery(
         if let Some(ref note_text) = content.note_payload {
             let ext = orig_ext.as_deref().unwrap_or("md");
             let part_name = format!("c_{next_index:02}.{ext}");
+            if note_text.len() as u64 > remaining {
+                return Err(io::Error::other("segment size changed"));
+            }
             let bytes = note_text.as_bytes().to_vec();
+            remaining -= bytes.len() as u64;
             let hash = sha256_hex(&bytes);
             let content_type = guess_mime(Some(ext)).unwrap_or_else(|| "text/plain".to_owned());
             staged_parts.insert(content.event_id.as_str(), (part_name.clone(), hash));
@@ -1743,29 +1866,22 @@ pub fn stage_delivery(
             });
             next_index += 1;
         } else if content.needs_image_convert {
-            let Ok(raw_bytes) = read_local(&content.disk_path) else {
-                continue;
-            };
-            if let Some(converted) = platform.convert_image(&raw_bytes, content.kind) {
-                if converted.bytes.len() as u64 <= MAX_CONTENT_BYTES {
-                    let part_name = format!("c_{next_index:02}.{}", converted.extension);
-                    let hash = sha256_hex(&converted.bytes);
-                    staged_parts.insert(content.event_id.as_str(), (part_name.clone(), hash));
-                    companion_parts.push(FilePart {
-                        filename: part_name,
-                        content_type: converted.content_type.to_owned(),
-                        bytes: converted.bytes,
-                    });
-                    next_index += 1;
-                }
+            if let Some(converted) = platform.convert_image(&bytes, content.kind)
+                && converted.bytes.len() as u64 <= remaining
+            {
+                remaining -= converted.bytes.len() as u64;
+                let part_name = format!("c_{next_index:02}.{}", converted.extension);
+                let hash = sha256_hex(&converted.bytes);
+                staged_parts.insert(content.event_id.as_str(), (part_name.clone(), hash));
+                companion_parts.push(FilePart {
+                    filename: part_name,
+                    content_type: converted.content_type.to_owned(),
+                    bytes: converted.bytes,
+                });
+                next_index += 1;
             }
         } else {
-            let Ok(bytes) = read_local(&content.disk_path) else {
-                continue;
-            };
-            if bytes.len() as u64 > MAX_CONTENT_BYTES {
-                continue;
-            }
+            remaining -= bytes.len() as u64;
             let part_name = match orig_ext.as_deref() {
                 Some(ext) => format!("c_{next_index:02}.{ext}"),
                 None => format!("c_{next_index:02}.bin"),
@@ -1785,6 +1901,10 @@ pub fn stage_delivery(
 
     let mut activity_bytes = Vec::new();
     for ev in &delivery.events {
+        if ev.delivery != DeliveryMode::Content && ev.verb != ActivityVerb::Removed {
+            let path = join_rel_path(&delivery.folder_root, &ev.rel_path);
+            platform.open_file(&delivery.folder_root, &path)?;
+        }
         let observed_ms = if ev.observed_ms != 0 {
             ev.observed_ms
         } else {
@@ -1837,10 +1957,10 @@ pub fn stage_delivery(
         line.insert("v".into(), Value::from(1u32));
         line.insert("event".into(), Value::from(ev.verb.wire_event()));
         line.insert("path".into(), Value::from(ev.rel_path.as_str()));
-        if ev.verb == ActivityVerb::Renamed {
-            if let Some(ref prev) = ev.previous_path {
-                line.insert("previous_path".into(), Value::from(prev.as_str()));
-            }
+        if ev.verb == ActivityVerb::Renamed
+            && let Some(ref prev) = ev.previous_path
+        {
+            line.insert("previous_path".into(), Value::from(prev.as_str()));
         }
         line.insert("at".into(), Value::from(at));
         line.insert("observed_at".into(), Value::from(observed_at));
@@ -1882,7 +2002,7 @@ pub fn stage_delivery(
     let meta = FolderMeta {
         v: 1,
         id: delivery.folder_id.clone(),
-        name: delivery.folder_name.clone(),
+        name: wire_folder_name(&delivery.folder_name, &delivery.folder_id),
         facet: delivery.facet.clone(),
         kinds: delivery.kinds.enabled_names(),
     };
@@ -1891,6 +2011,21 @@ pub fn stage_delivery(
     parts.push(activity_part);
     parts.extend(companion_parts);
     Ok((meta, parts))
+}
+
+fn wire_folder_name(name: &str, id: &str) -> String {
+    let mut label = String::new();
+    for c in name.trim().chars().filter(|c| !c.is_control()) {
+        if label.len() + c.len_utf8() > 128 {
+            break;
+        }
+        label.push(c);
+    }
+    if label.trim().is_empty() {
+        id.to_owned()
+    } else {
+        label
+    }
 }
 
 fn clean_platform_str(raw: Option<&str>) -> Option<String> {
@@ -1923,6 +2058,7 @@ fn load_ledger(state_dir: &Path) -> Option<Ledger> {
 }
 
 fn collect_metadata(
+    root: &Path,
     path: &Path,
     fs_meta: &fs::Metadata,
     platform: &dyn FolderPlatform,
@@ -1931,7 +2067,9 @@ fn collect_metadata(
     let created_ms = fs_meta.created().ok().map(system_time_ms);
     let extension = extension_lower(path);
     let mime = guess_mime(extension.as_deref());
-    let zone = platform.read_zone_identifier(path).unwrap_or_default();
+    let zone = platform
+        .read_zone_identifier(root, path)
+        .unwrap_or_default();
     let origin_dom = zone.origin_url.as_deref().and_then(origin_domain);
     PlatformMetadata {
         size_bytes: fs_meta.len(),
@@ -1946,8 +2084,11 @@ fn collect_metadata(
     }
 }
 
-fn is_note_candidate(ext: Option<&str>, supported: &SupportedList) -> bool {
-    ext.is_some_and(|e| supported.note_extensions.contains(&e.to_ascii_lowercase()))
+fn needs_text_sample(ext: Option<&str>, supported: &SupportedList) -> bool {
+    ext.is_some_and(|e| {
+        supported.note_extensions.contains(e)
+            || (supported.transcript_extensions.contains(e) && !matches!(e, "vtt" | "srt"))
+    })
 }
 
 fn span_start_ms(span: Span, now: Stamp) -> i64 {
@@ -2007,6 +2148,11 @@ fn walk_folder(root: &Path, platform: &dyn FolderPlatform) -> Result<WalkOutcome
         }
     })?;
     let canonical_root = strip_verbatim_prefix(&canonical_raw);
+    if canonical_root != strip_verbatim_prefix(root) {
+        return Err(ListingError::Incomplete(io::Error::other(
+            "selected folder moved",
+        )));
+    }
 
     let mut out = WalkOutcome {
         files: Vec::new(),
@@ -2083,13 +2229,16 @@ fn walk_folder(root: &Path, platform: &dyn FolderPlatform) -> Result<WalkOutcome
             if !meta.is_file() {
                 return Ok(());
             }
-            let platform_meta = collect_metadata(&abs_path, &meta, platform);
+            let platform_meta = collect_metadata(root, &abs_path, &meta, platform);
             let is_screenshot =
-                platform.is_screenshot(&abs_path, platform_meta.extension.as_deref());
+                platform.is_screenshot(root, &abs_path, platform_meta.extension.as_deref());
             let mtime_ns = meta
                 .modified()
                 .ok()
-                .map(|t| i128::from(system_time_ms(t)) * 1_000_000)
+                .map(|t| match t.duration_since(std::time::UNIX_EPOCH) {
+                    Ok(d) => d.as_nanos() as i128,
+                    Err(e) => -(e.duration().as_nanos() as i128),
+                })
                 .unwrap_or(0);
             let file_id = dir_ids.get(&name_os).cloned();
             out.files.push(WalkedFile {

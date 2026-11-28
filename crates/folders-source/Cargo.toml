@@ -1,7 +1,7 @@
 [package]
 name = "folders-source"
 version.workspace = true
-edition.workspace = true
+edition = "2024"
 license.workspace = true
 authors.workspace = true
 rust-version.workspace = true
@@ -17,6 +17,7 @@ screenshots-source.workspace = true
 source-counters.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+jiff = { version = "1.0.0", default-features = false, features = ["alloc"] }
 solstone-folder-sync.workspace = true
 tracing.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }

@@ -17,6 +17,7 @@ use folders_source::{
     classify::path_starts_with_ci, ConvertedImage, FileKind, FolderPlatform, ZoneIdentifier,
 };
 use observer_model::LocalOffset;
+#[cfg(windows)]
 use solstone_folder_sync::files as folder_sync;
 
 #[cfg(windows)]
@@ -25,8 +26,6 @@ const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
 const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
 #[cfg(windows)]
 const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-#[cfg(windows)]
-const FILE_FLAG_OPEN_NO_RECALL: u32 = 0x0010_0000;
 #[cfg(windows)]
 const MAX_ZONE_ID_BYTES: u64 = 16 * 1024;
 
@@ -60,6 +59,54 @@ impl FolderPlatform for WindowsFolders {
             .unwrap_or_else(crate::local_data_root)
     }
 
+    #[cfg(windows)]
+    #[allow(unsafe_code)] // Windows final-path lookup on the open file handle.
+    fn open_file(&self, root: &Path, path: &Path) -> std::io::Result<fs::File> {
+        use std::ffi::OsString;
+        use std::io;
+        use std::os::windows::ffi::OsStringExt;
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::Foundation::HANDLE;
+        use windows::Win32::Storage::FileSystem::{
+            GetFinalPathNameByHandleW, FILE_FLAG_OPEN_NO_RECALL, FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, VOLUME_NAME_DOS,
+        };
+
+        // Open the reparse point itself. Read only after validating attributes and
+        // the final path on this same handle. Keep the alternate stream intact.
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE).0)
+            .custom_flags((FILE_FLAG_OPEN_NO_RECALL | FILE_FLAG_OPEN_REPARSE_POINT).0)
+            .open(path)?;
+        let meta = file.metadata()?;
+        if folder_sync::is_placeholder(&meta)
+            || self.is_reparse_point(&meta)
+            || self.is_hidden_or_system(&meta)
+        {
+            return Err(io::Error::other("file is not available locally"));
+        }
+        let handle = HANDLE(file.as_raw_handle());
+        let mut name = vec![0; 512];
+        let resolved = loop {
+            // SAFETY: the file handle and mutable buffer live throughout this call.
+            let len =
+                unsafe { GetFinalPathNameByHandleW(handle, &mut name, VOLUME_NAME_DOS) } as usize;
+            if len == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if len < name.len() {
+                break PathBuf::from(OsString::from_wide(&name[..len]));
+            }
+            name.resize(len + 1, 0);
+        };
+        if !folders_source::classify::strip_verbatim_prefix(&resolved).starts_with(root) {
+            return Err(io::Error::other("outside selected folder"));
+        }
+        Ok(file)
+    }
+
     fn file_ids_in_dir(&self, dir: &Path) -> HashMap<OsString, String> {
         crate::dir_file_ids::file_ids_in_dir(dir)
             .into_iter()
@@ -67,8 +114,8 @@ impl FolderPlatform for WindowsFolders {
             .collect()
     }
 
-    fn read_zone_identifier(&self, path: &Path) -> Option<ZoneIdentifier> {
-        read_zone_identifier(path)
+    fn read_zone_identifier(&self, root: &Path, path: &Path) -> Option<ZoneIdentifier> {
+        read_zone_identifier(root, path)
     }
 
     fn is_hidden_or_system(&self, meta: &fs::Metadata) -> bool {
@@ -97,7 +144,7 @@ impl FolderPlatform for WindowsFolders {
         }
     }
 
-    fn is_screenshot(&self, path: &Path, extension: Option<&str>) -> bool {
+    fn is_screenshot(&self, root: &Path, path: &Path, extension: Option<&str>) -> bool {
         if let Some(own) = crate::screenshots::own_folder() {
             if path_starts_with_ci(path, &own) {
                 return true;
@@ -111,7 +158,8 @@ impl FolderPlatform for WindowsFolders {
             return true;
         }
         if extension.is_some_and(|ext| ext.eq_ignore_ascii_case("png")) {
-            if let Ok(bytes) = folder_sync::read_local(path) {
+            if let Ok(bytes) = self.read_file(root, path, folders_source::types::MAX_CONTENT_BYTES)
+            {
                 return screenshots_source::rules::has_game_bar_marker(&bytes);
             }
         }
@@ -151,10 +199,8 @@ impl FolderPlatform for WindowsFolders {
 /// Read `<path>:Zone.Identifier` on NTFS without ever hydrating a cloud
 /// placeholder. Returns `None` when absent, unreadable, or empty.
 #[cfg(windows)]
-pub fn read_zone_identifier(path: &Path) -> Option<ZoneIdentifier> {
+fn read_zone_identifier(root: &Path, path: &Path) -> Option<ZoneIdentifier> {
     use std::io::Read;
-    use std::os::windows::fs::OpenOptionsExt;
-
     // Never open an alternate stream on a cloud placeholder.
     let sym = fs::symlink_metadata(path).ok()?;
     if folder_sync::is_placeholder(&sym) {
@@ -163,11 +209,7 @@ pub fn read_zone_identifier(path: &Path) -> Option<ZoneIdentifier> {
 
     let mut ads = OsString::from(path.as_os_str());
     ads.push(":Zone.Identifier");
-    let file = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_OPEN_NO_RECALL)
-        .open(Path::new(&ads))
-        .ok()?;
+    let file = WindowsFolders.open_file(root, Path::new(&ads)).ok()?;
     let mut bytes = Vec::new();
     file.take(MAX_ZONE_ID_BYTES).read_to_end(&mut bytes).ok()?;
     let parsed = folders_source::parse_zone_identifier(&bytes);
@@ -175,7 +217,7 @@ pub fn read_zone_identifier(path: &Path) -> Option<ZoneIdentifier> {
 }
 
 #[cfg(not(windows))]
-pub fn read_zone_identifier(_path: &Path) -> Option<ZoneIdentifier> {
+fn read_zone_identifier(_root: &Path, _path: &Path) -> Option<ZoneIdentifier> {
     None
 }
 
@@ -199,7 +241,18 @@ mod win_tests {
         .unwrap();
         drop(ads);
 
-        let parsed = WindowsFolders.read_zone_identifier(&file_path).unwrap();
+        let root = folders_source::classify::normalize_path(dir.path());
+        assert_eq!(
+            WindowsFolders.read_file(&root, &file_path, 1024).unwrap(),
+            b"%PDF-1.7\n"
+        );
+        let stream = WindowsFolders
+            .read_file(&root, Path::new(&ads_path), MAX_ZONE_ID_BYTES)
+            .unwrap();
+        assert!(stream.starts_with(b"[ZoneTransfer]"));
+        let parsed = WindowsFolders
+            .read_zone_identifier(&root, &file_path)
+            .unwrap();
         assert_eq!(parsed.zone_id, Some(3));
         assert_eq!(
             parsed.origin_url.as_deref(),

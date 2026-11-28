@@ -135,6 +135,13 @@ const APPROVED_NODES: &[ApprovedNode] = &[
         name: "dir_file_ids",
         owner: None,
     },
+    // Validate the final path on the same handle used for content and alternate streams.
+    ApprovedNode {
+        path: "crates/platform-win/src/folders.rs",
+        kind: ApprovedKind::ImplMethod,
+        name: "open_file",
+        owner: Some("WindowsFolders"),
+    },
     // The native folder dialog behind choosing an Obsidian vault.
     ApprovedNode {
         path: "crates/platform-win/src/lib.rs",

@@ -191,11 +191,7 @@ pub fn parse_supported_list(body: &[u8]) -> Option<SupportedList> {
 
     let transcripts: BTreeSet<String> = norm(wire.kinds.transcripts.extensions)
         .into_iter()
-        .filter(|ext| {
-            !list.note_extensions.contains(ext)
-                && !list.document_extensions.contains(ext)
-                && matches!(ext.as_str(), "vtt" | "srt")
-        })
+        .filter(|ext| !list.document_extensions.contains(ext))
         .collect();
     if !transcripts.is_empty() {
         list.transcript_extensions = transcripts;
@@ -225,10 +221,10 @@ pub fn parse_supported_list(body: &[u8]) -> Option<SupportedList> {
     if let Some(px) = wire.max_image_pixels {
         list.max_image_pixels = px;
     }
-    if let Some(secs) = wire.document_revision_cooldown_seconds {
-        if secs > 0 {
-            list.document_revision_cooldown_ms = secs.saturating_mul(1_000);
-        }
+    if let Some(secs) = wire.document_revision_cooldown_seconds
+        && secs > 0
+    {
+        list.document_revision_cooldown_ms = secs.saturating_mul(1_000);
     }
     list.from_journal = true;
     Some(list)

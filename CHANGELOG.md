@@ -8,7 +8,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Added
 
-- once your journal supports it, you can now choose folders on this PC for the solstone app to take in changes from and add to your journal in five-minute segments. notes update as you edit them, revisions of PDFs and longer markdown or text documents come in after an hour without saves, and screenshots and photos convert on this PC when needed. for other files, only names, sizes, and download origins come in, never their contents. files stored only in OneDrive stay online until you open them on this PC. you can choose which kinds come in, pick an optional facet, preview what will be added before anything goes into your journal, and pause syncing for a folder without skipping changes.
+- you can choose a folder on this PC, pick a facet and preview file counts and dates. after you confirm the folder, changes come into your journal in five-minute segments if your journal supports folders. notes update as you edit them. document revisions come in after an hour without saves. screenshots and photos convert on this PC when needed. the other files switch starts on. turn it off to leave out names and details for files whose contents you leave out.
+- when you confirm your journal's mark while pairing, folder changes waiting to sync go into that journal unless the folder is paused. when you set up the folder for this journal, you choose how much older history to add.
 
 ## [2.0.61] - 2026-11-27
 

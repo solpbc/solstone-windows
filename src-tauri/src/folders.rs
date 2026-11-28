@@ -126,6 +126,12 @@ impl Journal for ClientJournal {
                 Ok(Ok(pair)) => pair,
                 _ => return Some(DeliveryOutcome::Hold),
             };
+            if !(self.load_client)()
+                .await
+                .is_some_and(|current| Arc::ptr_eq(&current, &client))
+            {
+                return Some(DeliveryOutcome::Hold);
+            }
             let reply = upload_folder_segment(
                 &client,
                 &upload.window.day,
@@ -486,7 +492,7 @@ mod tests {
         fn file_ids_in_dir(&self, _dir: &Path) -> HashMap<OsString, String> {
             HashMap::new()
         }
-        fn read_zone_identifier(&self, _path: &Path) -> Option<ZoneIdentifier> {
+        fn read_zone_identifier(&self, _root: &Path, _path: &Path) -> Option<ZoneIdentifier> {
             Some(ZoneIdentifier {
                 zone_id: Some(3),
                 origin_url: Some("https://example.org/file.md".into()),

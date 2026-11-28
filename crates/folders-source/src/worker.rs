@@ -263,7 +263,7 @@ async fn run_loop<T: FolderTransport>(
     let mut schedule = CheckSchedule::default();
     let mut facets: Vec<FacetOption> = Vec::new();
     let mut facets_state = FacetsAvailability::Unpaired;
-    let mut supported_fetched = false;
+    let mut supported_check = CheckSchedule::default();
     let mut rev: u64 = 0;
 
     // Publish initial disk state immediately before first network check.
@@ -284,7 +284,7 @@ async fn run_loop<T: FolderTransport>(
     loop {
         if wake.take_restart() {
             cap_cache.clear();
-            supported_fetched = false;
+            supported_check.defer(Duration::ZERO);
             facets.clear();
             facets_state = if transport.is_paired() {
                 FacetsAvailability::Offline
@@ -295,48 +295,49 @@ async fn run_loop<T: FolderTransport>(
         }
 
         if schedule.due() {
-            let _ = folder_worker::with_state(&mut state, |eng| eng.scan_all()).await;
-            if transport.is_paired() {
-                let listed = cap_cache.check(&*transport, CAPABILITY_RETRY).await;
-                if listed && !supported_fetched {
-                    if let Some(sup) = transport.fetch_supported().await {
-                        let _ = folder_worker::with_state(&mut state, move |eng| {
-                            eng.set_supported_list(sup);
-                        })
-                        .await;
-                        supported_fetched = true;
-                    }
+            let listed =
+                transport.is_paired() && cap_cache.check(&*transport, CAPABILITY_RETRY).await;
+            if listed && supported_check.due() {
+                if let Some(sup) = transport.fetch_supported().await {
+                    let _ = folder_worker::with_state(&mut state, move |eng| {
+                        eng.set_supported_list(sup);
+                    })
+                    .await;
+                    supported_check.defer(Duration::from_secs(300));
+                } else {
+                    supported_check.defer(CAPABILITY_RETRY);
                 }
-                if listed {
-                    while !wake.restart_pending() {
-                        let paused_now = paused();
-                        let gen_before = generation.load(Ordering::Acquire);
-                        let next = folder_worker::with_state(&mut state, move |eng| {
-                            eng.next_delivery(paused_now)
-                        })
+            }
+            let _ = folder_worker::with_state(&mut state, |eng| eng.scan_all()).await;
+            if listed {
+                while !wake.restart_pending() {
+                    let paused_now = paused();
+                    let gen_before = generation.load(Ordering::Acquire);
+                    let next = folder_worker::with_state(&mut state, move |eng| {
+                        eng.next_delivery(paused_now)
+                    })
+                    .await
+                    .ok()
+                    .flatten()
+                    .flatten();
+                    let Some(delivery) = next else {
+                        break;
+                    };
+                    let reply = folder_worker::deliver(&*transport, &delivery, None)
                         .await
-                        .ok()
-                        .flatten()
                         .flatten();
-                        let Some(delivery) = next else {
-                            break;
-                        };
-                        let reply = folder_worker::deliver(&*transport, &delivery, None)
-                            .await
-                            .flatten();
-                        // Discard late outcome if pairing restarted while upload was in flight.
-                        if generation.load(Ordering::Acquire) != gen_before {
-                            break;
-                        }
-                        let outcome = reply.unwrap_or(DeliveryOutcome::Hold);
-                        let held = matches!(outcome, DeliveryOutcome::Hold);
-                        let _ = folder_worker::with_state(&mut state, move |eng| {
-                            eng.record_outcome(&delivery, outcome);
-                        })
-                        .await;
-                        if held {
-                            break;
-                        }
+                    // Discard late outcome if pairing restarted while upload was in flight.
+                    if generation.load(Ordering::Acquire) != gen_before {
+                        break;
+                    }
+                    let outcome = reply.unwrap_or(DeliveryOutcome::Hold);
+                    let held = matches!(outcome, DeliveryOutcome::Hold);
+                    let _ = folder_worker::with_state(&mut state, move |eng| {
+                        eng.record_outcome(&delivery, outcome);
+                    })
+                    .await;
+                    if held {
+                        break;
                     }
                 }
             }
@@ -390,18 +391,17 @@ async fn run_loop<T: FolderTransport>(
                         .ok()
                         .flatten()
                         .flatten();
-                        if let Some((_summary, items)) = preview {
-                            if transport.is_paired() && !items.is_empty() {
-                                if let Some(journal_est) =
-                                    transport.fetch_estimate(id.clone(), items).await
-                                {
-                                    let id_set = id.clone();
-                                    let _ = folder_worker::with_state(&mut state, move |eng| {
-                                        eng.set_journal_estimate(&id_set, journal_est);
-                                    })
-                                    .await;
-                                }
-                            }
+                        if let Some((_summary, items)) = preview
+                            && transport.is_paired()
+                            && !items.is_empty()
+                            && let Some(journal_est) =
+                                transport.fetch_estimate(id.clone(), items).await
+                        {
+                            let id_set = id.clone();
+                            let _ = folder_worker::with_state(&mut state, move |eng| {
+                                eng.set_journal_estimate(&id_set, journal_est);
+                            })
+                            .await;
                         }
                         if matches!(
                             facets_state,

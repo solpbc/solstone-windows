@@ -1574,7 +1574,7 @@ windows.folders.pageprogress = { $done } of { $total } items in your journal
 
 windows.folders.waiting = { $count } waiting to sync
 
-windows.folders.unpaired = connect a journal to finish setting up this folder.
+windows.folders.unpaired = changes wait on this PC until you connect a journal.
 
 windows.folders.journalupdate = waiting for a journal update. changes wait on this PC.
 
@@ -1630,7 +1630,7 @@ windows.folders.kind.notes.desc = markdown and text notes. changes come in as yo
 
 windows.folders.kind.documents = documents
 
-windows.folders.kind.documents.desc = PDFs and longer markdown or text documents. revisions come in after an hour without saves.
+windows.folders.kind.documents.desc = files such as PDFs and longer text documents. revisions come in after an hour without saves.
 
 windows.folders.kind.transcripts = transcripts
 
@@ -1708,7 +1708,7 @@ windows.folders.estthoughtsmany = ~{ $count } thoughts
 
 windows.folders.estgloss = files touched within 5 minutes share one segment. details-only files take no thoughts.
 
-windows.folders.estunpaired = connect a journal to see an estimate and finish setup.
+windows.folders.estunpaired = connect a journal to see an estimate. you can still confirm and files will wait on this PC.
 
 windows.folders.estoffline = journal estimate unavailable while your journal is offline. you can still confirm and files will wait on this PC.
 

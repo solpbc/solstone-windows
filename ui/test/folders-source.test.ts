@@ -358,7 +358,7 @@ describe("the folders page, detail view, and tile", () => {
     });
   });
 
-  it("blocks confirmation when all six kinds are unchecked or while unpaired", () => {
+  it("requires a selected kind and accepts a local preview while unpaired", () => {
     const basePreview = {
       span: "thirty_days" as const,
       total_items: 0,
@@ -381,7 +381,10 @@ describe("the folders page, detail view, and tile", () => {
 
     const unpaired = makeFolder({ mode: "setting_up", preview: basePreview });
     renderDesk(makeDoc({ paired: false, facets_state: "unpaired", folders: [unpaired] }), { selected: unpaired.id });
-    expect((byId(ids["settings.sources.folders.confirm"]) as HTMLButtonElement).disabled).toBe(true);
+    const confirm = byId(ids["settings.sources.folders.confirm"]) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(false);
+    confirm.click();
+    expect(invokeMock).toHaveBeenCalledWith("folders_action", { request: { op: "confirm", id: unpaired.id, span: "thirty_days" } });
   });
 
   it("exposes pause, resume, turn off, turn on, and inline remove confirmation", async () => {

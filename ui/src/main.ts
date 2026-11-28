@@ -9653,7 +9653,7 @@ function renderFolderDetail(
       ids["settings.sources.folders.confirm"],
     );
     confirmBtn.disabled =
-      !doc.paired || foldersBusy || !anyKindSelected || loadingPreview || !folder.preview || folder.preview.failed;
+      foldersBusy || !anyKindSelected || loadingPreview || !folder.preview || folder.preview.failed;
     body.append(confirmBtn);
   } else if (folder.mode === "on") {
     const olderBtn = deskAction(t("windows.folders.bringinolder"), () => {
