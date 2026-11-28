@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.12.0.schema.json
 
 PackageIdentifier: solpbc.Solstone
-PackageVersion: 2.0.61
+PackageVersion: 2.0.62
 PackageLocale: en-US
 Publisher: sol pbc
 PublisherUrl: https://solpbc.org
@@ -23,11 +23,8 @@ Tags:
   - solstone
 ReleaseNotes: |-
   Added
-  - once your journal supports it, exporting a copy of your journal in the journal window now lets you pick where to save it first. the solstone app then streams it straight to disk, asks windows not to put your PC to sleep on its own, and checks the saved copy before finishing. if your connection drops, your PC goes to sleep, or you pause the save, you can resume where it left off. when it's done, you can show the saved copy in File Explorer.
-  Changed
-  - on older journals, exporting your journal from the journal window now streams the download as it arrives instead of holding the whole file in memory.
-  Fixed
-  - on a slow connection, a large import could keep sending the same piece again and again without moving forward. the solstone app now checks what your journal received and, if nothing arrived, sends a smaller piece.
-ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.61
+  - you can choose a folder on this PC, preview file counts and dates, and, once your journal supports folders, pick a facet. after you confirm the folder, changes come into your journal in five-minute segments when your journal supports folders and nothing is paused. saved note changes go into those segments. document revisions come in after an hour without changes to the document's contents. the solstone app converts copies of screenshots and photos on this PC when needed.
+  - when you confirm your journal's mark while pairing, folder changes waiting to sync go into that journal once it supports folders and neither the folder nor this PC is paused. when you set up the folder for this journal, you choose how much older history to add.
+ReleaseNotesUrl: https://github.com/solpbc/solstone-windows/releases/tag/v2.0.62
 ManifestType: defaultLocale
 ManifestVersion: 1.12.0
