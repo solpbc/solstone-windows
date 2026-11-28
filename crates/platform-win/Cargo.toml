@@ -19,6 +19,7 @@ observer-recovery.workspace = true
 observer-hotkey.workspace = true
 source-counters.workspace = true
 screenshots-source.workspace = true
+folders-source.workspace = true
 solstone-folder-sync.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

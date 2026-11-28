@@ -1,0 +1,29 @@
+{
+  "description": "Windows app folder source: windows.folders.estvalues",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "segments",
+      "type": "string"
+    },
+    {
+      "name": "days",
+      "type": "string"
+    },
+    {
+      "name": "thoughts",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 123,
+  "source_revision": "6a50b24e8cac8627ac1dde8672bf302342ebf536b17ddbb3184330c534190a8c",
+  "risk": "routine",
+  "auto_merge": true
+}

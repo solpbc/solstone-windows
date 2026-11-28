@@ -6,6 +6,7 @@ export type GlyphName =
   | "browsers"
   | "obsidian"
   | "screenshots"
+  | "folders"
   | "import"
   | "plus"
   | "home"
@@ -25,6 +26,8 @@ const PATHS: Record<GlyphName, string> = {
   obsidian: '<path d="M12 3l7 6-2.5 11h-9L5 9z"/><path d="M12 3v9l4.5 8M12 12l-7-3"/>',
   screenshots:
     '<path d="M4 9V5.5A1.5 1.5 0 0 1 5.5 4H9M15 4h3.5A1.5 1.5 0 0 1 20 5.5V9M20 15v3.5a1.5 1.5 0 0 1-1.5 1.5H15M9 20H5.5A1.5 1.5 0 0 1 4 18.5V15"/><circle cx="12" cy="12" r="3"/>',
+  folders:
+    '<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/>',
   import: '<path d="M5 3h9l5 5v13H5z"/><path d="M14 3v6h5M12 11v6M9 14l3 3 3-3"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   home: '<path d="M4 11l8-7 8 7v8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19z"/><path d="M10 20.5V14h4v6.5"/>',
@@ -45,6 +48,7 @@ export function glyphForTile(id: string): GlyphName {
     id === "browsers" ||
     id === "obsidian" ||
     id === "screenshots" ||
+    id === "folders" ||
     id === "import"
   )
     return id;

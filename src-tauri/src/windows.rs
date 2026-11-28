@@ -289,7 +289,9 @@ pub fn open_settings_updates(app: &tauri::AppHandle) -> tauri::Result<()> {
 /// Open (or focus) the Settings window on one source's page.
 pub fn open_settings_source(app: &tauri::AppHandle, source: &str) -> tauri::Result<()> {
     let destination = match source {
-        "audio" | "screen" | "browsers" | "obsidian" | "screenshots" | "import" => source,
+        "audio" | "screen" | "browsers" | "obsidian" | "screenshots" | "folders" | "import" => {
+            source
+        }
         _ => "sources",
     };
     open_settings_internal(app, destination)

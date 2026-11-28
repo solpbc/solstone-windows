@@ -1542,6 +1542,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
+name = "folders-source"
+version = "2.0.61"
+dependencies = [
+ "observer-pl",
+ "screenshots-source",
+ "serde",
+ "serde_json",
+ "solstone-folder-sync",
+ "source-counters",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3744,6 +3759,7 @@ dependencies = [
 name = "platform-win"
 version = "2.0.61"
 dependencies = [
+ "folders-source",
  "journal-window",
  "observer-audio",
  "observer-hotkey",
@@ -4873,6 +4889,7 @@ dependencies = [
  "capture-screen-encode",
  "capture-wasapi",
  "capture-wgc",
+ "folders-source",
  "journal-window",
  "observer-contract",
  "observer-exclusion",

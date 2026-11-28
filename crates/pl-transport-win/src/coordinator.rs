@@ -3281,6 +3281,7 @@ mod tests {
                 existing_segment: None,
                 reason_code: None,
                 file_descriptors: FileDescriptors::Absent,
+                refused_files: vec![],
             },
             SendMetadata {
                 path: TransportPath::Direct,
@@ -3310,6 +3311,7 @@ mod tests {
                 existing_segment: existing_segment.map(ToOwned::to_owned),
                 reason_code: None,
                 file_descriptors: FileDescriptors::Decoded(descriptors),
+                refused_files: vec![],
             },
             SendMetadata {
                 path: TransportPath::Direct,
@@ -5522,6 +5524,7 @@ mod tests {
                         existing_segment: None,
                         reason_code: Some("segment_removed".to_string()),
                         file_descriptors: FileDescriptors::Absent,
+                        refused_files: vec![],
                     },
                     SendMetadata {
                         path: TransportPath::Direct,

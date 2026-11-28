@@ -296,6 +296,343 @@ export const argumentsById: Record<string, readonly (readonly [string, string])[
     ]
   ],
   "windows.export.savingfromjournal": [],
+  "windows.folders.addfolder": [],
+  "windows.folders.addfolderplus": [],
+  "windows.folders.allfolders": [],
+  "windows.folders.alreadyadded": [
+    [
+      "folder",
+      "string"
+    ]
+  ],
+  "windows.folders.back": [],
+  "windows.folders.backfillstatus": [],
+  "windows.folders.bringinmany": [
+    [
+      "count",
+      "string"
+    ]
+  ],
+  "windows.folders.bringinolder": [],
+  "windows.folders.bringinone": [],
+  "windows.folders.cantreadmany": [
+    [
+      "count",
+      "string"
+    ]
+  ],
+  "windows.folders.cantreadone": [],
+  "windows.folders.checkingfolder": [],
+  "windows.folders.chooseatleastone": [],
+  "windows.folders.estdaysmany": [
+    [
+      "count",
+      "string"
+    ]
+  ],
+  "windows.folders.estdaysone": [],
+  "windows.folders.estgloss": [],
+  "windows.folders.estheading": [],
+  "windows.folders.estoffline": [],
+  "windows.folders.estsegmentsmany": [
+    [
+      "count",
+      "string"
+    ]
+  ],
+  "windows.folders.estsegmentsone": [],
+  "windows.folders.estthoughtsmany": [
+    [
+      "count",
+      "string"
+    ]
+  ],
+  "windows.folders.estthoughtsone": [],
+  "windows.folders.estunpaired": [],
+  "windows.folders.estvalues": [
+    [
+      "segments",
+      "string"
+    ],
+    [
+      "days",
+      "string"
+    ],
+    [
+      "thoughts",
+      "string"
+    ]
+  ],
+  "windows.folders.facetheading": [],
+  "windows.folders.facethelpactive": [
+    [
+      "facet",
+      "string"
+    ]
+  ],
+  "windows.folders.facethelpnone": [],
+  "windows.folders.facethelpsetup": [
+    [
+      "facet",
+      "string"
+    ]
+  ],
+  "windows.folders.facetnone": [],
+  "windows.folders.facetoffline": [],
+  "windows.folders.facetunpaired": [],
+  "windows.folders.fallbackmany": [
+    [
+      "count",
+      "string"
+    ]
+  ],
+  "windows.folders.fallbackone": [],
+  "windows.folders.finishsetup": [
+    [
+      "folder",
+      "string"
+    ]
+  ],
+  "windows.folders.folderlabel": [],
+  "windows.folders.frombefore": [],
+  "windows.folders.intro": [],
+  "windows.folders.journalupdate": [],
+  "windows.folders.kind.documents.desc": [],
+  "windows.folders.kind.documents": [],
+  "windows.folders.kind.notes.desc": [],
+  "windows.folders.kind.notes": [],
+  "windows.folders.kind.other.desc": [],
+  "windows.folders.kind.other": [],
+  "windows.folders.kind.photos.desc": [],
+  "windows.folders.kind.photos": [],
+  "windows.folders.kind.screenshots.desc": [],
+  "windows.folders.kind.screenshots": [],
+  "windows.folders.kind.transcripts.desc": [],
+  "windows.folders.kind.transcripts": [],
+  "windows.folders.kindsgoingforward": [],
+  "windows.folders.many": [
+    [
+      "count",
+      "string"
+    ]
+  ],
+  "windows.folders.missing": [
+    [
+      "folder",
+      "string"
+    ]
+  ],
+  "windows.folders.moreabout": [],
+  "windows.folders.needattentionmany": [
+    [
+      "count",
+      "string"
+    ]
+  ],
+  "windows.folders.norepeat": [],
+  "windows.folders.nothinguntilconfirm": [],
+  "windows.folders.off": [],
+  "windows.folders.onedrivenote": [],
+  "windows.folders.oneintro": [
+    [
+      "folder",
+      "string"
+    ]
+  ],
+  "windows.folders.openfolder": [
+    [
+      "folder",
+      "string"
+    ]
+  ],
+  "windows.folders.otheroff": [],
+  "windows.folders.otheron": [],
+  "windows.folders.overlapbody": [],
+  "windows.folders.overlapchoose": [],
+  "windows.folders.overlapfact": [
+    [
+      "other",
+      "string"
+    ]
+  ],
+  "windows.folders.overlapfolder": [
+    [
+      "name",
+      "string"
+    ]
+  ],
+  "windows.folders.overlapheading": [
+    [
+      "other",
+      "string"
+    ]
+  ],
+  "windows.folders.overlapobsidian": [
+    [
+      "name",
+      "string"
+    ]
+  ],
+  "windows.folders.overlapoverride": [],
+  "windows.folders.overlapscreenshots": [
+    [
+      "name",
+      "string"
+    ]
+  ],
+  "windows.folders.pageprogress": [
+    [
+      "done",
+      "string"
+    ],
+    [
+      "total",
+      "string"
+    ]
+  ],
+  "windows.folders.pausedcomputer": [],
+  "windows.folders.pausedfolder": [],
+  "windows.folders.pauselabel": [],
+  "windows.folders.pickertitle": [],
+  "windows.folders.preview": [],
+  "windows.folders.previewboth": [
+    [
+      "content",
+      "string"
+    ],
+    [
+      "meta",
+      "string"
+    ]
+  ],
+  "windows.folders.previewcontentone": [
+    [
+      "size",
+      "string"
+    ]
+  ],
+  "windows.folders.previewcontentonly": [
+    [
+      "content",
+      "string"
+    ],
+    [
+      "size",
+      "string"
+    ]
+  ],
+  "windows.folders.previewcount": [
+    [
+      "count",
+      "string"
+    ]
+  ],
+  "windows.folders.previewcountone": [],
+  "windows.folders.previewfailed": [],
+  "windows.folders.previewmetaone": [],
+  "windows.folders.previewmetaonly": [
+    [
+      "meta",
+      "string"
+    ]
+  ],
+  "windows.folders.previewspan": [
+    [
+      "count",
+      "string"
+    ],
+    [
+      "start",
+      "string"
+    ],
+    [
+      "end",
+      "string"
+    ]
+  ],
+  "windows.folders.previewspanone": [
+    [
+      "start",
+      "string"
+    ],
+    [
+      "end",
+      "string"
+    ]
+  ],
+  "windows.folders.previewzero": [],
+  "windows.folders.refused": [],
+  "windows.folders.remove": [],
+  "windows.folders.removebody": [
+    [
+      "folder",
+      "string"
+    ]
+  ],
+  "windows.folders.removeheading": [
+    [
+      "folder",
+      "string"
+    ]
+  ],
+  "windows.folders.resumelabel": [],
+  "windows.folders.scopenote": [],
+  "windows.folders.spanall": [],
+  "windows.folders.spannothing": [],
+  "windows.folders.spansixmonths": [],
+  "windows.folders.spanthirty": [],
+  "windows.folders.spanyear": [],
+  "windows.folders.split": [
+    [
+      "on",
+      "string"
+    ],
+    [
+      "paused",
+      "string"
+    ]
+  ],
+  "windows.folders.startfromtoday": [],
+  "windows.folders.stays": [],
+  "windows.folders.tileprogress": [
+    [
+      "folder",
+      "string"
+    ],
+    [
+      "done",
+      "string"
+    ],
+    [
+      "total",
+      "string"
+    ]
+  ],
+  "windows.folders.tiletitle": [],
+  "windows.folders.two": [
+    [
+      "first",
+      "string"
+    ],
+    [
+      "second",
+      "string"
+    ]
+  ],
+  "windows.folders.unpaired": [],
+  "windows.folders.unreadable": [
+    [
+      "folder",
+      "string"
+    ]
+  ],
+  "windows.folders.waiting": [
+    [
+      "count",
+      "string"
+    ]
+  ],
+  "windows.folders.whatcomesin": [],
   "windows.health.attentioncount": [
     [
       "count",

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.chooseatleastone",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 111,
+  "source_revision": "3cc090295ca2d8ea506da9ca51b50258b89acc622b1ab600c9ee584597c234f2",
+  "risk": "routine",
+  "auto_merge": true
+}

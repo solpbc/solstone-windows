@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.kind.screenshots.desc",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 99,
+  "source_revision": "7a6d398176a6fa4961159d579907e92aa2fee764a0d3980744f0711160e4fcb9",
+  "risk": "routine",
+  "auto_merge": true
+}

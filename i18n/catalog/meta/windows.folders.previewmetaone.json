@@ -1,0 +1,16 @@
+{
+  "description": "Breakdown phrase when 1 other file will come in as details only.",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 120,
+  "source_revision": "c5c5945edb247d9456735a4dd7d24143ca129e68f32899bf2f04fe7eac55d217",
+  "risk": "routine",
+  "auto_merge": true
+}

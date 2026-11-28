@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.norepeat",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 162,
+  "source_revision": "89e7fba0423ff1e42797e04371fdfe567163d0ab87f2b00d55ae9ffa93d66841",
+  "risk": "routine",
+  "auto_merge": true
+}

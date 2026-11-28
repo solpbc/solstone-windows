@@ -1,0 +1,21 @@
+{
+  "description": "Windows app folder source: windows.folders.overlapheading",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "other",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 111,
+  "source_revision": "d6e42dd084c5d72ebc1a56dbfa26b97054fad81bbe7386ff130e98578ecaa05c",
+  "risk": "routine",
+  "auto_merge": true
+}

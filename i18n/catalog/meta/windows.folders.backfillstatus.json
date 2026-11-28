@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.backfillstatus",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 261,
+  "source_revision": "370040a207085403acd95ecd4db2e3d2d85a13977c69371c39ef6d46e496dd10",
+  "risk": "routine",
+  "auto_merge": true
+}

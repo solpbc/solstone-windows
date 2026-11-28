@@ -21,8 +21,8 @@ use crate::pairing::{map_request_error, map_shared_error, windows_to_shared_cred
 use crate::{ObserverHandle, TransportError};
 use observer_model::{LocalZone, TransportPath};
 use observer_pl::ingest::{
-    DayManifest, FilePart, IngestManifest, IngestMultipart, IngestResponse, IngestStatus,
-    SegmentsEnvelope,
+    DayManifest, FilePart, FolderMeta, IngestManifest, IngestMultipart, IngestResponse,
+    IngestStatus, SegmentsEnvelope,
 };
 use observer_pl::{OBSERVER_HANDLE_HEADER, OBSERVER_PROTOCOL_VERSION, PROTOCOL_VERSION_HEADER};
 use serde::Deserialize;
@@ -1323,6 +1323,22 @@ impl ObserverClient {
         self.send_ingest(request).await
     }
 
+    /// Upload one five-minute watched-folder segment (activity JSONL plus any
+    /// companion content parts) into the `folder` sub-stream.
+    pub async fn ingest_folder(
+        &self,
+        segment: &str,
+        day: &str,
+        files: Vec<FilePart>,
+        folder: FolderMeta,
+    ) -> Result<(IngestResponse, SendMetadata), RouteError> {
+        let request = self
+            .multipart(segment, day, files)?
+            .with_source("folder")
+            .with_folder(folder);
+        self.send_ingest(request).await
+    }
+
     fn multipart(
         &self,
         segment: &str,
@@ -1539,6 +1555,34 @@ impl ObserverClient {
         Ok(response)
     }
 
+    /// Facets available for optional folder assignment (`GET /app/devices/ingest/folder/facets`).
+    pub async fn folder_facets(&self) -> Result<HttpResponse, RouteError> {
+        let headers = self.v3_headers();
+        let (response, _) = self
+            .ordinary_request(OrdinaryRequest::FolderFacetsGet, None, &headers, b"")
+            .await?;
+        Ok(response)
+    }
+
+    /// Journal-published supported file types (`GET /app/devices/ingest/folder/supported`).
+    pub async fn folder_supported(&self) -> Result<HttpResponse, RouteError> {
+        let headers = self.v3_headers();
+        let (response, _) = self
+            .ordinary_request(OrdinaryRequest::FolderSupportedGet, None, &headers, b"")
+            .await?;
+        Ok(response)
+    }
+
+    /// Non-money backfill estimate (`POST /app/devices/ingest/folder/estimate`).
+    pub async fn folder_estimate(&self, body: &[u8]) -> Result<HttpResponse, RouteError> {
+        let mut headers = self.v3_headers();
+        headers.push(("Content-Type".into(), "application/json".into()));
+        let (response, _) = self
+            .ordinary_request(OrdinaryRequest::FolderEstimatePost, None, &headers, body)
+            .await?;
+        Ok(response)
+    }
+
     /// One liveness check: ask the journal for its status, bounded by the
     /// check timeout. Any answer proves the journal is reachable over this
     /// pairing; what it says does not matter here. Each check is one fresh dial.
@@ -1684,7 +1728,7 @@ impl ObserverClient {
         headers: &[(String, String)],
         body: &[u8],
     ) -> Result<(HttpResponse, SendMetadata), RouteError> {
-        debug_assert_eq!(OrdinaryRequest::ALL.len(), 23);
+        debug_assert_eq!(OrdinaryRequest::ALL.len(), 26);
         let spec = route.spec();
         if spec.gated && !self.gate_open() {
             return Err(RouteError::AwaitingConfirmation);

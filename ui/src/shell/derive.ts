@@ -10,7 +10,7 @@ export type StateWord =
   | "checking…"
   | "needs attention";
 
-export type SourceId = "audio" | "screen" | "browsers" | "obsidian" | "screenshots";
+export type SourceId = "audio" | "screen" | "browsers" | "obsidian" | "screenshots" | "folders";
 
 export type WidthClass = "full" | "narrower" | "phone";
 
@@ -23,10 +23,18 @@ export type Pane =
   | "browsers"
   | "obsidian"
   | "screenshots"
+  | "folders"
   | "import"
   | "screenLeftOut";
 
-const SOURCE_ORDER: readonly SourceId[] = ["audio", "screen", "browsers", "obsidian", "screenshots"];
+const SOURCE_ORDER: readonly SourceId[] = [
+  "audio",
+  "screen",
+  "browsers",
+  "obsidian",
+  "screenshots",
+  "folders",
+];
 
 export function widthClass(innerWidth: number): WidthClass {
   if (innerWidth >= 1100) return "full";
@@ -302,6 +310,198 @@ export function screenshotsConfirm(input: {
   if (input.counting || input.count === null) return { kind: "checking" };
   if (input.span === "nothing" || input.count === 0) return { kind: "today" };
   return { kind: "count", count: input.count };
+}
+
+export type FolderModeName = "setting_up" | "on" | "paused" | "off";
+export type FolderAttentionName = "missing" | "unreadable";
+export type FolderSpanName = "thirty_days" | "six_months" | "year" | "all" | "nothing";
+export type FacetsAvailabilityName = "ready" | "unpaired" | "offline";
+
+export type FolderKindsValue = {
+  notes: boolean;
+  documents: boolean;
+  transcripts: boolean;
+  screenshots: boolean;
+  photos: boolean;
+  other: boolean;
+};
+
+export type FacetOptionValue = {
+  name: string;
+  title: string;
+  color?: string | null;
+};
+
+export type OverlapTargetValue =
+  | { kind: "obsidian"; name: string }
+  | { kind: "screenshots"; name: string }
+  | { kind: "folder"; id: string; name: string };
+
+export type PathCheckResultValue =
+  | { status: "ready"; path: string; name: string; label: string }
+  | { status: "already_added"; folder_id: string; name: string }
+  | { status: "overlaps"; path: string; name: string; label: string; target: OverlapTargetValue }
+  | { status: "refused"; path: string };
+
+export type BackfillEstimateValue = {
+  segments: number;
+  days: number;
+  thoughts: number;
+  already_in_journal: number;
+  from_journal: boolean;
+};
+
+export type PreviewSummaryValue = {
+  span: FolderSpanName | null;
+  total_items: number;
+  content_items: number;
+  content_bytes: number;
+  metadata_only_items: number;
+  notes: number;
+  documents: number;
+  transcripts: number;
+  screenshots: number;
+  photos: number;
+  other: number;
+  oldest_ms?: number | null;
+  newest_ms?: number | null;
+  unreadable: number;
+  failed: boolean;
+  estimate?: BackfillEstimateValue | null;
+};
+
+export type FolderSummaryValue = {
+  id: string;
+  name: string;
+  path: string;
+  label: string;
+  mode: FolderModeName;
+  returning: boolean;
+  kinds: FolderKindsValue;
+  facet?: FacetOptionValue | null;
+  overlap?: OverlapTargetValue | null;
+  attention?: FolderAttentionName | null;
+  preview?: PreviewSummaryValue | null;
+  progress?: [number, number] | null;
+  waiting: number;
+  items_taken_in: number;
+  last_taken_in_ms?: number | null;
+  last_checked_ms?: number | null;
+  cant_read: number;
+  fallback_to_details: number;
+  journal_lists?: boolean | null;
+  paused_by_computer: boolean;
+};
+
+export type FoldersDocumentValue = {
+  v: number;
+  folders: FolderSummaryValue[];
+  facets: FacetOptionValue[];
+  facets_state: FacetsAvailabilityName;
+  computer_paused: boolean;
+  paired: boolean;
+  offline: boolean;
+  journal_lists?: boolean | null;
+};
+
+export function folderWord(folder: FolderSummaryValue): StateWord {
+  if (folder.attention) return "needs attention";
+  if (folder.mode === "setting_up") return "setting up";
+  if (folder.mode === "off") return "off";
+  if (folder.mode === "paused" || folder.paused_by_computer) return "paused";
+  return "on";
+}
+
+/** Worst-signal-wins tile rollup across all configured folders. */
+export function foldersTile(doc: FoldersDocumentValue | null): TileView {
+  const folders = doc?.folders ?? [];
+  let word: StateWord;
+  if (folders.length === 0) {
+    word = "ready to set up";
+  } else if (folders.some((f) => Boolean(f.attention))) {
+    word = "needs attention";
+  } else if (folders.some((f) => f.mode === "setting_up")) {
+    word = "setting up";
+  } else if (folders.some((f) => f.mode === "on" && !f.paused_by_computer)) {
+    word = "on";
+  } else if (folders.some((f) => f.mode === "paused" || (f.mode === "on" && f.paused_by_computer))) {
+    word = "paused";
+  } else {
+    word = "off";
+  }
+  return {
+    word,
+    switchOn: null,
+    activityKept: false,
+    activityAlongside: false,
+    namesMicrophone: false,
+  };
+}
+
+export function foldersTileLines(doc: FoldersDocumentValue | null): {
+  companion: string;
+  setup: string;
+  settingUp: string;
+  attention: string;
+} {
+  const folders = doc?.folders ?? [];
+  if (folders.length === 0) {
+    return { companion: "", setup: t("windows.folders.addfolder"), settingUp: "", attention: "" };
+  }
+  const attn = folders.filter((f) => Boolean(f.attention));
+  let attention = "";
+  if (attn.length >= 2) {
+    attention = t("windows.folders.needattentionmany", { count: number(attn.length) });
+  } else if (attn.length === 1) {
+    attention =
+      attn[0].attention === "missing"
+        ? t("windows.folders.missing", { folder: attn[0].name })
+        : t("windows.folders.unreadable", { folder: attn[0].name });
+  }
+  const setupFolder = folders.find((f) => f.mode === "setting_up");
+  const settingUp = setupFolder
+    ? t("windows.folders.finishsetup", { folder: setupFolder.name })
+    : "";
+
+  const active = folders.filter((f) => f.mode === "on" && !f.paused_by_computer);
+  const paused = folders.filter((f) => f.mode === "paused" || (f.mode === "on" && f.paused_by_computer));
+
+  let companion = "";
+  if (doc?.computer_paused && folders.some((f) => f.mode === "on" || f.mode === "paused")) {
+    companion = t("windows.folders.pausedcomputer");
+  } else {
+    const bf = active.find((f) => Boolean(f.progress));
+    if (bf && bf.progress) {
+      companion = t("windows.folders.tileprogress", {
+        folder: bf.name,
+        done: number(bf.progress[0]),
+        total: number(bf.progress[1]),
+      });
+    } else if (active.length > 0 && !doc?.paired) {
+      companion = t("windows.folders.unpaired");
+    } else {
+      const totalWaiting = active.reduce((sum, f) => sum + f.waiting, 0);
+      if (totalWaiting > 0 && (doc?.offline || doc?.journal_lists === false)) {
+        companion = t("windows.folders.waiting", { count: number(totalWaiting) });
+      } else if (active.length > 0 && paused.length > 0) {
+        companion = t("windows.folders.split", {
+          on: number(active.length),
+          paused: number(paused.length),
+        });
+      } else if (active.length === 1) {
+        companion = active[0].name;
+      } else if (active.length === 2) {
+        companion = t("windows.folders.two", { first: active[0].name, second: active[1].name });
+      } else if (active.length >= 3) {
+        companion = t("windows.folders.many", { count: number(active.length) });
+      } else if (paused.length > 0) {
+        companion = t("windows.folders.pausedcomputer");
+      } else {
+        companion = folders[0]?.name ?? "";
+      }
+    }
+  }
+  return { companion, setup: t("windows.folders.addfolder"), settingUp, attention };
 }
 
 export type DeckTileId = SourceId | "import" | "addMore";
@@ -594,6 +794,7 @@ export function settingsNavigate(payload: string): { row: ShelfRow; pane: Pane }
     case "browsers":
     case "obsidian":
     case "screenshots":
+    case "folders":
     case "import":
       return { row: "home", pane: payload };
     case "sources":
@@ -629,7 +830,14 @@ export function statusRowOpens(source: SourceId): Pane {
   return source;
 }
 
-export type CounterSourceName = "audio" | "screen" | "browsers" | "obsidian" | "screenshots" | "import";
+export type CounterSourceName =
+  | "audio"
+  | "screen"
+  | "browsers"
+  | "obsidian"
+  | "screenshots"
+  | "folders"
+  | "import";
 
 export type CounterDocument = {
   started: string;
@@ -639,6 +847,8 @@ export type CounterDocument = {
   obsidian: { total: number; last: number | null };
   /** Absent from a document written before screenshots were counted. */
   screenshots?: { total: number; last: number | null };
+  /** Absent from a document written before folders were counted. */
+  folders?: { total: number; last: number | null };
   /** Absent from a document written before imports were counted. */
   imports?: { total: number; last: number | null };
 };
@@ -726,6 +936,7 @@ export function counterFacts(document: CounterDocument | null): SourceFacts[] | 
     ["browsers", document.browsers.total, document.browsers.last],
     ["obsidian", document.obsidian.total, document.obsidian.last],
     ["screenshots", document.screenshots?.total ?? 0, document.screenshots?.last ?? null],
+    ["folders", document.folders?.total ?? 0, document.folders?.last ?? null],
     ["import", document.imports?.total ?? 0, document.imports?.last ?? null],
   ];
   return rows.map(([source, total, last]) => {

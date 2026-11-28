@@ -1549,3 +1549,221 @@ windows.import.errorexpired = this unfinished import is no longer open in your j
 windows.import.errorunreadable = the waiting copy on this PC could no longer be read. remove it and choose the file again.
 
 windows.export.savingfromjournal = saving a copy from your journal.
+
+windows.folders.tiletitle = folders
+
+windows.folders.addfolder = add a folder
+
+windows.folders.addfolderplus = + add a folder
+
+windows.folders.pickertitle = choose a folder
+
+windows.folders.intro = while this is on, the solstone app takes in changes from the folders you choose and adds them to your journal in five-minute segments.
+
+windows.folders.oneintro = while this is on, the solstone app takes in changes from { $folder } and adds them to your journal in five-minute segments.
+
+windows.folders.two = { $first }, { $second }
+
+windows.folders.many = { $count } folders
+
+windows.folders.split = { $on } on · { $paused } paused
+
+windows.folders.tileprogress = { $folder } · { $done } of { $total } in your journal
+
+windows.folders.pageprogress = { $done } of { $total } items in your journal
+
+windows.folders.waiting = { $count } waiting to sync
+
+windows.folders.unpaired = connect a journal to finish setting up this folder.
+
+windows.folders.journalupdate = waiting for a journal update. changes wait on this PC.
+
+windows.folders.finishsetup = finish setting up { $folder }.
+
+windows.folders.pausedfolder = you paused syncing for this folder. changes wait on this PC until you resume.
+
+windows.folders.pausedcomputer = changes wait on this PC.
+
+windows.folders.off = this folder is off. what's already in your journal stays.
+
+windows.folders.stays = what's already in your journal stays if you delete a file from the folder, pause, or turn this off.
+
+windows.folders.otheron = with other files on, kinds you turned off and files over 64 MB come in as names and details only.
+
+windows.folders.otheroff = only files of the kinds you chose under 64 MB come in.
+
+windows.folders.onedrivenote = files stored only in OneDrive stay online until you open them on this PC.
+
+windows.folders.needattentionmany = { $count } folders need attention
+
+windows.folders.alreadyadded = { $folder } is already added.
+
+windows.folders.openfolder = open { $folder }
+
+windows.folders.remove = remove folder
+
+windows.folders.removeheading = remove { $folder } from the solstone app?
+
+windows.folders.removebody = nothing more from this folder will go into your journal. what's already in your journal stays, and nothing in { $folder } changes.
+
+windows.folders.overlapheading = this folder overlaps with { $other }.
+
+windows.folders.overlapbody = files in both places may come into your journal twice. you can pick another folder or use this one anyway.
+
+windows.folders.overlapchoose = choose another folder
+
+windows.folders.overlapoverride = use this folder anyway
+
+windows.folders.overlapfact = overlaps with { $other }.
+
+windows.folders.overlapobsidian = your Obsidian vault ({ $name })
+
+windows.folders.overlapscreenshots = your screenshots folder ({ $name })
+
+windows.folders.overlapfolder = your { $name } folder
+
+windows.folders.whatcomesin = what comes in
+
+windows.folders.kind.notes = notes
+
+windows.folders.kind.notes.desc = markdown and text notes. changes come in as you edit them.
+
+windows.folders.kind.documents = documents
+
+windows.folders.kind.documents.desc = PDFs and longer markdown or text documents. revisions come in after an hour without saves.
+
+windows.folders.kind.transcripts = transcripts
+
+windows.folders.kind.transcripts.desc = subtitles and saved transcripts.
+
+windows.folders.kind.screenshots = screenshots
+
+windows.folders.kind.screenshots.desc = screenshots saved in this folder.
+
+windows.folders.kind.photos = photos
+
+windows.folders.kind.photos.desc = photos and other images.
+
+windows.folders.kind.other = other files (names and details only)
+
+windows.folders.kind.other.desc = installers, audio, video, and other files. only names, sizes, and file details come in, never the file contents.
+
+windows.folders.chooseatleastone = choose at least one kind to bring in.
+
+windows.folders.kindsgoingforward = changes to these kinds apply going forward. what's already in your journal stays.
+
+windows.folders.facetheading = facet (optional)
+
+windows.folders.facetnone = none
+
+windows.folders.facethelpnone = choose a facet to add it to segments from this folder going forward.
+
+windows.folders.facethelpsetup = segments brought in from this folder go into { $facet }.
+
+windows.folders.facethelpactive = new segments from this folder go into { $facet }.
+
+windows.folders.facetunpaired = connect a journal to choose a facet.
+
+windows.folders.facetoffline = couldn't load facets from your journal.
+
+windows.folders.preview = preview
+
+windows.folders.checkingfolder = checking this folder…
+
+windows.folders.previewspanone = 1 item · { $start } to { $end }
+
+windows.folders.previewspan = { $count } items · { $start } to { $end }
+
+windows.folders.previewcountone = 1 item
+
+windows.folders.previewcount = { $count } items
+
+windows.folders.previewzero = 0 existing items selected
+
+windows.folders.previewboth = { $content } · { $meta }
+
+windows.folders.previewcontentone = 1 file with content ({ $size })
+
+windows.folders.previewcontentonly = { $content } files with content ({ $size })
+
+windows.folders.previewmetaone = 1 other file (details only)
+
+windows.folders.previewmetaonly = { $meta } other files (details only)
+
+windows.folders.estheading = estimated work in your journal
+
+windows.folders.estvalues = { $segments } · { $days } · { $thoughts }
+
+windows.folders.estsegmentsone = ~1 segment
+
+windows.folders.estsegmentsmany = ~{ $count } segments
+
+windows.folders.estdaysone = 1 day
+
+windows.folders.estdaysmany = { $count } days
+
+windows.folders.estthoughtsone = ~1 thought
+
+windows.folders.estthoughtsmany = ~{ $count } thoughts
+
+windows.folders.estgloss = files touched within 5 minutes share one segment. details-only files take no thoughts.
+
+windows.folders.estunpaired = connect a journal to see an estimate and finish setup.
+
+windows.folders.estoffline = journal estimate unavailable while your journal is offline. you can still confirm and files will wait on this PC.
+
+windows.folders.scopenote = includes subfolders. unfinished downloads wait until they finish; hidden files are skipped.
+
+windows.folders.nothinguntilconfirm = nothing from this folder comes in until you confirm.
+
+windows.folders.norepeat = items already in your journal aren't brought in again.
+
+windows.folders.bringinone = bring in 1 item
+
+windows.folders.bringinmany = bring in { $count } items
+
+windows.folders.startfromtoday = start from today
+
+windows.folders.previewfailed = couldn't read this folder to count what's inside.
+
+windows.folders.bringinolder = bring in older files
+
+windows.folders.backfillstatus = older days are processed behind recent days. follow progress on status in your journal.
+
+windows.folders.missing = { $folder } isn't on this PC anymore.
+
+windows.folders.unreadable = can't read { $folder }.
+
+windows.folders.cantreadone = couldn't read 1 file.
+
+windows.folders.cantreadmany = couldn't read { $count } files.
+
+windows.folders.fallbackone = 1 file's contents couldn't be added, so only its details came in.
+
+windows.folders.fallbackmany = { $count } files' contents couldn't be added, so only their details came in.
+
+windows.folders.refused = the solstone app can't open this folder. choose another folder.
+
+windows.folders.allfolders = all folders
+
+windows.folders.back = folders
+
+windows.folders.pauselabel = pause syncing
+
+windows.folders.resumelabel = resume syncing
+
+windows.folders.moreabout = more about this
+
+windows.folders.folderlabel = folder
+
+windows.folders.spanthirty = the last 30 days
+
+windows.folders.spansixmonths = the last 6 months
+
+windows.folders.spanyear = the last year
+
+windows.folders.spanall = all of it
+
+windows.folders.spannothing = nothing from before today
+
+windows.folders.frombefore = from before today

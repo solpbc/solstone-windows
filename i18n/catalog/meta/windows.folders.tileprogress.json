@@ -1,0 +1,29 @@
+{
+  "description": "Windows app folder source: windows.folders.tileprogress",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "folder",
+      "type": "string"
+    },
+    {
+      "name": "done",
+      "type": "string"
+    },
+    {
+      "name": "total",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 159,
+  "source_revision": "50ebf9e761cd586a2338438fa0138b921e8540f05e281571201d46db58255e9e",
+  "risk": "routine",
+  "auto_merge": true
+}

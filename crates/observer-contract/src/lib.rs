@@ -130,6 +130,18 @@ pub mod settings {
     pub const SOURCES_SCREENSHOTS_CONFIRM: &str = "settings.sources.screenshots.confirm";
     pub const SOURCES_SCREENSHOTS_TRY_AGAIN: &str = "settings.sources.screenshots.tryAgain";
     pub const SOURCES_SCREENSHOTS_FOLDER: &str = "settings.sources.screenshots.folder";
+    pub const SOURCES_FOLDERS_ADD: &str = "settings.sources.folders.add";
+    pub const SOURCES_FOLDERS_LIST: &str = "settings.sources.folders.list";
+    pub const SOURCES_FOLDERS_CONFIRM: &str = "settings.sources.folders.confirm";
+    pub const SOURCES_FOLDERS_PAUSE: &str = "settings.sources.folders.pause";
+    pub const SOURCES_FOLDERS_ENABLED: &str = "settings.sources.folders.enabled";
+    pub const SOURCES_FOLDERS_FACET: &str = "settings.sources.folders.facet";
+    pub const SOURCES_FOLDERS_SPAN: &str = "settings.sources.folders.span";
+    pub const SOURCES_FOLDERS_ESTIMATE: &str = "settings.sources.folders.estimate";
+    pub const SOURCES_FOLDERS_REMOVE: &str = "settings.sources.folders.remove";
+    pub const SOURCES_FOLDERS_OVERLAP: &str = "settings.sources.folders.overlap";
+    pub const SOURCES_FOLDERS_TRY_AGAIN: &str = "settings.sources.folders.tryAgain";
+    pub const SOURCES_FOLDERS_REPOINT: &str = "settings.sources.folders.repoint";
 
     pub const SETUP_STEP: &str = "settings.setup.step";
     pub const SETUP_NEXT: &str = "settings.setup.next";
@@ -434,6 +446,54 @@ fn automation_ids() -> BTreeMap<&'static str, &'static str> {
         (
             "settings.sources.screenshots.folder",
             settings::SOURCES_SCREENSHOTS_FOLDER,
+        ),
+        (
+            "settings.sources.folders.add",
+            settings::SOURCES_FOLDERS_ADD,
+        ),
+        (
+            "settings.sources.folders.list",
+            settings::SOURCES_FOLDERS_LIST,
+        ),
+        (
+            "settings.sources.folders.confirm",
+            settings::SOURCES_FOLDERS_CONFIRM,
+        ),
+        (
+            "settings.sources.folders.pause",
+            settings::SOURCES_FOLDERS_PAUSE,
+        ),
+        (
+            "settings.sources.folders.enabled",
+            settings::SOURCES_FOLDERS_ENABLED,
+        ),
+        (
+            "settings.sources.folders.facet",
+            settings::SOURCES_FOLDERS_FACET,
+        ),
+        (
+            "settings.sources.folders.span",
+            settings::SOURCES_FOLDERS_SPAN,
+        ),
+        (
+            "settings.sources.folders.estimate",
+            settings::SOURCES_FOLDERS_ESTIMATE,
+        ),
+        (
+            "settings.sources.folders.remove",
+            settings::SOURCES_FOLDERS_REMOVE,
+        ),
+        (
+            "settings.sources.folders.overlap",
+            settings::SOURCES_FOLDERS_OVERLAP,
+        ),
+        (
+            "settings.sources.folders.tryAgain",
+            settings::SOURCES_FOLDERS_TRY_AGAIN,
+        ),
+        (
+            "settings.sources.folders.repoint",
+            settings::SOURCES_FOLDERS_REPOINT,
         ),
         ("settings.pairing.state", settings::PAIRING_STATE),
         ("settings.pairing.input", settings::PAIRING_INPUT),

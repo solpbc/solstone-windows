@@ -1,0 +1,21 @@
+{
+  "description": "Windows app folder source: windows.folders.overlapobsidian",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "name",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 93,
+  "source_revision": "3ef4ebee242bb768c6150d9844c20fbe12411cbe5a3f26e520657848af0e1db2",
+  "risk": "routine",
+  "auto_merge": true
+}

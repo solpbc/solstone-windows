@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.kind.photos.desc",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "f96dc641e5457d54dba6145e4972b32fbd96896712e0d23216a7cad3dce601e9",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,21 @@
+{
+  "description": "Windows app folder source: windows.folders.overlapfolder",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "name",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "9fb32b46d40395694fcf81805f446659bf5850af68649742ffe51f674e0eeb61",
+  "risk": "routine",
+  "auto_merge": true
+}

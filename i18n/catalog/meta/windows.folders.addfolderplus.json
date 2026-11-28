@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.addfolderplus",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "697ede913c283a967e6f606999fdce2c8d2104574b99097b75dff2b7a32eb704",
+  "risk": "routine",
+  "auto_merge": true
+}

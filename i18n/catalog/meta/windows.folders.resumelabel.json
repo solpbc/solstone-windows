@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.resumelabel",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "13f4f73979f34bdb6e660d5cb9812ec44028697513a05d4ad38be030799cc6a5",
+  "risk": "routine",
+  "auto_merge": true
+}

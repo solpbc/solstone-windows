@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.whatcomesin",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "a4d90ceffdfece3d77f406e04381fd1f5b1f2c36f516df852ee0f0c434f11e7b",
+  "risk": "routine",
+  "auto_merge": true
+}

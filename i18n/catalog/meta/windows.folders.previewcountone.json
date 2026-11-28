@@ -1,0 +1,16 @@
+{
+  "description": "Summary line in the folder setup preview when 1 item is selected.",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 120,
+  "source_revision": "20b06a809c23c324b79593f2d8b8eb47830dc0c2ed79753a2e25da28d6949859",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.estgloss",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 258,
+  "source_revision": "ce46dabaa0caa49288bbb5362392e99f015c809543da03bd568a4c53b6725587",
+  "risk": "routine",
+  "auto_merge": true
+}

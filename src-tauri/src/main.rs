@@ -16,6 +16,7 @@ mod app;
 mod browser;
 mod control;
 mod exclusions;
+mod folders;
 mod health;
 mod hotkey;
 mod import;

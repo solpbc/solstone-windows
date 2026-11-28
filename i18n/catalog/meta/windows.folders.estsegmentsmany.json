@@ -1,0 +1,21 @@
+{
+  "description": "Windows app folder source: windows.folders.estsegmentsmany",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "count",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "4f70a4fcbfa73186ba4595d2c41fb3291f4c24e4a4d2d1180a4a8a12e197ce71",
+  "risk": "routine",
+  "auto_merge": true
+}

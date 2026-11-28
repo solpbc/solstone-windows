@@ -47,6 +47,8 @@ pub mod file_picker;
 /// The native folder picker.
 #[allow(unsafe_code)]
 pub mod folder_picker;
+/// Windows platform hooks for the folder source (Zone.Identifier ADS, WIC conversion, NTFS file IDs).
+pub mod folders;
 #[allow(unsafe_code)]
 pub mod local_offset;
 #[allow(unsafe_code)]

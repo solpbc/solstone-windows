@@ -26,6 +26,7 @@ members = [
     "crates/browser-host",
     "crates/obsidian-source",
     "crates/screenshots-source",
+    "crates/folders-source",
     "crates/source-counters",
     "crates/journal-window",
     "src-tauri",
@@ -107,6 +108,7 @@ capture-engine = { path = "crates/capture-engine" }
 browser-host = { path = "crates/browser-host" }
 obsidian-source = { path = "crates/obsidian-source" }
 screenshots-source = { path = "crates/screenshots-source" }
+folders-source = { path = "crates/folders-source" }
 source-counters = { path = "crates/source-counters" }
 # The shared Rust folder layer and Obsidian engine. Vendor both crates from
 # the same solstone-linux commit.

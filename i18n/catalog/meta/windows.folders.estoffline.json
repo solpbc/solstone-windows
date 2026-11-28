@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.estoffline",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 339,
+  "source_revision": "0265d236f8b3e091d31095a49cd8610de11d1876c65a5a76938748eee74e43f3",
+  "risk": "routine",
+  "auto_merge": true
+}

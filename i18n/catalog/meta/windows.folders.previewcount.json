@@ -1,0 +1,21 @@
+{
+  "description": "Windows app folder source: windows.folders.previewcount",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "count",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "cfe6ceb38620358566e105c4ff4f5eda56f77e1c79b35e1fa0447f489102929c",
+  "risk": "routine",
+  "auto_merge": true
+}

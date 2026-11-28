@@ -38,6 +38,7 @@ pub enum Source {
     Obsidian,
     Screenshots,
     Imports,
+    Folders,
 }
 
 /// One accepted browser batch, in record order.
@@ -161,6 +162,16 @@ impl SharedCounters {
 
     pub fn import_count(&self) -> u64 {
         self.with_mut(|c| c.disk.imports.total)
+    }
+
+    /// Items delivered by the folder source, each by a stable id (`folder_id:key`).
+    /// One already counted adds nothing across retries or restarts.
+    pub fn add_folder_items(&self, ids: &[String], at_secs: i64) -> bool {
+        self.with_mut(|c| c.add_folder_items(ids, at_secs))
+    }
+
+    pub fn folder_item_count(&self) -> u64 {
+        self.with_mut(|c| c.disk.folders.total)
     }
 
     pub fn last_intake_id(&self) -> u64 {
@@ -315,6 +326,10 @@ struct Disk {
     imports: CountTotal,
     #[serde(default)]
     import_ids: BTreeSet<String>,
+    #[serde(default)]
+    folders: CountTotal,
+    #[serde(default)]
+    folder_item_ids: BTreeSet<String>,
 }
 
 #[derive(Debug)]
@@ -357,6 +372,8 @@ impl Counters {
                     screenshot_hashes: BTreeSet::new(),
                     imports: CountTotal::default(),
                     import_ids: BTreeSet::new(),
+                    folders: CountTotal::default(),
+                    folder_item_ids: BTreeSet::new(),
                 }
             }
         };
@@ -416,6 +433,7 @@ impl Counters {
             Source::Obsidian => self.disk.obsidian.last,
             Source::Screenshots => self.disk.screenshots.last,
             Source::Imports => self.disk.imports.last,
+            Source::Folders => self.disk.folders.last,
         }
     }
 
@@ -668,6 +686,22 @@ impl Counters {
                 self.disk.imports.last = Some(
                     self.disk
                         .imports
+                        .last
+                        .map_or(at_secs, |prev| prev.max(at_secs)),
+                );
+                self.dirty = true;
+            }
+        }
+        self.persist_ok()
+    }
+
+    pub fn add_folder_items(&mut self, ids: &[String], at_secs: i64) -> bool {
+        for id in ids {
+            if self.disk.folder_item_ids.insert(id.clone()) {
+                self.disk.folders.total = self.disk.folders.total.saturating_add(1);
+                self.disk.folders.last = Some(
+                    self.disk
+                        .folders
                         .last
                         .map_or(at_secs, |prev| prev.max(at_secs)),
                 );
@@ -1010,6 +1044,7 @@ pub struct WindowCounterDocument {
     pub obsidian: WindowSourceTotal,
     pub screenshots: WindowSourceTotal,
     pub imports: WindowSourceTotal,
+    pub folders: WindowSourceTotal,
 }
 
 /// What the settings window's read found.
@@ -1049,6 +1084,7 @@ pub struct WindowCounterPayload {
     pub obsidian: WindowCountCell,
     pub screenshots: WindowCountCell,
     pub imports: WindowCountCell,
+    pub folders: WindowCountCell,
 }
 
 /// Map a window read onto the document the window renders.
@@ -1085,6 +1121,10 @@ pub fn window_payload(read: &WindowCounterRead) -> Option<WindowCounterPayload> 
             total: doc.imports.total,
             last: doc.imports.last,
         },
+        folders: WindowCountCell {
+            total: doc.folders.total,
+            last: doc.folders.last,
+        },
     })
 }
 
@@ -1118,6 +1158,10 @@ pub fn read_window_counters(dir: &Path) -> io::Result<WindowCounterRead> {
                 imports: WindowSourceTotal {
                     total: disk.imports.total,
                     last: disk.imports.last,
+                },
+                folders: WindowSourceTotal {
+                    total: disk.folders.total,
+                    last: disk.folders.last,
                 },
             })),
             Err(_) => Ok(WindowCounterRead::NoRows),
@@ -1998,5 +2042,40 @@ mod tests {
         assert!(reopened.add_imports(&["item-1".to_string()], 300));
         assert_eq!(reopened.disk.imports.total, 1);
         assert_eq!(reopened.last(Source::Imports), Some(300));
+    }
+
+    #[test]
+    fn a_folder_item_counts_once_by_its_id_and_an_older_file_still_reads() {
+        let (dir, mut counters) = open_at("2026-11-27");
+        let ids = vec![
+            "downloads-1:a".to_string(),
+            "downloads-1:b".to_string(),
+            "downloads-1:a".to_string(),
+        ];
+        assert!(counters.add_folder_items(&ids, 100));
+        assert!(counters.add_folder_items(&["downloads-1:b".to_string()], 200));
+        assert_eq!(counters.disk.folders.total, 2);
+        assert_eq!(counters.last(Source::Folders), Some(100));
+        let payload = window_payload(&read_window_counters(dir.path()).unwrap()).unwrap();
+        assert_eq!(payload.folders.total, 2);
+        assert_eq!(payload.folders.last, Some(100));
+
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.path().join(FILE_NAME)).unwrap()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("folders");
+        object.remove("folder_item_ids");
+        fs::write(
+            dir.path().join(FILE_NAME),
+            serde_json::to_vec(&value).unwrap(),
+        )
+        .unwrap();
+        let payload = window_payload(&read_window_counters(dir.path()).unwrap()).unwrap();
+        assert_eq!(payload.folders.total, 0);
+        assert_eq!(payload.folders.last, None);
+        let mut reopened = Counters::open(dir.path(), "2026-11-27").unwrap();
+        assert!(reopened.add_folder_items(&["downloads-1:a".to_string()], 300));
+        assert_eq!(reopened.disk.folders.total, 1);
+        assert_eq!(reopened.last(Source::Folders), Some(300));
     }
 }

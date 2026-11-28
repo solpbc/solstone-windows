@@ -4,6 +4,12 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- once your journal supports it, you can now choose folders on this PC for the solstone app to take in changes from and add to your journal in five-minute segments. notes update as you edit them, revisions of PDFs and longer markdown or text documents come in after an hour without saves, and screenshots and photos convert on this PC when needed. for other files, only names, sizes, and download origins come in, never their contents. files stored only in OneDrive stay online until you open them on this PC. you can choose which kinds come in, pick an optional facet, preview what will be added before anything goes into your journal, and pause syncing for a folder without skipping changes.
+
 ## [2.0.61] - 2026-11-27
 
 ### Added

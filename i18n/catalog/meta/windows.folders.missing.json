@@ -1,0 +1,21 @@
+{
+  "description": "Windows app folder source: windows.folders.missing",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "folder",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 111,
+  "source_revision": "9e4d9afe27be302c84bde598e62ef29fd6a6fa4e2148fb39085647a4d4d67c97",
+  "risk": "routine",
+  "auto_merge": true
+}

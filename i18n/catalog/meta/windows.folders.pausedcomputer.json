@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.pausedcomputer",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "2b3a293dabfbb13e08466035129d1abe1fc49eafda6d38d43ef38e817f489676",
+  "risk": "routine",
+  "auto_merge": true
+}

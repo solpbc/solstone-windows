@@ -37,12 +37,14 @@ pub fn restart_enabled(phase: AppPhase) -> bool {
 
 /// The one menu attention row, in tile order. A fault on a source the owner
 /// turned on counts, including a refused permission. Activity is the screen row.
+#[allow(clippy::too_many_arguments)]
 pub fn attention_source(
     sources: &[SourceReport],
     is_enabled: impl Fn(SourceKind) -> bool,
     browsers_need_attention: bool,
     obsidian_needs_attention: bool,
     screenshots_need_attention: bool,
+    folders_need_attention: bool,
     imports_need_attention: bool,
     paused: bool,
 ) -> Option<&'static str> {
@@ -85,6 +87,9 @@ pub fn attention_source(
     }
     if screenshots_need_attention {
         return Some("screenshots");
+    }
+    if folders_need_attention {
+        return Some("folders");
     }
     if imports_need_attention {
         return Some("import");
@@ -956,42 +961,46 @@ mod tests {
             faulted_source(SourceKind::Screen, "x"),
         ];
         assert_eq!(
-            attention_source(&mic, |_| true, true, true, false, false, false),
+            attention_source(&mic, |_| true, true, true, false, false, false, false),
             Some("audio")
         );
         let screen = [faulted_source(SourceKind::DesktopActivity, "x")];
         assert_eq!(
-            attention_source(&screen, |_| true, false, false, false, false, false),
+            attention_source(&screen, |_| true, false, false, false, false, false, false),
             Some("screen")
         );
         assert_eq!(
-            attention_source(&[], |_| true, true, true, false, false, false),
+            attention_source(&[], |_| true, true, true, false, false, false, false),
             Some("browsers")
         );
         assert_eq!(
-            attention_source(&[], |_| true, false, true, false, false, false),
+            attention_source(&[], |_| true, false, true, false, false, false, false),
             Some("Obsidian")
         );
         assert_eq!(
-            attention_source(&[], |_| true, false, false, true, false, false),
+            attention_source(&[], |_| true, false, false, true, false, false, false),
             Some("screenshots")
         );
         assert_eq!(
-            attention_source(&[], |_| true, false, false, false, true, false),
+            attention_source(&[], |_| true, false, false, false, true, false, false),
+            Some("folders")
+        );
+        assert_eq!(
+            attention_source(&[], |_| true, false, false, false, false, true, false),
             Some("import")
         );
         assert_eq!(
-            attention_source(&[], |_| true, false, true, true, true, false),
+            attention_source(&[], |_| true, false, true, true, true, true, false),
             Some("Obsidian"),
             "in tile order"
         );
         assert_eq!(
-            attention_source(&[], |_| true, false, false, false, false, false),
+            attention_source(&[], |_| true, false, false, false, false, false, false),
             None
         );
         let off = [denied(SourceKind::Mic)];
         assert_eq!(
-            attention_source(&off, |_| false, false, false, false, false, false),
+            attention_source(&off, |_| false, false, false, false, false, false, false),
             None
         );
     }
@@ -1012,15 +1021,24 @@ mod tests {
         ];
         let enabled = |kind: SourceKind| kind == SourceKind::SystemAudio;
         assert_eq!(
-            attention_source(&sources, enabled, false, false, false, false, false),
+            attention_source(&sources, enabled, false, false, false, false, false, false),
             Some("audio")
         );
         assert_eq!(
-            attention_source(&sources, enabled, false, false, false, false, true),
+            attention_source(&sources, enabled, false, false, false, false, false, true),
             None
         );
         assert_eq!(
-            attention_source(&sources, |_| false, false, false, false, false, false),
+            attention_source(
+                &sources,
+                |_| false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false
+            ),
             None
         );
     }

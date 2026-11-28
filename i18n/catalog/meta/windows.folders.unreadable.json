@@ -1,0 +1,21 @@
+{
+  "description": "Windows app folder source: windows.folders.unreadable",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "folder",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "7a5fbdc3fd75b5abf383c4a47fc1fe5b78ba9faff8bf32d4892550b26274656e",
+  "risk": "routine",
+  "auto_merge": true
+}

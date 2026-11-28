@@ -1,0 +1,21 @@
+{
+  "description": "Breakdown phrase when 1 file with content will be added.",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "size",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 120,
+  "source_revision": "731fc0a53bf11fc2284f4911433b2a844b41e1a58583e4c9ca1bc626ec8a405a",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -32,6 +32,9 @@ pub(crate) enum OrdinaryRequest {
     SelfSourcesPut,
     KnownSourcesGet,
     ObsidianVaultsGet,
+    FolderFacetsGet,
+    FolderSupportedGet,
+    FolderEstimatePost,
     ImportSavePost,
     ImportStartPost,
     ImportStatusGet,
@@ -51,7 +54,7 @@ pub(crate) struct OrdinaryRequestSpec {
 }
 
 impl OrdinaryRequest {
-    pub(crate) const ALL: [Self; 23] = [
+    pub(crate) const ALL: [Self; 26] = [
         Self::ClientsListGet,
         Self::ClientsSelfGet,
         Self::ClientsSelfPut,
@@ -75,6 +78,9 @@ impl OrdinaryRequest {
         Self::ImportStatusGet,
         Self::ImportSourcesGet,
         Self::ImportUploadAbortDelete,
+        Self::FolderFacetsGet,
+        Self::FolderSupportedGet,
+        Self::FolderEstimatePost,
     ];
 
     pub(crate) const fn spec(self) -> OrdinaryRequestSpec {
@@ -233,6 +239,27 @@ impl OrdinaryRequest {
             Self::ObsidianVaultsGet => OrdinaryRequestSpec {
                 method: "GET",
                 path_pattern: paths::INGEST_OBSIDIAN_VAULTS,
+                replay: ReplayPolicy::ReplaySafe,
+                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: true,
+            },
+            Self::FolderFacetsGet => OrdinaryRequestSpec {
+                method: "GET",
+                path_pattern: paths::INGEST_FOLDER_FACETS,
+                replay: ReplayPolicy::ReplaySafe,
+                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: true,
+            },
+            Self::FolderSupportedGet => OrdinaryRequestSpec {
+                method: "GET",
+                path_pattern: paths::INGEST_FOLDER_SUPPORTED,
+                replay: ReplayPolicy::ReplaySafe,
+                response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
+                gated: true,
+            },
+            Self::FolderEstimatePost => OrdinaryRequestSpec {
+                method: "POST",
+                path_pattern: paths::INGEST_FOLDER_ESTIMATE,
                 replay: ReplayPolicy::ReplaySafe,
                 response_cap: MAX_POST_CONNECT_RESPONSE_BYTES,
                 gated: true,
@@ -488,6 +515,30 @@ mod tests {
                 OrdinaryRequest::ImportUploadAbortDelete,
                 "DELETE",
                 "/app/import/api/uploads/<upload-id>",
+                ReplayPolicy::ReplaySafe,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                true,
+            ),
+            (
+                OrdinaryRequest::FolderFacetsGet,
+                "GET",
+                "/app/devices/ingest/folder/facets",
+                ReplayPolicy::ReplaySafe,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                true,
+            ),
+            (
+                OrdinaryRequest::FolderSupportedGet,
+                "GET",
+                "/app/devices/ingest/folder/supported",
+                ReplayPolicy::ReplaySafe,
+                MAX_POST_CONNECT_RESPONSE_BYTES,
+                true,
+            ),
+            (
+                OrdinaryRequest::FolderEstimatePost,
+                "POST",
+                "/app/devices/ingest/folder/estimate",
                 ReplayPolicy::ReplaySafe,
                 MAX_POST_CONNECT_RESPONSE_BYTES,
                 true,

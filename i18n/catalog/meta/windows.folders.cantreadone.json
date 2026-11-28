@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.cantreadone",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "80197f49139e53041a16a067bbf90e6c95ea40eb951450ad803db816b60c91cb",
+  "risk": "routine",
+  "auto_merge": true
+}

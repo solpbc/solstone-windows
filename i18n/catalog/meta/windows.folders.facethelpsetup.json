@@ -1,0 +1,21 @@
+{
+  "description": "Windows app folder source: windows.folders.facethelpsetup",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "facet",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 156,
+  "source_revision": "91d8f060c805e8ede0d085514147d6170af7b4eb55ef948f27eb125897a88162",
+  "risk": "routine",
+  "auto_merge": true
+}

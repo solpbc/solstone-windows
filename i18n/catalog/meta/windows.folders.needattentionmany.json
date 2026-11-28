@@ -1,0 +1,21 @@
+{
+  "description": "Windows app folder source: windows.folders.needattentionmany",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "count",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 99,
+  "source_revision": "f3fcf49426dfd222c775bf3b0b927105b49605bc45a4e4222caa1216ca32573d",
+  "risk": "routine",
+  "auto_merge": true
+}

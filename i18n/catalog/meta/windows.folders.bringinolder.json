@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.bringinolder",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "ca4e75e4e76f1c4628c40321ea9e6ce401a6be681e3e2b9f3036cf55410dbe4e",
+  "risk": "routine",
+  "auto_merge": true
+}

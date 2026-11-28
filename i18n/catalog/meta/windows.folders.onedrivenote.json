@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.onedrivenote",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 219,
+  "source_revision": "676640ee8c9586af4ed83b26941559109f5ca01c35c632f030fca244260277bf",
+  "risk": "routine",
+  "auto_merge": true
+}

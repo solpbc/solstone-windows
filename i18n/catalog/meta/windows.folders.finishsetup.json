@@ -1,0 +1,21 @@
+{
+  "description": "Windows app folder source: windows.folders.finishsetup",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "folder",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 90,
+  "source_revision": "f1818fcd7f89ad77ddd96d8b3cb3d4414c67c0a079eac616138e81d348922303",
+  "risk": "routine",
+  "auto_merge": true
+}

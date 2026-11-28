@@ -12,7 +12,7 @@
 
 use observer_model::LocalZone;
 use observer_pl::ingest::{
-    validate_receipt, FilePart, IngestResponse, IngestStatus, LocalFile, ReceiptFault,
+    validate_receipt, FilePart, FolderMeta, IngestResponse, IngestStatus, LocalFile, ReceiptFault,
 };
 use spl_core::ca;
 
@@ -62,6 +62,73 @@ pub enum ScreenshotReply {
     Held,
     /// The journal could not be reached.
     Unreachable,
+}
+
+/// What a journal said to one five-minute watched-folder segment upload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FolderReply {
+    Answered {
+        http_status: u16,
+        status: Option<String>,
+        reason_code: Option<String>,
+        refused_paths: Vec<String>,
+    },
+    /// Sending is held until the owner confirms the journal mark.
+    Held,
+    /// The journal could not be reached.
+    Unreachable,
+}
+
+/// Send one five-minute folder segment into the `folder` sub-stream.
+pub async fn upload_folder_segment(
+    client: &ObserverClient,
+    day: &str,
+    segment: &str,
+    folder: FolderMeta,
+    files: Vec<FilePart>,
+) -> FolderReply {
+    let response = client
+        .ingest_folder(segment, day, files, folder)
+        .await
+        .map(|(response, _)| response);
+    folder_reply(response)
+}
+
+fn folder_reply(response: Result<IngestResponse, RouteError>) -> FolderReply {
+    match response {
+        Ok(response) => FolderReply::Answered {
+            http_status: match response.status {
+                IngestStatus::Ok | IngestStatus::Duplicate | IngestStatus::Collision => 200,
+                IngestStatus::Conflict => 409,
+                IngestStatus::Failed => 500,
+            },
+            status: Some(status_word(response.status).to_string()),
+            reason_code: response.reason_code,
+            refused_paths: response.refused_files.into_iter().map(|r| r.path).collect(),
+        },
+        Err(RouteError::AwaitingConfirmation) => FolderReply::Held,
+        Err(RouteError::Transport(TransportError::Rejected { status, body })) => {
+            FolderReply::Answered {
+                http_status: status,
+                status: None,
+                reason_code: reason_code_of(&body),
+                refused_paths: refused_paths_of(&body),
+            }
+        }
+        Err(_) => FolderReply::Unreachable,
+    }
+}
+
+fn refused_paths_of(body: &str) -> Vec<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("refused_files")?.as_array().cloned())
+        .map(|arr| {
+            arr.into_iter()
+                .filter_map(|item| item.get("path")?.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// One screenshot, stamped at its capture second.
@@ -229,7 +296,7 @@ pub async fn upload_source_file(
 
 #[cfg(test)]
 mod tests {
-    use super::{reason_code_of, screenshot_reply, ScreenshotReply};
+    use super::{folder_reply, reason_code_of, screenshot_reply, FolderReply, ScreenshotReply};
     use crate::{RouteError, TransportError};
     use observer_pl::ingest::IngestResponse;
 
@@ -239,6 +306,42 @@ mod tests {
             status: status.map(str::to_owned),
             reason_code: reason.map(str::to_owned),
         }
+    }
+
+    #[test]
+    fn folder_reply_carries_refused_paths_from_200_and_400_bodies() {
+        let partial: IngestResponse = serde_json::from_str(
+            r#"{"status":"ok","segment":"140500_300","refused_files":[{"path":"corrupt.pdf","part":"c_02.pdf","reason_code":"folder_file_invalid","detail":"bad pdf"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            folder_reply(Ok(partial)),
+            FolderReply::Answered {
+                http_status: 200,
+                status: Some("ok".into()),
+                reason_code: None,
+                refused_paths: vec!["corrupt.pdf".into()],
+            }
+        );
+
+        let all_refused = TransportError::Rejected {
+            status: 400,
+            body: r#"{"error":"invalid","reason_code":"folder_file_invalid","detail":"bad","refused_files":[{"path":"bad.pdf"}]}"#.into(),
+        };
+        assert_eq!(
+            folder_reply(Err(RouteError::Transport(all_refused))),
+            FolderReply::Answered {
+                http_status: 400,
+                status: None,
+                reason_code: Some("folder_file_invalid".into()),
+                refused_paths: vec!["bad.pdf".into()],
+            }
+        );
+
+        assert_eq!(
+            folder_reply(Err(RouteError::AwaitingConfirmation)),
+            FolderReply::Held
+        );
     }
 
     #[test]

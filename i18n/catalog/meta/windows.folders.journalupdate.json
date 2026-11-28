@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.journalupdate",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 162,
+  "source_revision": "4e29c820c871b32e4fb6b7f890e2235fef6fa281405b1f9b42cc454be448abf4",
+  "risk": "routine",
+  "auto_merge": true
+}

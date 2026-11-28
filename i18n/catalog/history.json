@@ -1806,6 +1806,1686 @@
       "selector": null
     },
     {
+      "id": "windows.folders.addfolder",
+      "resource": "m77696e646f77732e666f6c646572732e616464666f6c646572",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.addfolderplus",
+      "resource": "m77696e646f77732e666f6c646572732e616464666f6c646572706c7573",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.allfolders",
+      "resource": "m77696e646f77732e666f6c646572732e616c6c666f6c64657273",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.alreadyadded",
+      "resource": "m77696e646f77732e666f6c646572732e616c72656164796164646564",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "folder",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.back",
+      "resource": "m77696e646f77732e666f6c646572732e6261636b",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.backfillstatus",
+      "resource": "m77696e646f77732e666f6c646572732e6261636b66696c6c737461747573",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.bringinmany",
+      "resource": "m77696e646f77732e666f6c646572732e6272696e67696e6d616e79",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.bringinolder",
+      "resource": "m77696e646f77732e666f6c646572732e6272696e67696e6f6c646572",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.bringinone",
+      "resource": "m77696e646f77732e666f6c646572732e6272696e67696e6f6e65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.cantreadmany",
+      "resource": "m77696e646f77732e666f6c646572732e63616e74726561646d616e79",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.cantreadone",
+      "resource": "m77696e646f77732e666f6c646572732e63616e74726561646f6e65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.checkingfolder",
+      "resource": "m77696e646f77732e666f6c646572732e636865636b696e67666f6c646572",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.chooseatleastone",
+      "resource": "m77696e646f77732e666f6c646572732e63686f6f736561746c656173746f6e65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.estdaysmany",
+      "resource": "m77696e646f77732e666f6c646572732e657374646179736d616e79",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.estdaysone",
+      "resource": "m77696e646f77732e666f6c646572732e657374646179736f6e65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.estgloss",
+      "resource": "m77696e646f77732e666f6c646572732e657374676c6f7373",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.estheading",
+      "resource": "m77696e646f77732e666f6c646572732e65737468656164696e67",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.estoffline",
+      "resource": "m77696e646f77732e666f6c646572732e6573746f66666c696e65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.estsegmentsmany",
+      "resource": "m77696e646f77732e666f6c646572732e6573747365676d656e74736d616e79",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.estsegmentsone",
+      "resource": "m77696e646f77732e666f6c646572732e6573747365676d656e74736f6e65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.estthoughtsmany",
+      "resource": "m77696e646f77732e666f6c646572732e65737474686f75676874736d616e79",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.estthoughtsone",
+      "resource": "m77696e646f77732e666f6c646572732e65737474686f75676874736f6e65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.estunpaired",
+      "resource": "m77696e646f77732e666f6c646572732e657374756e706169726564",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.estvalues",
+      "resource": "m77696e646f77732e666f6c646572732e65737476616c756573",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "segments",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "days",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "thoughts",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.facetheading",
+      "resource": "m77696e646f77732e666f6c646572732e666163657468656164696e67",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.facethelpactive",
+      "resource": "m77696e646f77732e666f6c646572732e666163657468656c70616374697665",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "facet",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.facethelpnone",
+      "resource": "m77696e646f77732e666f6c646572732e666163657468656c706e6f6e65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.facethelpsetup",
+      "resource": "m77696e646f77732e666f6c646572732e666163657468656c707365747570",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "facet",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.facetnone",
+      "resource": "m77696e646f77732e666f6c646572732e66616365746e6f6e65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.facetoffline",
+      "resource": "m77696e646f77732e666f6c646572732e66616365746f66666c696e65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.facetunpaired",
+      "resource": "m77696e646f77732e666f6c646572732e6661636574756e706169726564",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.fallbackmany",
+      "resource": "m77696e646f77732e666f6c646572732e66616c6c6261636b6d616e79",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.fallbackone",
+      "resource": "m77696e646f77732e666f6c646572732e66616c6c6261636b6f6e65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.finishsetup",
+      "resource": "m77696e646f77732e666f6c646572732e66696e6973687365747570",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "folder",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.folderlabel",
+      "resource": "m77696e646f77732e666f6c646572732e666f6c6465726c6162656c",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.frombefore",
+      "resource": "m77696e646f77732e666f6c646572732e66726f6d6265666f7265",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.intro",
+      "resource": "m77696e646f77732e666f6c646572732e696e74726f",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.journalupdate",
+      "resource": "m77696e646f77732e666f6c646572732e6a6f75726e616c757064617465",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.kind.documents",
+      "resource": "m77696e646f77732e666f6c646572732e6b696e642e646f63756d656e7473",
+      "namespace": "windows.folders.kind",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.kind.documents.desc",
+      "resource": "m77696e646f77732e666f6c646572732e6b696e642e646f63756d656e74732e64657363",
+      "namespace": "windows.folders.kind.documents",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.kind.notes",
+      "resource": "m77696e646f77732e666f6c646572732e6b696e642e6e6f746573",
+      "namespace": "windows.folders.kind",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.kind.notes.desc",
+      "resource": "m77696e646f77732e666f6c646572732e6b696e642e6e6f7465732e64657363",
+      "namespace": "windows.folders.kind.notes",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.kind.other",
+      "resource": "m77696e646f77732e666f6c646572732e6b696e642e6f74686572",
+      "namespace": "windows.folders.kind",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.kind.other.desc",
+      "resource": "m77696e646f77732e666f6c646572732e6b696e642e6f746865722e64657363",
+      "namespace": "windows.folders.kind.other",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.kind.photos",
+      "resource": "m77696e646f77732e666f6c646572732e6b696e642e70686f746f73",
+      "namespace": "windows.folders.kind",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.kind.photos.desc",
+      "resource": "m77696e646f77732e666f6c646572732e6b696e642e70686f746f732e64657363",
+      "namespace": "windows.folders.kind.photos",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.kind.screenshots",
+      "resource": "m77696e646f77732e666f6c646572732e6b696e642e73637265656e73686f7473",
+      "namespace": "windows.folders.kind",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.kind.screenshots.desc",
+      "resource": "m77696e646f77732e666f6c646572732e6b696e642e73637265656e73686f74732e64657363",
+      "namespace": "windows.folders.kind.screenshots",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.kind.transcripts",
+      "resource": "m77696e646f77732e666f6c646572732e6b696e642e7472616e73637269707473",
+      "namespace": "windows.folders.kind",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.kind.transcripts.desc",
+      "resource": "m77696e646f77732e666f6c646572732e6b696e642e7472616e736372697074732e64657363",
+      "namespace": "windows.folders.kind.transcripts",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.kindsgoingforward",
+      "resource": "m77696e646f77732e666f6c646572732e6b696e6473676f696e67666f7277617264",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.many",
+      "resource": "m77696e646f77732e666f6c646572732e6d616e79",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.missing",
+      "resource": "m77696e646f77732e666f6c646572732e6d697373696e67",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "folder",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.moreabout",
+      "resource": "m77696e646f77732e666f6c646572732e6d6f726561626f7574",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.needattentionmany",
+      "resource": "m77696e646f77732e666f6c646572732e6e656564617474656e74696f6e6d616e79",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.norepeat",
+      "resource": "m77696e646f77732e666f6c646572732e6e6f726570656174",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.nothinguntilconfirm",
+      "resource": "m77696e646f77732e666f6c646572732e6e6f7468696e67756e74696c636f6e6669726d",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.off",
+      "resource": "m77696e646f77732e666f6c646572732e6f6666",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.onedrivenote",
+      "resource": "m77696e646f77732e666f6c646572732e6f6e6564726976656e6f7465",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.oneintro",
+      "resource": "m77696e646f77732e666f6c646572732e6f6e65696e74726f",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "folder",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.openfolder",
+      "resource": "m77696e646f77732e666f6c646572732e6f70656e666f6c646572",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "folder",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.otheroff",
+      "resource": "m77696e646f77732e666f6c646572732e6f746865726f6666",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.otheron",
+      "resource": "m77696e646f77732e666f6c646572732e6f746865726f6e",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.overlapbody",
+      "resource": "m77696e646f77732e666f6c646572732e6f7665726c6170626f6479",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.overlapchoose",
+      "resource": "m77696e646f77732e666f6c646572732e6f7665726c617063686f6f7365",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.overlapfact",
+      "resource": "m77696e646f77732e666f6c646572732e6f7665726c617066616374",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "other",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.overlapfolder",
+      "resource": "m77696e646f77732e666f6c646572732e6f7665726c6170666f6c646572",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "name",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.overlapheading",
+      "resource": "m77696e646f77732e666f6c646572732e6f7665726c617068656164696e67",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "other",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.overlapobsidian",
+      "resource": "m77696e646f77732e666f6c646572732e6f7665726c61706f6273696469616e",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "name",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.overlapoverride",
+      "resource": "m77696e646f77732e666f6c646572732e6f7665726c61706f76657272696465",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.overlapscreenshots",
+      "resource": "m77696e646f77732e666f6c646572732e6f7665726c617073637265656e73686f7473",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "name",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.pageprogress",
+      "resource": "m77696e646f77732e666f6c646572732e7061676570726f6772657373",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "done",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "total",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.pausedcomputer",
+      "resource": "m77696e646f77732e666f6c646572732e706175736564636f6d7075746572",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.pausedfolder",
+      "resource": "m77696e646f77732e666f6c646572732e706175736564666f6c646572",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.pauselabel",
+      "resource": "m77696e646f77732e666f6c646572732e70617573656c6162656c",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.pickertitle",
+      "resource": "m77696e646f77732e666f6c646572732e7069636b65727469746c65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.preview",
+      "resource": "m77696e646f77732e666f6c646572732e70726576696577",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.previewboth",
+      "resource": "m77696e646f77732e666f6c646572732e70726576696577626f7468",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "content",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "meta",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.previewcontentone",
+      "resource": "m77696e646f77732e666f6c646572732e70726576696577636f6e74656e746f6e65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "size",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.previewcontentonly",
+      "resource": "m77696e646f77732e666f6c646572732e70726576696577636f6e74656e746f6e6c79",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "content",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "size",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.previewcount",
+      "resource": "m77696e646f77732e666f6c646572732e70726576696577636f756e74",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.previewcountone",
+      "resource": "m77696e646f77732e666f6c646572732e70726576696577636f756e746f6e65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.previewfailed",
+      "resource": "m77696e646f77732e666f6c646572732e707265766965776661696c6564",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.previewmetaone",
+      "resource": "m77696e646f77732e666f6c646572732e707265766965776d6574616f6e65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.previewmetaonly",
+      "resource": "m77696e646f77732e666f6c646572732e707265766965776d6574616f6e6c79",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "meta",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.previewspan",
+      "resource": "m77696e646f77732e666f6c646572732e707265766965777370616e",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "start",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "end",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.previewspanone",
+      "resource": "m77696e646f77732e666f6c646572732e707265766965777370616e6f6e65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "start",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "end",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.previewzero",
+      "resource": "m77696e646f77732e666f6c646572732e707265766965777a65726f",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.refused",
+      "resource": "m77696e646f77732e666f6c646572732e72656675736564",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.remove",
+      "resource": "m77696e646f77732e666f6c646572732e72656d6f7665",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.removebody",
+      "resource": "m77696e646f77732e666f6c646572732e72656d6f7665626f6479",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "folder",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.removeheading",
+      "resource": "m77696e646f77732e666f6c646572732e72656d6f766568656164696e67",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "folder",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.resumelabel",
+      "resource": "m77696e646f77732e666f6c646572732e726573756d656c6162656c",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.scopenote",
+      "resource": "m77696e646f77732e666f6c646572732e73636f70656e6f7465",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.spanall",
+      "resource": "m77696e646f77732e666f6c646572732e7370616e616c6c",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.spannothing",
+      "resource": "m77696e646f77732e666f6c646572732e7370616e6e6f7468696e67",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.spansixmonths",
+      "resource": "m77696e646f77732e666f6c646572732e7370616e7369786d6f6e746873",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.spanthirty",
+      "resource": "m77696e646f77732e666f6c646572732e7370616e746869727479",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.spanyear",
+      "resource": "m77696e646f77732e666f6c646572732e7370616e79656172",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.split",
+      "resource": "m77696e646f77732e666f6c646572732e73706c6974",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "on",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "paused",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.startfromtoday",
+      "resource": "m77696e646f77732e666f6c646572732e737461727466726f6d746f646179",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.stays",
+      "resource": "m77696e646f77732e666f6c646572732e7374617973",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.tileprogress",
+      "resource": "m77696e646f77732e666f6c646572732e74696c6570726f6772657373",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "folder",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "done",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "total",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.tiletitle",
+      "resource": "m77696e646f77732e666f6c646572732e74696c657469746c65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.two",
+      "resource": "m77696e646f77732e666f6c646572732e74776f",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "first",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        },
+        {
+          "name": "second",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.unpaired",
+      "resource": "m77696e646f77732e666f6c646572732e756e706169726564",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.unreadable",
+      "resource": "m77696e646f77732e666f6c646572732e756e7265616461626c65",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "folder",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.waiting",
+      "resource": "m77696e646f77732e666f6c646572732e77616974696e67",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [
+        {
+          "name": "count",
+          "type": "string",
+          "numeric_style": null,
+          "min": null,
+          "max": null
+        }
+      ],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
+      "id": "windows.folders.whatcomesin",
+      "resource": "m77696e646f77732e666f6c646572732e77686174636f6d6573696e",
+      "namespace": "windows.folders",
+      "owner": "windows",
+      "tombstone": false,
+      "replacement": null,
+      "format_intent": "text",
+      "arguments": [],
+      "protected_slots": [],
+      "selector": null
+    },
+    {
       "id": "windows.health.attentioncount",
       "resource": "m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74",
       "namespace": "windows.health",

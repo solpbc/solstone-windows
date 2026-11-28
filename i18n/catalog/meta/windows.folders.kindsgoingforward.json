@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.kindsgoingforward",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 243,
+  "source_revision": "c34879ad0b20cf00e13f6df2ebd5cce192fbf4eee185a99a6a4af9d82e2c1877",
+  "risk": "routine",
+  "auto_merge": true
+}

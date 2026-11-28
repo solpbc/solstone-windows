@@ -1,0 +1,21 @@
+{
+  "description": "Windows app folder source: windows.folders.estdaysmany",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "count",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "11e9cb2ab3beac80123cc246ce4ca86fa67aa5cf723ec5305084a7be664c1831",
+  "risk": "routine",
+  "auto_merge": true
+}

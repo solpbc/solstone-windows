@@ -59,7 +59,21 @@ import {
   type Pane,
   type ShelfRow,
   type SourceFacts,
-  type SourceId, screenshotsTile, screenshotsPage, screenshotsConfirm, type ScreenshotsStateName,
+  type SourceId,
+  screenshotsTile,
+  screenshotsPage,
+  screenshotsConfirm,
+  type ScreenshotsStateName,
+  foldersTile,
+  foldersTileLines,
+  folderWord,
+  type FoldersDocumentValue,
+  type FolderSummaryValue,
+  type FolderKindsValue,
+  type FolderSpanName,
+  type OverlapTargetValue,
+  type PathCheckResultValue,
+  type PreviewSummaryValue,
 } from "./shell/derive";
 import { otherDevices, deviceLine, remoteCard, remoteHeading, updateSharedClocks, type KnownSources, type OtherDevice } from "./shell/shared-sources";
 import { patchDeskJournalFoot, patchDeskPill, patchDeskTile, renderDesk, type DeskStatusRow, type DeskTile, type DeskView } from "./shell/view";
@@ -1050,6 +1064,16 @@ let latestScreenshots: ScreenshotsStatus | null = null;
 let screenshotsBusy = false;
 /** The span the owner picked in the chooser; the first choice is preselected. */
 let screenshotsSpan: ScreenshotsSpan = "thirty_days";
+
+let latestFolders: FoldersDocumentValue | null = null;
+let foldersBusy = false;
+let foldersFetching = false;
+let selectedFolderId: string | null = null;
+let folderSpan: FolderSpanName = "thirty_days";
+let folderBringingOlder = false;
+let folderPendingCheck: PathCheckResultValue | null = null;
+let folderConfirmRemoveId: string | null = null;
+let folderPreviewLoadingId: string | null = null;
 
 interface ImportReceipt {
   filename: string;
@@ -4700,7 +4724,9 @@ function createPauseButton(dump: HealthDump): HTMLButtonElement {
   const screenshotsOn =
     latestScreenshots !== null &&
     (latestScreenshots.state === "on" || latestScreenshots.state === "bringing_in");
-  if (phase === "observing" || (phase === "idle" && (obsidianOn || screenshotsOn))) {
+  // And folders, whenever at least one folder is on.
+  const foldersOn = Boolean(latestFolders?.folders.some((f) => f.mode === "on"));
+  if (phase === "observing" || (phase === "idle" && (obsidianOn || screenshotsOn || foldersOn))) {
     return actionButton(t("windows.desktop.shared.setup.wizardpausefailure"), undefined, true, async () => {
       try {
         await invoke("pause", { reason: "operator", durationSecs: null });
@@ -5928,6 +5954,7 @@ function deskSourceName(id: string): string {
   if (id === "screen") return t("windows.ui.screen");
   if (id === "browsers") return t("windows.ui.browsers");
   if (id === "screenshots") return t("windows.ui.screenshots");
+  if (id === "folders") return t("windows.folders.tiletitle");
   if (id === "import") return t("windows.ui.import");
   return id;
 }
@@ -5936,7 +5963,7 @@ function totalWords(source: CounterSourceName, total: number): string {
   if (source === "audio" || source === "screen") return durationTotal(total);
   if (source === "browsers") return quantity("pages", total);
   if (source === "screenshots") return SCREENSHOTS_COPY.S20(total);
-  if (source === "import") return quantity("items", total);
+  if (source === "folders" || source === "import") return quantity("items", total);
   return quantity("notes", total);
 }
 
@@ -6043,6 +6070,8 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
   });
   const screenshots = screenshotsTile(latestScreenshots?.state ?? null);
   const screenshotsLines = screenshotsTileLine(latestScreenshots);
+  const folders = foldersTile(latestFolders);
+  const foldersLines = foldersTileLines(latestFolders);
   const browserNames = latestBrowser
     ? [...new Set(latestBrowser.connected.map((item) => BROWSER_NAMES[item.brand] ?? item.brand))]
     : [];
@@ -6096,7 +6125,9 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
             ? browsers
             : id === "screenshots"
               ? screenshots
-              : obsidian;
+              : id === "folders"
+                ? folders
+                : obsidian;
     const paired = dump.sync.pairing.phase === "paired" || dump.sync.pairing.phase === "awaiting_confirmation";
     const companion =
       id === "audio"
@@ -6115,19 +6146,23 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
             ? browserNames.join(", ")
             : id === "screenshots"
               ? screenshotsLines.companion
-              : obsidian.word === "on" || obsidian.word === "paused"
-              ? latestObsidian?.vault ?? ""
-              : "";
+              : id === "folders"
+                ? foldersLines.companion
+                : obsidian.word === "on" || obsidian.word === "paused"
+                  ? latestObsidian?.vault ?? ""
+                  : "";
     const setupLine =
       id === "browsers"
         ? BROWSER_TILE_SETUP
         : id === "screenshots"
           ? screenshotsLines.setup
-          : id === "obsidian"
-          ? obsidianFound.length === 0
-            ? OBSIDIAN_TILE_SETUP
-            : OBSIDIAN_COPY.foundLabel
-          : "";
+          : id === "folders"
+            ? foldersLines.setup
+            : id === "obsidian"
+              ? obsidianFound.length === 0
+                ? OBSIDIAN_TILE_SETUP
+                : OBSIDIAN_COPY.foundLabel
+              : "";
     const attention =
       id === "audio"
         ? audioTileAttention(dump)
@@ -6143,14 +6178,21 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
               ? obsidianAttentionText(latestObsidian.attention)
               : id === "screenshots"
                 ? screenshotsLines.attention
-                : "";
+                : id === "folders"
+                  ? foldersLines.attention
+                  : "";
     const sub = sourceSubline({
       word: view.word,
       paired,
       companion,
       setup: setupLine,
       attention,
-      settingUp: id === "obsidian" ? obsidianSettingUpLine(latestObsidian) : undefined,
+      settingUp:
+        id === "obsidian"
+          ? obsidianSettingUpLine(latestObsidian)
+          : id === "folders"
+            ? foldersLines.settingUp || undefined
+            : undefined,
     });
     return {
       id,
@@ -6173,7 +6215,7 @@ function deskTilesFor(dump: HealthDump): DeskTile[] {
 
 function deskStatusRows(): DeskStatusRow[] {
   const now = nowSecs();
-  const rows: DeskStatusRow[] = (["audio", "screen", "browsers", "obsidian", "screenshots"] as const).map((id) => {
+  const rows: DeskStatusRow[] = (["audio", "screen", "browsers", "obsidian", "screenshots", "folders"] as const).map((id) => {
     const fact = factFor(id);
     if (!fact) return { id, name: deskSourceName(id), nothingYet: false, total: "", relative: "", hasFacts: false };
     return {
@@ -6368,6 +6410,7 @@ function deskTitleGlyph(): GlyphName | null {
     deskPane === "browsers" ||
     deskPane === "obsidian" ||
     deskPane === "screenshots" ||
+    deskPane === "folders" ||
     deskPane === "import" ||
     deskPane === "addMore"
   ) {
@@ -7417,6 +7460,7 @@ function deskPaneExtra(dump: HealthDump): HTMLElement | null {
     return body;
   }
   if (deskPane === "screenshots") return renderScreenshotsPage(body);
+  if (deskPane === "folders") return renderFoldersPage(body);
   if (deskPane === "obsidian") {
     const status = latestObsidian;
     const ready = status?.state === "off" && obsidianWantsFolder && !status.vault;
@@ -7584,7 +7628,8 @@ function renderDesktopShell(dump: HealthDump): HTMLElement {
       deskPane === "screen" ||
       deskPane === "browsers" ||
       deskPane === "obsidian" ||
-      deskPane === "screenshots")
+      deskPane === "screenshots" ||
+      deskPane === "folders")
       ? tiles.find((tile) => tile.id === deskPane) ?? null
       : null;
   const statusOpen = deskRow === "home" && deskPane === "status" && !homeShowsPairing(dump);
@@ -8937,6 +8982,799 @@ function renderScreenshotsPage(body: HTMLElement): HTMLElement {
   return body;
 }
 
+function overlapName(target: OverlapTargetValue): string {
+  if (target.kind === "obsidian") return t("windows.folders.overlapobsidian", { name: target.name });
+  if (target.kind === "screenshots") return t("windows.folders.overlapscreenshots", { name: target.name });
+  return t("windows.folders.overlapfolder", { name: target.name });
+}
+
+function shortDateForMs(ms: number): string {
+  const iso = new Date(ms).toISOString().slice(0, 10);
+  return startedLabel(iso, new Date().getUTCFullYear());
+}
+
+async function refreshFoldersStatus(): Promise<void> {
+  if (foldersFetching) return;
+  foldersFetching = true;
+  try {
+    const doc = await invoke<FoldersDocumentValue | null>("folders_status").catch(() => null);
+    if (doc) {
+      const changed = JSON.stringify(doc) !== JSON.stringify(latestFolders);
+      latestFolders = doc;
+      if (selectedFolderId && !doc.folders.some((f) => f.id === selectedFolderId)) {
+        selectedFolderId = null;
+        folderBringingOlder = false;
+        folderConfirmRemoveId = null;
+      }
+      if (changed) {
+        countersFor = null;
+        requestRerender();
+      }
+    }
+  } finally {
+    foldersFetching = false;
+  }
+}
+
+function pollFoldersStatus(): Promise<void> {
+  if (label !== "settings" || document.visibilityState === "hidden" || foldersBusy) {
+    return Promise.resolve();
+  }
+  if (!latestFolders || latestFolders.folders.length === 0) {
+    return Promise.resolve();
+  }
+  return refreshFoldersStatus();
+}
+
+async function applyFoldersAction(request: Record<string, unknown>): Promise<FoldersDocumentValue | null> {
+  foldersBusy = true;
+  if (request.op === "preview" && typeof request.id === "string") {
+    folderPreviewLoadingId = request.id;
+  }
+  requestRerender();
+  let next: FoldersDocumentValue | null = null;
+  try {
+    next = await invoke<FoldersDocumentValue | null>("folders_action", { request });
+    if (next) {
+      latestFolders = next;
+      countersFor = null;
+    }
+  } catch {
+    // Keep existing state; the next status read reports where things are.
+  } finally {
+    foldersBusy = false;
+    folderPreviewLoadingId = null;
+    requestRerender();
+  }
+  return next;
+}
+
+async function openFolderDetail(id: string): Promise<void> {
+  selectedFolderId = id;
+  folderPendingCheck = null;
+  folderConfirmRemoveId = null;
+  folderBringingOlder = false;
+  requestRerender();
+  const folder = latestFolders?.folders.find((f) => f.id === id);
+  await applyFoldersAction({ op: "refresh_facets" });
+  if (folder?.mode === "setting_up") {
+    await applyFoldersAction({ op: "preview", id, span: folderSpan });
+  }
+}
+
+async function beginFolderSetup(path: string, overlap: OverlapTargetValue | null): Promise<void> {
+  folderPendingCheck = null;
+  const beforeIds = new Set((latestFolders?.folders ?? []).map((f) => f.id));
+  const next = await applyFoldersAction({ op: "begin_setup", path, overlap });
+  if (!next) return;
+  const added =
+    next.folders.find((f) => !beforeIds.has(f.id)) ??
+    next.folders.find((f) => f.path.toLowerCase() === path.toLowerCase());
+  if (added) {
+    folderSpan = "thirty_days";
+    await openFolderDetail(added.id);
+  }
+}
+
+async function pickAndAddFolder(): Promise<void> {
+  if (foldersBusy) return;
+  foldersBusy = true;
+  requestRerender();
+  let chosen: string | null = null;
+  try {
+    chosen = await invoke<string | null>("folders_pick_folder");
+  } catch {
+    chosen = null;
+  } finally {
+    foldersBusy = false;
+    requestRerender();
+  }
+  if (!chosen) return;
+  foldersBusy = true;
+  requestRerender();
+  let check: PathCheckResultValue | null = null;
+  try {
+    check = await invoke<PathCheckResultValue | null>("folders_check_path", { path: chosen });
+  } catch {
+    check = { status: "refused", path: chosen };
+  } finally {
+    foldersBusy = false;
+  }
+  if (!check) return;
+  if (check.status === "ready") {
+    await beginFolderSetup(check.path, null);
+    return;
+  }
+  folderPendingCheck = check;
+  requestRerender();
+}
+
+async function repointFolder(id: string): Promise<void> {
+  if (foldersBusy) return;
+  foldersBusy = true;
+  requestRerender();
+  let chosen: string | null = null;
+  try {
+    chosen = await invoke<string | null>("folders_pick_folder");
+  } catch {
+    chosen = null;
+  } finally {
+    foldersBusy = false;
+    requestRerender();
+  }
+  if (!chosen) return;
+  await applyFoldersAction({ op: "repoint", id, path: chosen });
+}
+
+function renderFolderPreviewCard(
+  folder: FolderSummaryValue,
+  doc: FoldersDocumentValue,
+  preview: PreviewSummaryValue | null | undefined,
+  loading: boolean,
+): HTMLElement {
+  const card = document.createElement("section");
+  card.className = "desk-folder-card";
+  automation(card, ids["settings.sources.folders.estimate"]);
+  const heading = text("h3", t("windows.folders.preview"));
+  card.append(heading);
+
+  if (loading || !preview) {
+    card.append(screenshotsLine(t("windows.folders.checkingfolder")));
+    return card;
+  }
+  if (preview.failed) {
+    card.append(deskReason(t("windows.folders.previewfailed")));
+    const retry = deskAction(
+      t("windows.desktop.shared.copy.tryagain"),
+      () => void applyFoldersAction({ op: "preview", id: folder.id, span: folderSpan }),
+      ids["settings.sources.folders.tryAgain"],
+    );
+    retry.disabled = foldersBusy;
+    card.append(retry);
+    return card;
+  }
+
+  if (preview.total_items === 0) {
+    card.append(screenshotsLine(t("windows.folders.previewzero")));
+  } else if (preview.oldest_ms != null && preview.newest_ms != null) {
+    const start = shortDateForMs(preview.oldest_ms);
+    const end = shortDateForMs(preview.newest_ms);
+    card.append(
+      screenshotsLine(
+        preview.total_items === 1
+          ? t("windows.folders.previewspanone", { start, end })
+          : t("windows.folders.previewspan", { count: number(preview.total_items), start, end }),
+      ),
+    );
+  } else {
+    card.append(
+      screenshotsLine(
+        preview.total_items === 1
+          ? t("windows.folders.previewcountone")
+          : t("windows.folders.previewcount", { count: number(preview.total_items) }),
+      ),
+    );
+  }
+
+  const contentPart =
+    preview.content_items === 1
+      ? t("windows.folders.previewcontentone", { size: formatTransferSize(preview.content_bytes) })
+      : t("windows.folders.previewcontentonly", {
+          content: number(preview.content_items),
+          size: formatTransferSize(preview.content_bytes),
+        });
+  const metaPart =
+    preview.metadata_only_items === 1
+      ? t("windows.folders.previewmetaone")
+      : t("windows.folders.previewmetaonly", { meta: number(preview.metadata_only_items) });
+  if (preview.content_items > 0 && preview.metadata_only_items > 0) {
+    card.append(
+      screenshotsLine(
+        t("windows.folders.previewboth", { content: contentPart, meta: metaPart }),
+      ),
+    );
+  } else if (preview.content_items > 0) {
+    card.append(screenshotsLine(contentPart));
+  } else if (preview.metadata_only_items > 0) {
+    card.append(screenshotsLine(metaPart));
+  }
+
+  const estBox = document.createElement("div");
+  estBox.className = "desk-folder-est";
+  if (!doc.paired) {
+    estBox.append(screenshotsLine(t("windows.folders.estunpaired")));
+  } else if (doc.offline && !preview.estimate?.from_journal) {
+    estBox.append(screenshotsLine(t("windows.folders.estoffline")));
+  } else if (preview.estimate) {
+    const est = preview.estimate;
+    const estLabel = text("p", t("windows.folders.estheading"));
+    estLabel.className = "desk-folder-est-label";
+    const segText =
+      est.segments === 1
+        ? t("windows.folders.estsegmentsone")
+        : t("windows.folders.estsegmentsmany", { count: number(est.segments) });
+    const daysText =
+      est.days === 1
+        ? t("windows.folders.estdaysone")
+        : t("windows.folders.estdaysmany", { count: number(est.days) });
+    const thoughtsText =
+      est.thoughts === 1
+        ? t("windows.folders.estthoughtsone")
+        : t("windows.folders.estthoughtsmany", { count: number(est.thoughts) });
+    const values = text(
+      "p",
+      t("windows.folders.estvalues", {
+        segments: segText,
+        days: daysText,
+        thoughts: thoughtsText,
+      }),
+    );
+    values.className = "desk-folder-est-values";
+    estBox.append(estLabel, values, screenshotsLine(t("windows.folders.estgloss")));
+  }
+  card.append(estBox, screenshotsLine(t("windows.folders.scopenote")));
+  return card;
+}
+
+function renderFoldersPage(body: HTMLElement): HTMLElement {
+  const doc: FoldersDocumentValue = latestFolders ?? {
+    v: 1,
+    folders: [],
+    facets: [],
+    facets_state: "unpaired",
+    computer_paused: false,
+    paired: false,
+    offline: true,
+    journal_lists: null,
+  };
+
+  const selected = selectedFolderId
+    ? doc.folders.find((f) => f.id === selectedFolderId) ?? null
+    : null;
+  if (selected) {
+    return renderFolderDetail(body, doc, selected);
+  }
+
+  // Inline path check notices (already added / overlap warning / refusal).
+  if (folderPendingCheck) {
+    const check = folderPendingCheck;
+    const card = document.createElement("section");
+    card.className = "desk-folder-card";
+    if (check.status === "already_added") {
+      card.append(deskReason(t("windows.folders.alreadyadded", { folder: check.name })));
+      card.append(
+        deskAction(t("windows.folders.openfolder", { folder: check.name }), () => {
+          void openFolderDetail(check.folder_id);
+        }),
+      );
+    } else if (check.status === "overlaps") {
+      automation(card, ids["settings.sources.folders.overlap"]);
+      const other = overlapName(check.target);
+      card.append(
+        text("h3", t("windows.folders.overlapheading", { other })),
+        screenshotsLine(t("windows.folders.overlapbody")),
+      );
+      const actions = document.createElement("div");
+      actions.className = "desk-actions";
+      const pickOther = deskAction(t("windows.folders.overlapchoose"), () => {
+        folderPendingCheck = null;
+        void pickAndAddFolder();
+      });
+      const useAnyway = deskAction(t("windows.folders.overlapoverride"), () => {
+        void beginFolderSetup(check.path, check.target);
+      });
+      pickOther.disabled = foldersBusy;
+      useAnyway.disabled = foldersBusy;
+      actions.append(pickOther, useAnyway);
+      card.append(actions);
+    } else if (check.status === "refused") {
+      card.append(deskReason(t("windows.folders.refused")));
+      const pickOther = deskAction(t("windows.folders.overlapchoose"), () => {
+        folderPendingCheck = null;
+        void pickAndAddFolder();
+      });
+      pickOther.disabled = foldersBusy;
+      card.append(pickOther);
+    }
+    body.append(card);
+  }
+
+  if (doc.folders.length === 0) {
+    body.append(breath(t("windows.folders.intro")));
+  }
+
+  const addBtn = deskAction(
+    doc.folders.length === 0 ? t("windows.folders.addfolder") : t("windows.folders.addfolderplus"),
+    () => void pickAndAddFolder(),
+    ids["settings.sources.folders.add"],
+  );
+  addBtn.disabled = foldersBusy;
+  body.append(addBtn);
+
+  if (doc.folders.length > 0) {
+    const list = document.createElement("div");
+    list.className = "desk-folder-list";
+    automation(list, ids["settings.sources.folders.list"]);
+    for (const folder of doc.folders) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "desk-folder-row";
+      row.dataset.folderId = folder.id;
+      row.onclick = () => void openFolderDetail(folder.id);
+
+      const main = document.createElement("span");
+      main.className = "desk-folder-row-main";
+      const name = text("span", folder.name);
+      name.className = "desk-folder-row-name";
+      const metaParts = [folder.label];
+      if (folder.facet) metaParts.push(folder.facet.title);
+      if (folder.progress) {
+        metaParts.push(
+          t("windows.folders.pageprogress", {
+            done: number(folder.progress[0]),
+            total: number(folder.progress[1]),
+          }),
+        );
+      } else if (folder.waiting > 0 && folder.mode === "on") {
+        metaParts.push(t("windows.folders.waiting", { count: number(folder.waiting) }));
+      }
+      const meta = text("span", metaParts.join(" \u00b7 "));
+      meta.className = "desk-folder-row-meta";
+      main.append(name, meta);
+
+      const word = folderWord(folder);
+      const badge = text("span", stateWord(word));
+      badge.className = "desk-folder-badge";
+      badge.dataset.state = word;
+      row.append(main, badge);
+      list.append(row);
+    }
+    body.append(list);
+
+    const totals = deskFactBlock("folders");
+    if (totals) body.append(totals);
+  }
+
+  return body;
+}
+
+function renderFolderDetail(
+  body: HTMLElement,
+  doc: FoldersDocumentValue,
+  folder: FolderSummaryValue,
+): HTMLElement {
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "desk-folder-back";
+  back.textContent = `\u2039 ${t("windows.folders.back")}`;
+  back.onclick = () => {
+    selectedFolderId = null;
+    folderBringingOlder = false;
+    folderConfirmRemoveId = null;
+    requestRerender();
+  };
+  body.append(back);
+
+  const head = document.createElement("div");
+  head.className = "desk-folder-head";
+  const title = text("h2", folder.name);
+  title.className = "desk-folder-title";
+  const word = folderWord(folder);
+  const badge = text("span", stateWord(word));
+  badge.className = "desk-folder-badge";
+  badge.dataset.state = word;
+  head.append(title, badge);
+  body.append(head);
+
+  const labelLine = text("p", folder.label);
+  labelLine.className = "desk-folder-label";
+  body.append(labelLine);
+
+  // Per-folder controls (pause/resume + turn off / turn on).
+  if (folder.mode === "on" || folder.mode === "paused" || folder.mode === "off") {
+    const controls = document.createElement("div");
+    controls.className = "desk-actions";
+    if (folder.mode === "on") {
+      const pauseBtn = deskAction(
+        t("windows.folders.pauselabel"),
+        () => void applyFoldersAction({ op: "pause", id: folder.id }),
+        ids["settings.sources.folders.pause"],
+      );
+      const offBtn = deskAction(
+        t("windows.ui.turnoff"),
+        () => void applyFoldersAction({ op: "turn_off", id: folder.id }),
+        ids["settings.sources.folders.enabled"],
+      );
+      pauseBtn.disabled = foldersBusy;
+      offBtn.disabled = foldersBusy;
+      controls.append(pauseBtn, offBtn);
+    } else if (folder.mode === "paused") {
+      const resumeBtn = deskAction(
+        t("windows.folders.resumelabel"),
+        () => void applyFoldersAction({ op: "resume", id: folder.id }),
+        ids["settings.sources.folders.pause"],
+      );
+      const offBtn = deskAction(
+        t("windows.ui.turnoff"),
+        () => void applyFoldersAction({ op: "turn_off", id: folder.id }),
+        ids["settings.sources.folders.enabled"],
+      );
+      resumeBtn.disabled = foldersBusy;
+      offBtn.disabled = foldersBusy;
+      controls.append(resumeBtn, offBtn);
+    } else {
+      const onBtn = deskAction(
+        t("windows.ui.turnon", { accessiblename: folder.name }),
+        () => {
+          void applyFoldersAction({ op: "turn_on", id: folder.id }).then(() => {
+            void applyFoldersAction({ op: "preview", id: folder.id, span: folderSpan });
+          });
+        },
+        ids["settings.sources.folders.enabled"],
+      );
+      onBtn.disabled = foldersBusy;
+      controls.append(onBtn);
+    }
+    body.append(controls);
+  }
+
+  // State reason / attention / progress banner.
+  if (folder.attention === "missing") {
+    body.append(deskReason(t("windows.folders.missing", { folder: folder.name })));
+    const fixRow = document.createElement("div");
+    fixRow.className = "desk-actions";
+    const repointBtn = deskAction(
+      t("windows.folders.pickertitle"),
+      () => void repointFolder(folder.id),
+      ids["settings.sources.folders.repoint"],
+    );
+    const retryBtn = deskAction(
+      t("windows.desktop.shared.copy.tryagain"),
+      () => void applyFoldersAction({ op: "retry", id: folder.id }),
+      ids["settings.sources.folders.tryAgain"],
+    );
+    repointBtn.disabled = foldersBusy;
+    retryBtn.disabled = foldersBusy;
+    fixRow.append(repointBtn, retryBtn);
+    body.append(fixRow);
+  } else if (folder.attention === "unreadable") {
+    body.append(deskReason(t("windows.folders.unreadable", { folder: folder.name })));
+    const fixRow = document.createElement("div");
+    fixRow.className = "desk-actions";
+    const repointBtn = deskAction(
+      t("windows.folders.pickertitle"),
+      () => void repointFolder(folder.id),
+      ids["settings.sources.folders.repoint"],
+    );
+    const retryBtn = deskAction(
+      t("windows.desktop.shared.copy.tryagain"),
+      () => void applyFoldersAction({ op: "retry", id: folder.id }),
+      ids["settings.sources.folders.tryAgain"],
+    );
+    repointBtn.disabled = foldersBusy;
+    retryBtn.disabled = foldersBusy;
+    fixRow.append(repointBtn, retryBtn);
+    body.append(fixRow);
+  } else if (folder.mode === "paused") {
+    body.append(deskReason(t("windows.folders.pausedfolder")));
+  } else if (folder.paused_by_computer) {
+    body.append(deskReason(t("windows.folders.pausedcomputer")));
+  } else if (folder.mode === "on" && !doc.paired) {
+    body.append(deskReason(t("windows.folders.unpaired")));
+  } else if (folder.mode === "on" && doc.journal_lists === false) {
+    body.append(deskReason(t("windows.folders.journalupdate")));
+  } else if (folder.mode === "off") {
+    body.append(deskReason(t("windows.folders.off")));
+  } else if (folder.progress) {
+    body.append(
+      deskReason(
+        t("windows.folders.pageprogress", {
+          done: number(folder.progress[0]),
+          total: number(folder.progress[1]),
+        }),
+      ),
+      screenshotsLine(t("windows.folders.backfillstatus")),
+    );
+  }
+
+  body.append(breath(t("windows.folders.oneintro", { folder: folder.name })));
+
+  // What comes in (6 kind checkboxes).
+  const kindsCard = document.createElement("section");
+  kindsCard.className = "desk-folder-card";
+  kindsCard.append(text("h3", t("windows.folders.whatcomesin")));
+  const kindsWrap = document.createElement("div");
+  kindsWrap.className = "desk-folder-kinds";
+  const kindDefs: Array<{ key: keyof FolderKindsValue; title: string; desc: string }> = [
+    { key: "notes", title: t("windows.folders.kind.notes"), desc: t("windows.folders.kind.notes.desc") },
+    { key: "documents", title: t("windows.folders.kind.documents"), desc: t("windows.folders.kind.documents.desc") },
+    { key: "transcripts", title: t("windows.folders.kind.transcripts"), desc: t("windows.folders.kind.transcripts.desc") },
+    { key: "screenshots", title: t("windows.folders.kind.screenshots"), desc: t("windows.folders.kind.screenshots.desc") },
+    { key: "photos", title: t("windows.folders.kind.photos"), desc: t("windows.folders.kind.photos.desc") },
+    { key: "other", title: t("windows.folders.kind.other"), desc: t("windows.folders.kind.other.desc") },
+  ];
+  const anyKindSelected = kindDefs.some((d) => folder.kinds[d.key]);
+  for (const def of kindDefs) {
+    const row = document.createElement("label");
+    row.className = "desk-folder-kind";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.dataset.folderKind = def.key;
+    input.checked = folder.kinds[def.key];
+    input.disabled = foldersBusy;
+    input.onchange = () => {
+      const nextKinds: FolderKindsValue = { ...folder.kinds, [def.key]: input.checked };
+      void applyFoldersAction({ op: "set_kinds", id: folder.id, kinds: nextKinds }).then(() => {
+        if (folder.mode === "setting_up" || folderBringingOlder) {
+          void applyFoldersAction({ op: "preview", id: folder.id, span: folderSpan });
+        }
+      });
+    };
+    const txt = document.createElement("span");
+    txt.className = "desk-folder-kind-text";
+    const desc = text("span", def.desc);
+    desc.className = "desk-folder-kind-desc";
+    txt.append(text("span", def.title), desc);
+    row.append(input, txt);
+    kindsWrap.append(row);
+  }
+  kindsCard.append(kindsWrap);
+  if (!anyKindSelected) {
+    kindsCard.append(deskReason(t("windows.folders.chooseatleastone")));
+  } else if (folder.mode === "on" || folder.mode === "paused") {
+    kindsCard.append(screenshotsLine(t("windows.folders.kindsgoingforward")));
+  }
+  body.append(kindsCard);
+
+  // Optional facet selector.
+  const facetCard = document.createElement("section");
+  facetCard.className = "desk-folder-card";
+  facetCard.append(text("h3", t("windows.folders.facetheading")));
+  if (doc.facets_state === "unpaired") {
+    facetCard.append(screenshotsLine(t("windows.folders.facetunpaired")));
+  } else if (doc.facets_state === "offline" && doc.facets.length === 0) {
+    facetCard.append(screenshotsLine(t("windows.folders.facetoffline")));
+  } else {
+    const select = document.createElement("select");
+    select.className = "desk-folder-select";
+    automation(select, ids["settings.sources.folders.facet"]);
+    select.disabled = foldersBusy;
+    const noneOpt = document.createElement("option");
+    noneOpt.value = "";
+    noneOpt.textContent = t("windows.folders.facetnone");
+    select.append(noneOpt);
+    const options = [...doc.facets];
+    if (folder.facet && !options.some((o) => o.name === folder.facet?.name)) {
+      options.push(folder.facet);
+    }
+    for (const opt of options) {
+      const el = document.createElement("option");
+      el.value = opt.name;
+      el.textContent = opt.title;
+      select.append(el);
+    }
+    select.value = folder.facet?.name ?? "";
+    select.onchange = () => {
+      const picked = options.find((o) => o.name === select.value) ?? null;
+      void applyFoldersAction({ op: "set_facet", id: folder.id, facet: picked });
+    };
+    facetCard.append(select);
+    const helpText = !folder.facet
+      ? t("windows.folders.facethelpnone")
+      : folder.mode === "setting_up" && !folder.returning
+        ? t("windows.folders.facethelpsetup", { facet: folder.facet.title })
+        : t("windows.folders.facethelpactive", { facet: folder.facet.title });
+    facetCard.append(screenshotsLine(helpText));
+  }
+  body.append(facetCard);
+
+  // History chooser + preview + confirm (during setup OR "bring in older files").
+  const showChooser = folder.mode === "setting_up" || folderBringingOlder;
+  if (showChooser) {
+    const chooser = document.createElement("fieldset");
+    chooser.className = "desk-choices";
+    automation(chooser, ids["settings.sources.folders.span"]);
+    const legend = document.createElement("legend");
+    legend.textContent = t("windows.folders.frombefore");
+    chooser.append(legend);
+    const spans: Array<[FolderSpanName, string]> = [
+      ["thirty_days", t("windows.folders.spanthirty")],
+      ["six_months", t("windows.folders.spansixmonths")],
+      ["year", t("windows.folders.spanyear")],
+      ["all", t("windows.folders.spanall")],
+      ["nothing", t("windows.folders.spannothing")],
+    ];
+    for (const [span, labelText] of spans) {
+      const choice = document.createElement("label");
+      choice.className = "desk-choice";
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "folders-span";
+      input.value = span;
+      input.checked = folderSpan === span;
+      input.disabled = foldersBusy;
+      input.onchange = () => {
+        folderSpan = span;
+        void applyFoldersAction({ op: "preview", id: folder.id, span });
+      };
+      choice.append(input, text("span", labelText));
+      chooser.append(choice);
+    }
+    body.append(chooser);
+
+    const loadingPreview =
+      folderPreviewLoadingId === folder.id ||
+      (folder.preview?.span != null && folder.preview.span !== folderSpan);
+    body.append(renderFolderPreviewCard(folder, doc, folder.preview, loadingPreview));
+
+    body.append(
+      breath(
+        folder.returning || folderBringingOlder
+          ? t("windows.folders.norepeat")
+          : t("windows.folders.nothinguntilconfirm"),
+      ),
+    );
+
+    const previewCount = folder.preview?.total_items ?? 0;
+    const confirmLabel =
+      loadingPreview || !folder.preview
+        ? t("windows.folders.checkingfolder")
+        : folderSpan === "nothing" || previewCount === 0
+          ? t("windows.folders.startfromtoday")
+          : previewCount === 1
+            ? t("windows.folders.bringinone")
+            : t("windows.folders.bringinmany", { count: number(previewCount) });
+    const confirmBtn = deskAction(
+      confirmLabel,
+      () => {
+        folderBringingOlder = false;
+        void applyFoldersAction({ op: "confirm", id: folder.id, span: folderSpan });
+      },
+      ids["settings.sources.folders.confirm"],
+    );
+    confirmBtn.disabled =
+      !doc.paired || foldersBusy || !anyKindSelected || loadingPreview || !folder.preview || folder.preview.failed;
+    body.append(confirmBtn);
+  } else if (folder.mode === "on") {
+    const olderBtn = deskAction(t("windows.folders.bringinolder"), () => {
+      folderBringingOlder = true;
+      folderSpan = "thirty_days";
+      void applyFoldersAction({ op: "preview", id: folder.id, span: folderSpan });
+    });
+    olderBtn.disabled = foldersBusy;
+    body.append(olderBtn);
+  }
+
+  // Facts block.
+  const facts = document.createElement("div");
+  facts.className = "desk-facts";
+  facts.append(
+    screenshotsLine(t("windows.folders.stays")),
+    screenshotsLine(folder.kinds.other ? t("windows.folders.otheron") : t("windows.folders.otheroff")),
+  );
+  if (folder.overlap) {
+    facts.append(screenshotsLine(t("windows.folders.overlapfact", { other: overlapName(folder.overlap) })));
+  }
+  if (folder.attention == null) {
+    const repoint = deskAction(
+      t("windows.folders.pickertitle"),
+      () => void repointFolder(folder.id),
+      ids["settings.sources.folders.repoint"],
+    );
+    repoint.disabled = foldersBusy;
+    facts.append(
+      screenshotsFact(t("windows.folders.folderlabel"), selectable(text("span", folder.path)), repoint),
+    );
+  } else {
+    facts.append(
+      screenshotsFact(t("windows.folders.folderlabel"), selectable(text("span", folder.path))),
+    );
+  }
+  if (folder.last_checked_ms != null) {
+    facts.append(screenshotsFact(SCREENSHOTS_COPY.S18, lastSyncedLabel(folder.last_checked_ms, nowSecs())));
+  }
+  if (folder.waiting > 0) {
+    facts.append(screenshotsFact(SCREENSHOTS_COPY.S19, number(folder.waiting)));
+  }
+  body.append(facts);
+
+  if (folder.attention == null && folder.cant_read > 0) {
+    const msg =
+      folder.cant_read === 1
+        ? t("windows.folders.cantreadone")
+        : t("windows.folders.cantreadmany", { count: number(folder.cant_read) });
+    body.append(deskReason(msg));
+    const retry = deskAction(
+      t("windows.desktop.shared.copy.tryagain"),
+      () => void applyFoldersAction({ op: "retry", id: folder.id }),
+      ids["settings.sources.folders.tryAgain"],
+    );
+    retry.disabled = foldersBusy;
+    body.append(retry);
+  }
+
+  if (folder.fallback_to_details > 0) {
+    const msg =
+      folder.fallback_to_details === 1
+        ? t("windows.folders.fallbackone")
+        : t("windows.folders.fallbackmany", { count: number(folder.fallback_to_details) });
+    body.append(deskReason(msg));
+  }
+
+  // Collapsed Windows-specific OneDrive note (W1).
+  const more = document.createElement("details");
+  more.className = "desk-more";
+  const summary = document.createElement("summary");
+  summary.textContent = t("windows.folders.moreabout");
+  more.append(summary, screenshotsLine(t("windows.folders.onedrivenote")));
+  body.append(more);
+
+  // Quiet remove folder footer with inline confirmation.
+  const footer = document.createElement("div");
+  footer.className = "desk-folder-footer";
+  if (folderConfirmRemoveId === folder.id) {
+    const confirmCard = document.createElement("section");
+    confirmCard.className = "desk-folder-card";
+    confirmCard.append(
+      text("h3", t("windows.folders.removeheading", { folder: folder.name })),
+      screenshotsLine(t("windows.folders.removebody", { folder: folder.name })),
+    );
+    const actions = document.createElement("div");
+    actions.className = "desk-actions";
+    const confirmRemove = deskAction(
+      t("windows.folders.remove"),
+      () => {
+        folderConfirmRemoveId = null;
+        selectedFolderId = null;
+        void applyFoldersAction({ op: "remove", id: folder.id });
+      },
+      ids["settings.sources.folders.remove"],
+    );
+    const cancelRemove = deskAction(t("windows.import.cancelaction"), () => {
+      folderConfirmRemoveId = null;
+      requestRerender();
+    });
+    confirmRemove.disabled = foldersBusy;
+    cancelRemove.disabled = foldersBusy;
+    actions.append(confirmRemove, cancelRemove);
+    confirmCard.append(actions);
+    footer.append(confirmCard);
+  } else {
+    const removeBtn = deskAction(
+      t("windows.folders.remove"),
+      () => {
+        folderConfirmRemoveId = folder.id;
+        requestRerender();
+      },
+      ids["settings.sources.folders.remove"],
+    );
+    removeBtn.disabled = foldersBusy;
+    footer.append(removeBtn);
+  }
+  body.append(footer);
+  return body;
+}
+
 function pollObsidianStatus(): Promise<void> {
   if (label !== "settings" || document.visibilityState === "hidden" || obsidianBusy) {
     return Promise.resolve();
@@ -8984,6 +9822,7 @@ async function boot(): Promise<void> {
   await refreshBrowserStatus(false);
   await refreshObsidianStatus();
   await refreshScreenshotsStatus();
+  await refreshFoldersStatus();
   await refreshImportStatus();
   rerender();
 }
@@ -9014,7 +9853,7 @@ export function start(): void {
   const queriedRoute = new URLSearchParams(window.location.search).get("route");
   if (
     queriedRoute &&
-    ["sources", "audio", "screen", "browsers", "obsidian", "screenshots", "import"].includes(queriedRoute)
+    ["sources", "audio", "screen", "browsers", "obsidian", "screenshots", "folders", "import"].includes(queriedRoute)
   ) {
     startupDestination = queriedRoute;
     focusPaneTitleOnRender = true;
@@ -9151,6 +9990,7 @@ export function start(): void {
     void refreshBrowserStatus();
     void refreshObsidianStatus();
     void refreshScreenshotsStatus();
+    void refreshFoldersStatus();
     void refreshImportStatus();
     void refreshMigrationState();
     requestRerender();
@@ -9204,6 +10044,7 @@ export function start(): void {
     void pollBrowserStatus();
     void pollObsidianStatus();
     void pollScreenshotsStatus();
+    void pollFoldersStatus();
   }, 2500);
 }
 
@@ -9280,6 +10121,21 @@ export const __test__ = {
   refreshBrowserStatus,
   pollObsidianStatus,
   pollScreenshotsStatus,
+  pollFoldersStatus,
+  refreshFoldersStatus,
+  setFolders(doc: FoldersDocumentValue | null) {
+    latestFolders = doc;
+    foldersBusy = false;
+    selectedFolderId = null;
+    folderSpan = "thirty_days";
+    folderBringingOlder = false;
+    folderPendingCheck = null;
+    folderConfirmRemoveId = null;
+    folderPreviewLoadingId = null;
+  },
+  selectFolder(id: string | null) {
+    selectedFolderId = id;
+  },
   setScreenshots(status: ScreenshotsStatus | null) {
     latestScreenshots = status;
     screenshotsBusy = false;
@@ -9368,6 +10224,15 @@ export const __test__ = {
     latestScreenshots = null;
     screenshotsBusy = false;
     screenshotsSpan = "thirty_days";
+    latestFolders = null;
+    foldersBusy = false;
+    foldersFetching = false;
+    selectedFolderId = null;
+    folderSpan = "thirty_days";
+    folderBringingOlder = false;
+    folderPendingCheck = null;
+    folderConfirmRemoveId = null;
+    folderPreviewLoadingId = null;
     latestImport = null;
     importActionError = null;
     importPageRoot = null;

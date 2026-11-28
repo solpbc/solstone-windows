@@ -50,6 +50,9 @@ struct IngestMeta {
     /// A screenshot's capture moment, for the `screenshots` source.
     #[serde(skip_serializing_if = "Option::is_none")]
     screenshot: Option<ScreenshotMeta>,
+    /// Folder identity and owner choices, for the `folder` source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    folder: Option<FolderMeta>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -57,6 +60,16 @@ struct ScreenshotMeta {
     v: u32,
     captured_at: String,
     taken_from: String,
+}
+
+/// Checked `meta.folder` metadata carried on protocol-v3 watched-folder uploads.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct FolderMeta {
+    pub v: u32,
+    pub id: String,
+    pub name: String,
+    pub facet: Option<String>,
+    pub kinds: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -155,6 +168,15 @@ impl IngestMultipart {
             captured_at: captured_at.to_owned(),
             taken_from: taken_from.to_owned(),
         });
+        self
+    }
+
+    /// Attach `meta.folder` metadata for a protocol-v3 watched-folder upload.
+    pub fn with_folder(mut self, folder: FolderMeta) -> Self {
+        self.envelope
+            .meta
+            .get_or_insert_with(IngestMeta::default)
+            .folder = Some(folder);
         self
     }
 
@@ -302,6 +324,18 @@ impl<'de> Deserialize<'de> for FileDescriptors {
     }
 }
 
+/// One per-file refusal reported on a folder ingest response.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RefusedFile {
+    pub path: String,
+    #[serde(default)]
+    pub part: Option<String>,
+    #[serde(default)]
+    pub reason_code: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
 /// The consumed fields of an ingest response.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct IngestResponse {
@@ -314,6 +348,8 @@ pub struct IngestResponse {
     pub reason_code: Option<String>,
     #[serde(default)]
     pub file_descriptors: FileDescriptors,
+    #[serde(default)]
+    pub refused_files: Vec<RefusedFile>,
 }
 
 /// Error response from a protocol-v3 ingest endpoint.

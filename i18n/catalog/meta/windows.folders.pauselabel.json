@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.pauselabel",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "5e8dc66f3022dcf3e7ee51eb0e9bf652f77c6bd8e8bfe1a188148719695cd5b9",
+  "risk": "routine",
+  "auto_merge": true
+}

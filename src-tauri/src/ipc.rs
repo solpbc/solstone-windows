@@ -34,7 +34,9 @@ pub fn pause(
             reason,
             duration_secs,
         })
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    crate::folders::wake();
+    Ok(())
 }
 
 /// Ask the engine to resume.
@@ -43,7 +45,9 @@ pub fn resume(state: tauri::State<'_, crate::app::AppState>) -> Result<(), Strin
     state
         .commands
         .send(EngineCommand::Resume)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    crate::folders::wake();
+    Ok(())
 }
 
 /// Request the same draining process exit as the tray's Quit action.
@@ -897,6 +901,32 @@ pub async fn screenshots_confirm(span: screenshots_source::Span) -> Option<serde
 #[tauri::command]
 pub async fn screenshots_try_again() -> Option<serde_json::Value> {
     crate::screenshots::try_again().await
+}
+
+/// Current state of all configured folders for the Settings window.
+#[tauri::command]
+pub fn folders_status() -> Option<serde_json::Value> {
+    crate::folders::status()
+}
+
+/// Open the native Windows folder picker for adding or repointing a folder.
+#[tauri::command]
+pub async fn folders_pick_folder(window: tauri::WebviewWindow) -> Result<Option<String>, String> {
+    crate::folders::pick_folder(window).await
+}
+
+/// Check a chosen folder path for readability, duplicates, and overlaps.
+#[tauri::command]
+pub async fn folders_check_path(path: String) -> Option<serde_json::Value> {
+    crate::folders::check_path(path).await
+}
+
+/// Apply one folder source action and return the updated snapshot.
+#[tauri::command]
+pub async fn folders_action(
+    request: folders_source::FolderActionRequest,
+) -> Option<serde_json::Value> {
+    crate::folders::action(request).await
 }
 
 /// The Obsidian source's current state for the Settings window.

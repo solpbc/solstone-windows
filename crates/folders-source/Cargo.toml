@@ -1,0 +1,26 @@
+[package]
+name = "folders-source"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+description = "The folder source on Windows: multi-folder watching, deterministic sorting, five-minute activity windows, note edit tracking, document revision cool-downs, and protocol-v3 staging over a platform and journal seam. Pure logic; Windows metadata, WIC conversion, and transport come from the app."
+
+[lints]
+workspace = true
+
+[dependencies]
+observer-pl.workspace = true
+screenshots-source.workspace = true
+source-counters.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+solstone-folder-sync.workspace = true
+tracing.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "test-util"] }

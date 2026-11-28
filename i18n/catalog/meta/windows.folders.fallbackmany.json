@@ -1,0 +1,21 @@
+{
+  "description": "Windows app folder source: windows.folders.fallbackmany",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "count",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 228,
+  "source_revision": "73154791ab77406e50643918308942447cea736a793e23853039aebad821a093",
+  "risk": "routine",
+  "auto_merge": true
+}

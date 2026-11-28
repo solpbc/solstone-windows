@@ -758,6 +758,708 @@ const MESSAGES = {
     arguments: [
     ],
   },
+  "windows.folders.addfolder": {
+    resourceKey: "m77696e646f77732e666f6c646572732e616464666f6c646572",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.addfolderplus": {
+    resourceKey: "m77696e646f77732e666f6c646572732e616464666f6c646572706c7573",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.allfolders": {
+    resourceKey: "m77696e646f77732e666f6c646572732e616c6c666f6c64657273",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.alreadyadded": {
+    resourceKey: "m77696e646f77732e666f6c646572732e616c72656164796164646564",
+    formatIntent: "text",
+    arguments: [
+      { name: "folder", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.back": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6261636b",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.backfillstatus": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6261636b66696c6c737461747573",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.bringinmany": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6272696e67696e6d616e79",
+    formatIntent: "text",
+    arguments: [
+      { name: "count", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.bringinolder": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6272696e67696e6f6c646572",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.bringinone": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6272696e67696e6f6e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.cantreadmany": {
+    resourceKey: "m77696e646f77732e666f6c646572732e63616e74726561646d616e79",
+    formatIntent: "text",
+    arguments: [
+      { name: "count", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.cantreadone": {
+    resourceKey: "m77696e646f77732e666f6c646572732e63616e74726561646f6e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.checkingfolder": {
+    resourceKey: "m77696e646f77732e666f6c646572732e636865636b696e67666f6c646572",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.chooseatleastone": {
+    resourceKey: "m77696e646f77732e666f6c646572732e63686f6f736561746c656173746f6e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.estdaysmany": {
+    resourceKey: "m77696e646f77732e666f6c646572732e657374646179736d616e79",
+    formatIntent: "text",
+    arguments: [
+      { name: "count", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.estdaysone": {
+    resourceKey: "m77696e646f77732e666f6c646572732e657374646179736f6e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.estgloss": {
+    resourceKey: "m77696e646f77732e666f6c646572732e657374676c6f7373",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.estheading": {
+    resourceKey: "m77696e646f77732e666f6c646572732e65737468656164696e67",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.estoffline": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6573746f66666c696e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.estsegmentsmany": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6573747365676d656e74736d616e79",
+    formatIntent: "text",
+    arguments: [
+      { name: "count", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.estsegmentsone": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6573747365676d656e74736f6e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.estthoughtsmany": {
+    resourceKey: "m77696e646f77732e666f6c646572732e65737474686f75676874736d616e79",
+    formatIntent: "text",
+    arguments: [
+      { name: "count", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.estthoughtsone": {
+    resourceKey: "m77696e646f77732e666f6c646572732e65737474686f75676874736f6e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.estunpaired": {
+    resourceKey: "m77696e646f77732e666f6c646572732e657374756e706169726564",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.estvalues": {
+    resourceKey: "m77696e646f77732e666f6c646572732e65737476616c756573",
+    formatIntent: "text",
+    arguments: [
+      { name: "segments", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "days", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "thoughts", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.facetheading": {
+    resourceKey: "m77696e646f77732e666f6c646572732e666163657468656164696e67",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.facethelpactive": {
+    resourceKey: "m77696e646f77732e666f6c646572732e666163657468656c70616374697665",
+    formatIntent: "text",
+    arguments: [
+      { name: "facet", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.facethelpnone": {
+    resourceKey: "m77696e646f77732e666f6c646572732e666163657468656c706e6f6e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.facethelpsetup": {
+    resourceKey: "m77696e646f77732e666f6c646572732e666163657468656c707365747570",
+    formatIntent: "text",
+    arguments: [
+      { name: "facet", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.facetnone": {
+    resourceKey: "m77696e646f77732e666f6c646572732e66616365746e6f6e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.facetoffline": {
+    resourceKey: "m77696e646f77732e666f6c646572732e66616365746f66666c696e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.facetunpaired": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6661636574756e706169726564",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.fallbackmany": {
+    resourceKey: "m77696e646f77732e666f6c646572732e66616c6c6261636b6d616e79",
+    formatIntent: "text",
+    arguments: [
+      { name: "count", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.fallbackone": {
+    resourceKey: "m77696e646f77732e666f6c646572732e66616c6c6261636b6f6e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.finishsetup": {
+    resourceKey: "m77696e646f77732e666f6c646572732e66696e6973687365747570",
+    formatIntent: "text",
+    arguments: [
+      { name: "folder", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.folderlabel": {
+    resourceKey: "m77696e646f77732e666f6c646572732e666f6c6465726c6162656c",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.frombefore": {
+    resourceKey: "m77696e646f77732e666f6c646572732e66726f6d6265666f7265",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.intro": {
+    resourceKey: "m77696e646f77732e666f6c646572732e696e74726f",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.journalupdate": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6a6f75726e616c757064617465",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.kind.documents": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6b696e642e646f63756d656e7473",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.kind.documents.desc": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6b696e642e646f63756d656e74732e64657363",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.kind.notes": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6b696e642e6e6f746573",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.kind.notes.desc": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6b696e642e6e6f7465732e64657363",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.kind.other": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6b696e642e6f74686572",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.kind.other.desc": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6b696e642e6f746865722e64657363",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.kind.photos": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6b696e642e70686f746f73",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.kind.photos.desc": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6b696e642e70686f746f732e64657363",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.kind.screenshots": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6b696e642e73637265656e73686f7473",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.kind.screenshots.desc": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6b696e642e73637265656e73686f74732e64657363",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.kind.transcripts": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6b696e642e7472616e73637269707473",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.kind.transcripts.desc": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6b696e642e7472616e736372697074732e64657363",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.kindsgoingforward": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6b696e6473676f696e67666f7277617264",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.many": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6d616e79",
+    formatIntent: "text",
+    arguments: [
+      { name: "count", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.missing": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6d697373696e67",
+    formatIntent: "text",
+    arguments: [
+      { name: "folder", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.moreabout": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6d6f726561626f7574",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.needattentionmany": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6e656564617474656e74696f6e6d616e79",
+    formatIntent: "text",
+    arguments: [
+      { name: "count", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.norepeat": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6e6f726570656174",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.nothinguntilconfirm": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6e6f7468696e67756e74696c636f6e6669726d",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.off": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6f6666",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.onedrivenote": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6f6e6564726976656e6f7465",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.oneintro": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6f6e65696e74726f",
+    formatIntent: "text",
+    arguments: [
+      { name: "folder", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.openfolder": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6f70656e666f6c646572",
+    formatIntent: "text",
+    arguments: [
+      { name: "folder", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.otheroff": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6f746865726f6666",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.otheron": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6f746865726f6e",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.overlapbody": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6f7665726c6170626f6479",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.overlapchoose": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6f7665726c617063686f6f7365",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.overlapfact": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6f7665726c617066616374",
+    formatIntent: "text",
+    arguments: [
+      { name: "other", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.overlapfolder": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6f7665726c6170666f6c646572",
+    formatIntent: "text",
+    arguments: [
+      { name: "name", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.overlapheading": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6f7665726c617068656164696e67",
+    formatIntent: "text",
+    arguments: [
+      { name: "other", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.overlapobsidian": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6f7665726c61706f6273696469616e",
+    formatIntent: "text",
+    arguments: [
+      { name: "name", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.overlapoverride": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6f7665726c61706f76657272696465",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.overlapscreenshots": {
+    resourceKey: "m77696e646f77732e666f6c646572732e6f7665726c617073637265656e73686f7473",
+    formatIntent: "text",
+    arguments: [
+      { name: "name", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.pageprogress": {
+    resourceKey: "m77696e646f77732e666f6c646572732e7061676570726f6772657373",
+    formatIntent: "text",
+    arguments: [
+      { name: "done", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "total", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.pausedcomputer": {
+    resourceKey: "m77696e646f77732e666f6c646572732e706175736564636f6d7075746572",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.pausedfolder": {
+    resourceKey: "m77696e646f77732e666f6c646572732e706175736564666f6c646572",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.pauselabel": {
+    resourceKey: "m77696e646f77732e666f6c646572732e70617573656c6162656c",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.pickertitle": {
+    resourceKey: "m77696e646f77732e666f6c646572732e7069636b65727469746c65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.preview": {
+    resourceKey: "m77696e646f77732e666f6c646572732e70726576696577",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.previewboth": {
+    resourceKey: "m77696e646f77732e666f6c646572732e70726576696577626f7468",
+    formatIntent: "text",
+    arguments: [
+      { name: "content", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "meta", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.previewcontentone": {
+    resourceKey: "m77696e646f77732e666f6c646572732e70726576696577636f6e74656e746f6e65",
+    formatIntent: "text",
+    arguments: [
+      { name: "size", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.previewcontentonly": {
+    resourceKey: "m77696e646f77732e666f6c646572732e70726576696577636f6e74656e746f6e6c79",
+    formatIntent: "text",
+    arguments: [
+      { name: "content", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "size", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.previewcount": {
+    resourceKey: "m77696e646f77732e666f6c646572732e70726576696577636f756e74",
+    formatIntent: "text",
+    arguments: [
+      { name: "count", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.previewcountone": {
+    resourceKey: "m77696e646f77732e666f6c646572732e70726576696577636f756e746f6e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.previewfailed": {
+    resourceKey: "m77696e646f77732e666f6c646572732e707265766965776661696c6564",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.previewmetaone": {
+    resourceKey: "m77696e646f77732e666f6c646572732e707265766965776d6574616f6e65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.previewmetaonly": {
+    resourceKey: "m77696e646f77732e666f6c646572732e707265766965776d6574616f6e6c79",
+    formatIntent: "text",
+    arguments: [
+      { name: "meta", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.previewspan": {
+    resourceKey: "m77696e646f77732e666f6c646572732e707265766965777370616e",
+    formatIntent: "text",
+    arguments: [
+      { name: "count", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "start", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "end", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.previewspanone": {
+    resourceKey: "m77696e646f77732e666f6c646572732e707265766965777370616e6f6e65",
+    formatIntent: "text",
+    arguments: [
+      { name: "start", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "end", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.previewzero": {
+    resourceKey: "m77696e646f77732e666f6c646572732e707265766965777a65726f",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.refused": {
+    resourceKey: "m77696e646f77732e666f6c646572732e72656675736564",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.remove": {
+    resourceKey: "m77696e646f77732e666f6c646572732e72656d6f7665",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.removebody": {
+    resourceKey: "m77696e646f77732e666f6c646572732e72656d6f7665626f6479",
+    formatIntent: "text",
+    arguments: [
+      { name: "folder", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.removeheading": {
+    resourceKey: "m77696e646f77732e666f6c646572732e72656d6f766568656164696e67",
+    formatIntent: "text",
+    arguments: [
+      { name: "folder", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.resumelabel": {
+    resourceKey: "m77696e646f77732e666f6c646572732e726573756d656c6162656c",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.scopenote": {
+    resourceKey: "m77696e646f77732e666f6c646572732e73636f70656e6f7465",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.spanall": {
+    resourceKey: "m77696e646f77732e666f6c646572732e7370616e616c6c",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.spannothing": {
+    resourceKey: "m77696e646f77732e666f6c646572732e7370616e6e6f7468696e67",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.spansixmonths": {
+    resourceKey: "m77696e646f77732e666f6c646572732e7370616e7369786d6f6e746873",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.spanthirty": {
+    resourceKey: "m77696e646f77732e666f6c646572732e7370616e746869727479",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.spanyear": {
+    resourceKey: "m77696e646f77732e666f6c646572732e7370616e79656172",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.split": {
+    resourceKey: "m77696e646f77732e666f6c646572732e73706c6974",
+    formatIntent: "text",
+    arguments: [
+      { name: "on", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "paused", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.startfromtoday": {
+    resourceKey: "m77696e646f77732e666f6c646572732e737461727466726f6d746f646179",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.stays": {
+    resourceKey: "m77696e646f77732e666f6c646572732e7374617973",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.tileprogress": {
+    resourceKey: "m77696e646f77732e666f6c646572732e74696c6570726f6772657373",
+    formatIntent: "text",
+    arguments: [
+      { name: "folder", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "done", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "total", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.tiletitle": {
+    resourceKey: "m77696e646f77732e666f6c646572732e74696c657469746c65",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.two": {
+    resourceKey: "m77696e646f77732e666f6c646572732e74776f",
+    formatIntent: "text",
+    arguments: [
+      { name: "first", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+      { name: "second", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.unpaired": {
+    resourceKey: "m77696e646f77732e666f6c646572732e756e706169726564",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
+  "windows.folders.unreadable": {
+    resourceKey: "m77696e646f77732e666f6c646572732e756e7265616461626c65",
+    formatIntent: "text",
+    arguments: [
+      { name: "folder", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.waiting": {
+    resourceKey: "m77696e646f77732e666f6c646572732e77616974696e67",
+    formatIntent: "text",
+    arguments: [
+      { name: "count", type: "string", min: null, max: null, numericStyle: "ungrouped" },
+    ],
+  },
+  "windows.folders.whatcomesin": {
+    resourceKey: "m77696e646f77732e666f6c646572732e77686174636f6d6573696e",
+    formatIntent: "text",
+    arguments: [
+    ],
+  },
   "windows.health.attentioncount": {
     resourceKey: "m77696e646f77732e6865616c74682e617474656e74696f6e636f756e74",
     formatIntent: "cardinal",

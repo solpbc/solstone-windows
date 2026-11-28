@@ -784,6 +784,7 @@ fn receipt_validation_fails_on_sha256_mismatch() {
         segment: Some("143000_300".into()),
         existing_segment: None,
         reason_code: None,
+        refused_files: vec![],
         file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
             submitted: "screen.mp4".into(),
             written: "screen.mp4".into(),
@@ -812,6 +813,7 @@ fn receipt_validation_fails_on_size_mismatch() {
         segment: Some("143000_300".into()),
         existing_segment: None,
         reason_code: None,
+        refused_files: vec![],
         file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
             submitted: "screen.mp4".into(),
             written: "screen.mp4".into(),
@@ -840,6 +842,7 @@ fn receipt_validation_fails_on_received_not_written() {
         segment: Some("143000_300".into()),
         existing_segment: None,
         reason_code: None,
+        refused_files: vec![],
         file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
             submitted: "screen.mp4".into(),
             written: "screen.mp4".into(),
@@ -875,6 +878,7 @@ fn receipt_validation_fails_on_missing_descriptor() {
         segment: Some("143000_300".into()),
         existing_segment: None,
         reason_code: None,
+        refused_files: vec![],
         file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
             submitted: "screen.mp4".into(),
             written: "screen.mp4".into(),
@@ -903,6 +907,7 @@ fn receipt_validation_fails_on_extra_descriptor() {
         segment: Some("143000_300".into()),
         existing_segment: None,
         reason_code: None,
+        refused_files: vec![],
         file_descriptors: FileDescriptors::Decoded(vec![
             FileDescriptor {
                 submitted: "screen.mp4".into(),
@@ -940,6 +945,7 @@ fn receipt_validation_fails_on_duplicate_submitted_name() {
         segment: Some("143000_300".into()),
         existing_segment: None,
         reason_code: None,
+        refused_files: vec![],
         file_descriptors: FileDescriptors::Decoded(vec![
             FileDescriptor {
                 submitted: "screen.mp4".into(),
@@ -977,6 +983,7 @@ fn receipt_validation_fails_on_non_hex_or_uppercase_sha256() {
         segment: Some("143000_300".into()),
         existing_segment: None,
         reason_code: None,
+        refused_files: vec![],
         file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
             submitted: "screen.mp4".into(),
             written: "screen.mp4".into(),
@@ -995,6 +1002,7 @@ fn receipt_validation_fails_on_non_hex_or_uppercase_sha256() {
         segment: Some("143000_300".into()),
         existing_segment: None,
         reason_code: None,
+        refused_files: vec![],
         file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
             submitted: "screen.mp4".into(),
             written: "screen.mp4".into(),
@@ -1023,6 +1031,7 @@ fn receipt_validation_fails_on_absent_file_descriptors() {
         segment: Some("143000_300".into()),
         existing_segment: None,
         reason_code: None,
+        refused_files: vec![],
         file_descriptors: FileDescriptors::Absent,
     };
     assert_eq!(validate_receipt(&resp, &local), Err(ReceiptFault::Absent));
@@ -1042,6 +1051,7 @@ fn receipt_validation_fails_on_duplicate_without_existing_segment() {
         segment: None,
         existing_segment: None,
         reason_code: None,
+        refused_files: vec![],
         file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
             submitted: "screen.mp4".into(),
             written: "screen.mp4".into(),
@@ -1070,6 +1080,7 @@ fn receipt_validation_fails_on_ok_without_segment() {
         segment: None,
         existing_segment: None,
         reason_code: None,
+        refused_files: vec![],
         file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
             submitted: "screen.mp4".into(),
             written: "screen.mp4".into(),
@@ -1098,6 +1109,7 @@ fn receipt_validation_fails_on_unknown_disposition() {
         segment: Some("143000_300".into()),
         existing_segment: None,
         reason_code: None,
+        refused_files: vec![],
         file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
             submitted: "screen.mp4".into(),
             written: "screen.mp4".into(),
@@ -1128,6 +1140,7 @@ fn receipt_validation_passes_on_valid_ok_duplicate_and_collision_responses() {
         segment: Some("143000_300".into()),
         existing_segment: None,
         reason_code: None,
+        refused_files: vec![],
         file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
             submitted: "screen.mp4".into(),
             written: "screen.mp4".into(),
@@ -1145,6 +1158,7 @@ fn receipt_validation_passes_on_valid_ok_duplicate_and_collision_responses() {
         segment: Some("143000_300_1".into()),
         existing_segment: None,
         reason_code: None,
+        refused_files: vec![],
         file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
             submitted: "screen.mp4".into(),
             written: "remapped_screen.mp4".into(),
@@ -1163,6 +1177,7 @@ fn receipt_validation_passes_on_valid_ok_duplicate_and_collision_responses() {
         segment: None,
         existing_segment: Some("143000_300".into()),
         reason_code: None,
+        refused_files: vec![],
         file_descriptors: FileDescriptors::Decoded(vec![FileDescriptor {
             submitted: "screen.mp4".into(),
             written: "screen.mp4".into(),
@@ -1275,4 +1290,78 @@ fn a_screenshot_envelope_matches_the_journal_golden() {
         );
         assert_eq!(envelope_json(&multipart.serialize().unwrap()), want);
     }
+}
+
+#[test]
+fn a_folder_envelope_matches_the_journal_contract() {
+    use observer_pl::ingest::FolderMeta;
+
+    let folder = FolderMeta {
+        v: 1,
+        id: "desktop-b2c3d4e5".to_owned(),
+        name: "Desktop".to_owned(),
+        facet: Some("work".to_owned()),
+        kinds: vec!["notes".to_owned(), "screenshots".to_owned()],
+    };
+    let multipart = IngestMultipart::new(
+        "v3-boundary",
+        "20261127",
+        "140500_300",
+        vec![
+            FilePart {
+                filename:
+                    "folder_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.jsonl"
+                        .to_owned(),
+                content_type: "application/x-ndjson".to_owned(),
+                bytes: b"{\"v\":1}\n".to_vec(),
+            },
+            FilePart {
+                filename: "c_01.md".to_owned(),
+                content_type: "text/markdown".to_owned(),
+                bytes: b"# note\n".to_vec(),
+            },
+        ],
+    )
+    .unwrap()
+    .with_source("folder")
+    .with_folder(folder);
+
+    let envelope = envelope_json(&multipart.serialize().unwrap());
+    assert_eq!(envelope["source"], "folder");
+    assert_eq!(envelope["day"], "20261127");
+    assert_eq!(envelope["segment"], "140500_300");
+    assert_eq!(envelope["meta"]["folder"]["v"], 1);
+    assert_eq!(envelope["meta"]["folder"]["id"], "desktop-b2c3d4e5");
+    assert_eq!(envelope["meta"]["folder"]["name"], "Desktop");
+    assert_eq!(envelope["meta"]["folder"]["facet"], "work");
+    assert_eq!(
+        envelope["meta"]["folder"]["kinds"],
+        serde_json::json!(["notes", "screenshots"])
+    );
+    assert_eq!(envelope["files"][1]["submitted"], "c_01.md");
+}
+
+#[test]
+fn ingest_response_decodes_folder_refused_files() {
+    let json = r#"{
+        "status": "ok",
+        "segment": "140500_300",
+        "refused_files": [
+            {
+                "path": "broken.pdf",
+                "part": "c_01.pdf",
+                "reason_code": "invalid_pdf",
+                "detail": "missing %PDF header"
+            }
+        ],
+        "file_descriptors": []
+    }"#;
+    let resp: IngestResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(resp.refused_files.len(), 1);
+    assert_eq!(resp.refused_files[0].path, "broken.pdf");
+    assert_eq!(resp.refused_files[0].part.as_deref(), Some("c_01.pdf"));
+    assert_eq!(
+        resp.refused_files[0].reason_code.as_deref(),
+        Some("invalid_pdf")
+    );
 }

@@ -1,0 +1,21 @@
+{
+  "description": "Windows app folder source: windows.folders.estthoughtsmany",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "count",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 80,
+  "source_revision": "14c224a77f42864550313de64c387e4a1f72d060224e947c55caeb6d970a2f3c",
+  "risk": "routine",
+  "auto_merge": true
+}

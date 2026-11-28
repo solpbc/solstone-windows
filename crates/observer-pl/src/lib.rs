@@ -70,4 +70,10 @@ pub mod paths {
     pub const INGEST_SEGMENTS: &str = "/app/devices/ingest/segments";
     /// The vaults this journal has from other devices.
     pub const INGEST_OBSIDIAN_VAULTS: &str = "/app/devices/ingest/obsidian/vaults";
+    /// Facets available for watched-folder assignment (protocol v3).
+    pub const INGEST_FOLDER_FACETS: &str = "/app/devices/ingest/folder/facets";
+    /// Journal-published supported file types for watched folders (protocol v3).
+    pub const INGEST_FOLDER_SUPPORTED: &str = "/app/devices/ingest/folder/supported";
+    /// Backfill work estimate for a watched folder preview (protocol v3).
+    pub const INGEST_FOLDER_ESTIMATE: &str = "/app/devices/ingest/folder/estimate";
 }

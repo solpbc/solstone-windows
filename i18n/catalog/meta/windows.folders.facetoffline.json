@@ -1,0 +1,16 @@
+{
+  "description": "Windows app folder source: windows.folders.facetoffline",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [],
+  "format_intent": "text",
+  "max_length": 147,
+  "source_revision": "8d1517b1211217d654028431005860833fac3ade33f000cc49cbe8e97734f75c",
+  "risk": "routine",
+  "auto_merge": true
+}

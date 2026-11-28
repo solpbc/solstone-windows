@@ -45,6 +45,8 @@ fn browser_configured(
         || counters.is_some_and(source_counters::SharedCounters::has_browser_activity)
 }
 
+const MAX_DECLARED_SOURCES: usize = 64;
+
 fn declaration(
     dump: &HealthDump,
     counters: Option<&source_counters::SharedCounters>,
@@ -54,6 +56,7 @@ fn declaration(
     }
     let obsidian = crate::obsidian::source_status()?;
     let screenshots = crate::screenshots::source_status()?;
+    let folders = crate::folders::declared_folders();
     #[cfg(feature = "browser-host")]
     let browser = crate::browser::status().map(|b| BrowserSource {
         capture: b.capture,
@@ -72,6 +75,7 @@ fn declaration(
         obsidian.vault,
         (!screenshots.waiting_for_journal).then_some(screenshots.state),
         browser,
+        &folders,
     ))
 }
 
@@ -81,6 +85,7 @@ fn configured_sources(
     vault: Option<String>,
     screenshots: Option<ScreenshotsState>,
     browser: Option<BrowserSource<'_>>,
+    folders: &[folders_source::FolderDeclaration],
 ) -> Vec<Entry> {
     use obsidian_source::State;
     let mut entries = Vec::new();
@@ -160,6 +165,26 @@ fn configured_sources(
     });
     if let Some(state) = browser_state {
         add("browsers", state, None);
+    }
+    drop(add);
+    // Emit non-folder sources first, then folders ordered by severity
+    // (needs_attention -> paused -> on) and folder_id ascending, capped at 64.
+    if !folders.is_empty() && entries.len() < MAX_DECLARED_SOURCES {
+        let mut ordered = folders.to_vec();
+        ordered.sort_by(|a, b| a.state.cmp(&b.state).then_with(|| a.id.cmp(&b.id)));
+        let mut seen = std::collections::BTreeSet::new();
+        let remaining = MAX_DECLARED_SOURCES - entries.len();
+        for folder in ordered
+            .into_iter()
+            .filter(|f| seen.insert(f.id.clone()))
+            .take(remaining)
+        {
+            entries.push(Entry {
+                source: "folder",
+                state: folder.state.as_wire_str(),
+                detail: Some(folder.id),
+            });
+        }
     }
     entries
 }
@@ -591,10 +616,15 @@ mod tests {
             State::Confirm,
             State::WaitingForJournalUpdate,
         ] {
-            assert!(
-                configured_sources(&dump, state, None, Some(ScreenshotsState::Choosing), None)
-                    .is_empty()
-            );
+            assert!(configured_sources(
+                &dump,
+                state,
+                None,
+                Some(ScreenshotsState::Choosing),
+                None,
+                &[],
+            )
+            .is_empty());
         }
         dump.setup.screen = true;
         dump.setup.system_audio = true;
@@ -616,6 +646,10 @@ mod tests {
                 custody_full: false,
                 configured: true,
             }),
+            &[folders_source::FolderDeclaration {
+                id: "downloads-a1b2c3d4".into(),
+                state: folders_source::FolderDeclaredState::On,
+            }],
         );
         assert_eq!(
             serde_json::to_value(entries).unwrap(),
@@ -624,7 +658,8 @@ mod tests {
                 {"source":"screenshots","state":"needs_attention","detail":null},
                 {"source":"screen","state":"on","detail":null},
                 {"source":"audio","state":"on","detail":null},
-                {"source":"browsers","state":"on","detail":null}
+                {"source":"browsers","state":"on","detail":null},
+                {"source":"folder","state":"on","detail":"downloads-a1b2c3d4"}
             ])
         );
     }
@@ -658,6 +693,7 @@ mod tests {
                 custody_full: false,
                 configured: true,
             }),
+            &[],
         );
         assert_eq!(
             serde_json::to_value(entries).unwrap(),
@@ -667,7 +703,7 @@ mod tests {
                 {"source":"browsers","state":"on","detail":null}
             ])
         );
-        assert!(configured_sources(&dump, State::Off, None, None, None).is_empty());
+        assert!(configured_sources(&dump, State::Off, None, None, None, &[]).is_empty());
 
         let starting: HealthDump = serde_json::from_value(serde_json::json!({
             "app_state": "starting", "engine_ready": false, "version": "1", "sources": []
@@ -702,6 +738,7 @@ mod tests {
                 custody_full: false,
                 configured: browser_configured(0, 0, Some(&counters)),
             }),
+            &[],
         )
         .is_empty());
 
@@ -730,6 +767,7 @@ mod tests {
                 custody_full: false,
                 configured: browser_configured(0, 0, Some(&counters)),
             }),
+            &[],
         );
         assert_eq!(
             serde_json::to_value(closed_on).unwrap(),
@@ -753,6 +791,7 @@ mod tests {
                 custody_full: false,
                 configured: browser_configured(0, 0, Some(&counters)),
             }),
+            &[],
         );
         assert_eq!(
             serde_json::to_value(closed_paused).unwrap(),
@@ -772,6 +811,7 @@ mod tests {
                     custody_full,
                     configured: false,
                 }),
+                &[],
             );
             assert_eq!(
                 serde_json::to_value(faulted).unwrap(),
@@ -801,5 +841,51 @@ mod tests {
         assert!(!p.begin_declaration(&[]));
         assert!(!p.begin_declaration(&on));
         assert!(p.begin_declaration(&[]));
+    }
+
+    #[test]
+    fn folders_declarations_honor_severity_priority_and_64_entry_cap() {
+        use folders_source::{FolderDeclaration, FolderDeclaredState};
+        use obsidian_source::State;
+        let dump: HealthDump = serde_json::from_value(serde_json::json!({
+            "app_state": "idle", "engine_ready": true, "version": "1", "sources": []
+        }))
+        .unwrap();
+        let mut folders = Vec::new();
+        for i in 0..70 {
+            folders.push(FolderDeclaration {
+                id: format!("z-on-{i:02}"),
+                state: FolderDeclaredState::On,
+            });
+        }
+        folders.push(FolderDeclaration {
+            id: "b-paused".into(),
+            state: FolderDeclaredState::Paused,
+        });
+        folders.push(FolderDeclaration {
+            id: "a-attn".into(),
+            state: FolderDeclaredState::NeedsAttention,
+        });
+        let entries = configured_sources(
+            &dump,
+            State::On,
+            Some("Vault".into()),
+            Some(ScreenshotsState::On),
+            None,
+            &folders,
+        );
+        assert_eq!(entries.len(), 64);
+        // Non-folder sources first.
+        assert_eq!(entries[0].source, "obsidian");
+        assert_eq!(entries[1].source, "screenshots");
+        // Then needs_attention, then paused, then on sorted ascending by folder_id.
+        assert_eq!(entries[2].source, "folder");
+        assert_eq!(entries[2].state, "needs_attention");
+        assert_eq!(entries[2].detail.as_deref(), Some("a-attn"));
+        assert_eq!(entries[3].state, "paused");
+        assert_eq!(entries[3].detail.as_deref(), Some("b-paused"));
+        assert_eq!(entries[4].state, "on");
+        assert_eq!(entries[4].detail.as_deref(), Some("z-on-00"));
+        assert_eq!(entries[63].detail.as_deref(), Some("z-on-59"));
     }
 }

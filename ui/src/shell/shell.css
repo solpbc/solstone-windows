@@ -1148,3 +1148,152 @@ html:has(.desk-shell[data-width="phone"]) #setup-sun .sunarc-twilight {
 .desk-remote-line { display: block; font-size: 13px; overflow-wrap: anywhere; }
 /* An also-on value reads like the facts beside it. */
 .desk-fact > .desk-remote-line { margin-left: auto; color: inherit; font-size: inherit; text-align: right; }
+
+/* Folder source list, kinds, facet, preview, and inline notices. */
+.desk-folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-block: 12px 16px;
+}
+.desk-folder-row {
+  appearance: none;
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--desk-line);
+  border-radius: 12px;
+  background: var(--desk-card);
+  color: var(--desk-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.desk-folder-row:hover {
+  border-color: var(--desk-accent);
+}
+.desk-folder-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.desk-folder-row-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.desk-folder-row-meta {
+  color: var(--desk-subtle);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.desk-folder-badge {
+  flex: none;
+  font-size: 12px;
+  color: var(--desk-subtle);
+}
+.desk-folder-badge[data-state="needs attention"] {
+  color: var(--desk-danger, #c4554a);
+  font-weight: 600;
+}
+.desk-folder-back {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0 0 8px;
+  color: var(--desk-accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.desk-folder-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-bottom: 10px;
+}
+.desk-folder-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.desk-folder-label {
+  color: var(--desk-subtle);
+  font-size: 12.5px;
+  margin: 0 0 10px;
+  overflow-wrap: anywhere;
+}
+.desk-folder-card {
+  border: 1px solid var(--desk-line);
+  border-radius: 12px;
+  padding: 14px;
+  margin-block: 10px 14px;
+  background: var(--desk-card);
+}
+.desk-folder-card h3 {
+  margin: 0 0 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.desk-folder-kinds {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.desk-folder-kind {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+.desk-folder-kind input {
+  margin-top: 3px;
+  flex: none;
+}
+.desk-folder-kind-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.desk-folder-kind-desc {
+  color: var(--desk-subtle);
+  font-size: 12.5px;
+}
+.desk-folder-select {
+  width: 100%;
+  max-width: 320px;
+  padding: 7px 10px;
+  border: 1px solid var(--desk-line);
+  border-radius: 8px;
+  background: var(--desk-card);
+  color: var(--desk-ink);
+  font: inherit;
+}
+.desk-folder-est {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--desk-hairline);
+}
+.desk-folder-est-label {
+  font-size: 12px;
+  color: var(--desk-subtle);
+  margin: 0 0 4px;
+}
+.desk-folder-est-values {
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+.desk-folder-footer {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--desk-hairline);
+}

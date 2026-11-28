@@ -1,0 +1,25 @@
+{
+  "description": "Summary line in the folder setup preview when 1 item is selected with a date range.",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "start",
+      "type": "string"
+    },
+    {
+      "name": "end",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 120,
+  "source_revision": "7f11fb80af0dc062d8d4a736a8292bde09f56d7f7deb30e49b578f175bf49dab",
+  "risk": "routine",
+  "auto_merge": true
+}

@@ -458,6 +458,7 @@ fn build_sync_config() -> SyncConfig {
         on_new_confirmation: Arc::new(|| {
             crate::obsidian::restart_send();
             crate::screenshots::restart_setup();
+            crate::folders::restart_setup();
         }),
         facts_fn: Arc::new(current_raw_facts),
         confirmation: Arc::new(Mutex::new(String::new())),
@@ -798,6 +799,10 @@ pub fn run(
             crate::ipc::screenshots_choose_folder,
             crate::ipc::screenshots_confirm,
             crate::ipc::screenshots_try_again,
+            crate::ipc::folders_status,
+            crate::ipc::folders_pick_folder,
+            crate::ipc::folders_check_path,
+            crate::ipc::folders_action,
             crate::ipc::set_caption_color,
             crate::ipc::set_audio_tile,
             crate::ipc::set_computer_sound,
@@ -1099,6 +1104,8 @@ pub fn run(
             crate::obsidian::start(app.handle().clone(), source_counters.clone());
             // The screenshots source: the folder, the count, then each one as it's taken.
             crate::screenshots::start(app.handle().clone(), source_counters.clone());
+            // The folder source: owner-chosen folders, deterministic sorting, 5-min windows.
+            crate::folders::start(app.handle().clone(), source_counters.clone());
             crate::import::start(app.handle().clone(), source_counters.clone());
             crate::shared_sources::start(app.handle().clone(), source_counters);
 
@@ -1244,6 +1251,7 @@ pub fn run(
                     let mut obsidian_on = crate::obsidian::on_changes();
                     // So does the screenshots folder going away.
                     let mut screenshots_state = crate::screenshots::state_changes();
+                    let mut folders_changes = crate::folders::state_changes();
                     let mut import_changes = crate::import::on_changes();
                     let mut browser_changes = crate::browser::on_changes();
                     // And an update the menu names, or stops naming.
@@ -1308,6 +1316,9 @@ pub fn run(
                         }
                         previous_pairing = Some(dump.sync.pairing.phase);
                         previous_link = link;
+                        if previous.as_ref().is_some_and(|prev| prev.pause != dump.pause) {
+                            crate::folders::wake();
+                        }
                         let changed = previous
                             .as_ref()
                             .is_none_or(|prev| should_emit(prev, &dump));
@@ -1362,6 +1373,16 @@ pub fn run(
                                 match screenshots_state.as_mut() {
                                     Some(state) => {
                                         if state.changed().await.is_err() {
+                                            std::future::pending::<()>().await;
+                                        }
+                                    }
+                                    None => std::future::pending::<()>().await,
+                                }
+                            } => {}
+                            _ = async {
+                                match folders_changes.as_mut() {
+                                    Some(changes) => {
+                                        if changes.changed().await.is_err() {
                                             std::future::pending::<()>().await;
                                         }
                                     }

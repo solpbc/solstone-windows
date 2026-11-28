@@ -1,0 +1,21 @@
+{
+  "description": "Windows app folder source: windows.folders.previewmetaonly",
+  "context": "Windows app folders source settings pane, tile, and tray.",
+  "surfaces": [
+    "windows-app"
+  ],
+  "bundles": [
+    "windows"
+  ],
+  "arguments": [
+    {
+      "name": "meta",
+      "type": "string"
+    }
+  ],
+  "format_intent": "text",
+  "max_length": 108,
+  "source_revision": "4a17e9677624f5e9f1083c450b7c9e3899d0267daea6541a97c088f21b049b23",
+  "risk": "routine",
+  "auto_merge": true
+}
