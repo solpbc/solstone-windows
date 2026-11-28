@@ -368,8 +368,12 @@ mod tests {
         engine.scan_all();
         // Advance past the 5-minute window close for the rename event.
         platform.advance_ms(300_000);
+        let mut new_rules = engine.supported_list().clone();
+        new_rules.ruleset_version += 1;
+        engine.set_supported_list(new_rules);
         let d_ren = engine.next_delivery(false).unwrap();
         assert_eq!(d_ren.events[0].verb, ActivityVerb::Renamed);
+        assert!(d_ren.content_files.is_empty());
         assert_eq!(d_ren.events[0].rel_path, "tasks.md");
         assert_eq!(d_ren.events[0].previous_path.as_deref(), Some("todo.md"));
         engine.record_outcome(&d_ren, DeliveryOutcome::Delivered);

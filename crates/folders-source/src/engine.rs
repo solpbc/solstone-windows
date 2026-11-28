@@ -282,7 +282,9 @@ impl Engine {
         // Entries confirmed offline must obey the negotiated kinds before upload.
         for folder in &mut self.ledger.folders {
             folder.pending.retain_mut(|ev| {
-                if ev.verb == ActivityVerb::Removed || ev.content_refused {
+                if matches!(ev.verb, ActivityVerb::Renamed | ActivityVerb::Removed)
+                    || ev.content_refused
+                {
                     return true;
                 }
                 let ext = ev.metadata.extension.as_deref();
@@ -308,6 +310,17 @@ impl Engine {
                     folder.kinds,
                     &supported,
                 );
+                // Older ledgers have no refusal marker. A known kind already
+                // reduced to details never needs its bytes promoted on reconnect.
+                let delivery = if ev.delivery == DeliveryMode::MetadataOnly
+                    && ev.kind == kind
+                    && kind != FileKind::Other
+                    && delivery == DeliveryMode::Content
+                {
+                    DeliveryMode::MetadataOnly
+                } else {
+                    delivery
+                };
                 if kind != ev.kind || delivery != DeliveryMode::Content {
                     ev.note_payload = None;
                     ev.note_is_diff = false;
