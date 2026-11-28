@@ -150,7 +150,13 @@ mod tests {
                 .is_some_and(screenshots_source::rules::has_name_stamp)
         }
 
-        fn convert_image(&self, bytes: &[u8], kind: FileKind) -> Option<ConvertedImage> {
+        fn convert_image(
+            &self,
+            bytes: &[u8],
+            kind: FileKind,
+            _max_pixels: u64,
+            _max_bytes: u64,
+        ) -> Option<ConvertedImage> {
             self.converted.lock().unwrap().push(kind);
             let mut out = b"CONVERTED:".to_vec();
             out.extend_from_slice(bytes);

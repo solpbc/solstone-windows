@@ -145,8 +145,16 @@ pub fn own_folder() -> Option<PathBuf> {
 /// Convert one image to PNG through WIC: the first frame, at its own size and
 /// resolution, with its ICC colour profile, the XMP the system's PNG encoder
 /// takes, and the source's EXIF in an `eXIf` chunk. A type with no decoder here is undecodable.
-#[cfg(windows)]
 pub fn to_png(bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
+    to_png_with_limits(bytes, u64::MAX, u64::MAX)
+}
+
+#[cfg(windows)]
+pub(crate) fn to_png_with_limits(
+    bytes: &[u8],
+    max_pixels: u64,
+    max_bytes: u64,
+) -> Result<Vec<u8>, ConvertError> {
     use windows::core::{Interface, GUID, PROPVARIANT};
     use windows::Win32::Foundation::WINCODEC_ERR_COMPONENTNOTFOUND;
     use windows::Win32::Graphics::Imaging::{
@@ -208,6 +216,9 @@ pub fn to_png(bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
         frame
             .GetSize(&mut width, &mut height)
             .map_err(|_| ConvertError::Undecodable)?;
+        if u64::from(width) * u64::from(height) > max_pixels {
+            return Err(ConvertError::Undecodable);
+        }
         target.SetSize(width, height).map_err(unavailable)?;
         let (mut dpi_x, mut dpi_y) = (96.0f64, 96.0f64);
         if frame.GetResolution(&mut dpi_x, &mut dpi_y).is_ok() {
@@ -322,6 +333,9 @@ pub fn to_png(bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
             .Seek(0, STREAM_SEEK_END, Some(&mut size))
             .map_err(unavailable)?;
         output.Seek(0, STREAM_SEEK_SET, None).map_err(unavailable)?;
+        if size > max_bytes {
+            return Err(ConvertError::Undecodable);
+        }
         let size = usize::try_from(size).map_err(|_| ConvertError::Unavailable)?;
         let mut png = vec![0u8; size];
         let mut filled = 0usize;
@@ -343,7 +357,11 @@ pub fn to_png(bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
 }
 
 #[cfg(not(windows))]
-pub fn to_png(_bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
+pub(crate) fn to_png_with_limits(
+    _bytes: &[u8],
+    _max_pixels: u64,
+    _max_bytes: u64,
+) -> Result<Vec<u8>, ConvertError> {
     Err(ConvertError::Unavailable)
 }
 
@@ -353,8 +371,16 @@ pub fn to_png(_bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
 /// segment. Returns `ConvertError::Undecodable` when no codec on this PC can
 /// decode the input (for example when Windows HEIF Image Extensions are not
 /// installed or the file is damaged).
-#[cfg(windows)]
 pub fn to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
+    to_jpeg_with_limits(bytes, u64::MAX, u64::MAX)
+}
+
+#[cfg(windows)]
+pub(crate) fn to_jpeg_with_limits(
+    bytes: &[u8],
+    max_pixels: u64,
+    max_bytes: u64,
+) -> Result<Vec<u8>, ConvertError> {
     use windows::core::{Interface, GUID, HSTRING, PWSTR, VARIANT};
     use windows::Win32::Foundation::WINCODEC_ERR_COMPONENTNOTFOUND;
     use windows::Win32::Graphics::Imaging::{
@@ -430,6 +456,9 @@ pub fn to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
         frame
             .GetSize(&mut width, &mut height)
             .map_err(|_| ConvertError::Undecodable)?;
+        if u64::from(width) * u64::from(height) > max_pixels {
+            return Err(ConvertError::Undecodable);
+        }
         target.SetSize(width, height).map_err(unavailable)?;
         let (mut dpi_x, mut dpi_y) = (96.0f64, 96.0f64);
         if frame.GetResolution(&mut dpi_x, &mut dpi_y).is_ok() {
@@ -500,6 +529,9 @@ pub fn to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
             .Seek(0, STREAM_SEEK_END, Some(&mut size))
             .map_err(unavailable)?;
         output.Seek(0, STREAM_SEEK_SET, None).map_err(unavailable)?;
+        if size > max_bytes {
+            return Err(ConvertError::Undecodable);
+        }
         let size = usize::try_from(size).map_err(|_| ConvertError::Unavailable)?;
         let mut jpeg = vec![0u8; size];
         let mut filled = 0usize;
@@ -524,6 +556,10 @@ pub fn to_jpeg(bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
 }
 
 #[cfg(not(windows))]
-pub fn to_jpeg(_bytes: &[u8]) -> Result<Vec<u8>, ConvertError> {
+pub(crate) fn to_jpeg_with_limits(
+    _bytes: &[u8],
+    _max_pixels: u64,
+    _max_bytes: u64,
+) -> Result<Vec<u8>, ConvertError> {
     Err(ConvertError::Unavailable)
 }

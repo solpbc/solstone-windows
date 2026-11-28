@@ -179,6 +179,8 @@ struct Ledger {
 /// One staged five-minute segment ready to send to the journal.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SegmentDelivery {
+    pub max_image_pixels: u64,
+    pub max_content_bytes: u64,
     pub folder_id: String,
     pub folder_name: String,
     pub folder_root: PathBuf,
@@ -1657,6 +1659,8 @@ impl Engine {
         }
 
         Some(SegmentDelivery {
+            max_image_pixels: self.supported.max_image_pixels.min(67_108_864),
+            max_content_bytes: self.supported.max_content_bytes.min(MAX_CONTENT_BYTES),
             folder_id,
             folder_name,
             folder_root,
@@ -1876,7 +1880,11 @@ pub fn stage_delivery(
     let mut remaining = MAX_CONTENT_BYTES;
 
     for content in &delivery.content_files {
-        let bytes = platform.read_file(&delivery.folder_root, &content.disk_path, remaining)?;
+        let bytes = platform.read_file(
+            &delivery.folder_root,
+            &content.disk_path,
+            delivery.max_content_bytes.min(remaining),
+        )?;
         if content.note_payload.is_none()
             && content
                 .content_hash
@@ -1909,8 +1917,12 @@ pub fn stage_delivery(
             });
             next_index += 1;
         } else if content.needs_image_convert {
-            if let Some(converted) = platform.convert_image(&bytes, content.kind)
-                && converted.bytes.len() as u64 <= remaining
+            if let Some(converted) = platform.convert_image(
+                &bytes,
+                content.kind,
+                delivery.max_image_pixels,
+                delivery.max_content_bytes,
+            ) && converted.bytes.len() as u64 <= delivery.max_content_bytes.min(remaining)
             {
                 remaining -= converted.bytes.len() as u64;
                 let part_name = format!("c_{next_index:02}.{}", converted.extension);

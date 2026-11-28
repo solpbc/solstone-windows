@@ -9,6 +9,23 @@
 use platform_win::screenshots::{list_folder, own_folder, to_png, WindowsScreenshots};
 use screenshots_source::{ConvertError, ListError, Platform};
 
+#[test]
+fn folder_conversion_enforces_the_negotiated_pixel_and_byte_limits() {
+    use folders_source::{FileKind, FolderPlatform};
+    use platform_win::folders::WindowsFolders;
+    for kind in [FileKind::Photo, FileKind::Screenshot] {
+        assert!(WindowsFolders
+            .convert_image(&tiny_bmp(), kind, 1, 64_000)
+            .is_none());
+        assert!(WindowsFolders
+            .convert_image(&tiny_bmp(), kind, 2, 1)
+            .is_none());
+        assert!(WindowsFolders
+            .convert_image(&tiny_bmp(), kind, 2, 64_000)
+            .is_some());
+    }
+}
+
 /// A 2 by 1, 24-bit BMP: one red pixel, one blue.
 fn tiny_bmp() -> Vec<u8> {
     let pixels: [u8; 8] = [0, 0, 255, 255, 0, 0, 0, 0];

@@ -166,10 +166,16 @@ impl FolderPlatform for WindowsFolders {
         false
     }
 
-    fn convert_image(&self, bytes: &[u8], kind: FileKind) -> Option<ConvertedImage> {
+    fn convert_image(
+        &self,
+        bytes: &[u8],
+        kind: FileKind,
+        max_pixels: u64,
+        max_bytes: u64,
+    ) -> Option<ConvertedImage> {
         match kind {
             FileKind::Screenshot => {
-                crate::screenshots::to_png(bytes)
+                crate::screenshots::to_png_with_limits(bytes, max_pixels, max_bytes)
                     .ok()
                     .map(|out| ConvertedImage {
                         bytes: out,
@@ -177,20 +183,24 @@ impl FolderPlatform for WindowsFolders {
                         content_type: "image/png",
                     })
             }
-            FileKind::Photo => crate::screenshots::to_jpeg(bytes)
-                .map(|out| ConvertedImage {
-                    bytes: out,
-                    extension: "jpg",
-                    content_type: "image/jpeg",
-                })
-                .or_else(|_| {
-                    crate::screenshots::to_png(bytes).map(|out| ConvertedImage {
+            FileKind::Photo => {
+                crate::screenshots::to_jpeg_with_limits(bytes, max_pixels, max_bytes)
+                    .map(|out| ConvertedImage {
                         bytes: out,
-                        extension: "png",
-                        content_type: "image/png",
+                        extension: "jpg",
+                        content_type: "image/jpeg",
                     })
-                })
-                .ok(),
+                    .or_else(|_| {
+                        crate::screenshots::to_png_with_limits(bytes, max_pixels, max_bytes).map(
+                            |out| ConvertedImage {
+                                bytes: out,
+                                extension: "png",
+                                content_type: "image/png",
+                            },
+                        )
+                    })
+                    .ok()
+            }
             _ => None,
         }
     }

@@ -104,7 +104,13 @@ pub trait FolderPlatform: Send + Sync + 'static {
 
     /// Convert a `convert_to_png_on_device` image (HEIC/HEIF/TIFF/GIF/BMP)
     /// into PNG (for screenshots) or JPEG/PNG (for photos).
-    fn convert_image(&self, _bytes: &[u8], _kind: FileKind) -> Option<ConvertedImage> {
+    fn convert_image(
+        &self,
+        _bytes: &[u8],
+        _kind: FileKind,
+        _max_pixels: u64,
+        _max_bytes: u64,
+    ) -> Option<ConvertedImage> {
         None
     }
 }
