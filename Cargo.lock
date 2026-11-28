@@ -1547,6 +1547,7 @@ version = "2.0.61"
 dependencies = [
  "jiff",
  "observer-pl",
+ "regex",
  "screenshots-source",
  "serde",
  "serde_json",

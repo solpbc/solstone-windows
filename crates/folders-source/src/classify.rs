@@ -240,6 +240,9 @@ fn transcript_layout(ext: &str, bytes: Option<&[u8]>) -> bool {
         "tsv" => parse_whisper_tsv(text).is_some(),
         "html" => parse_telegram_html(text).is_some(),
         "md" | "markdown" | "txt" | "log" => {
+            if crate::text_exports::matches(text) {
+                return true;
+            }
             let mut speakers = BTreeSet::new();
             for line in text.lines().take(256) {
                 if let Some((role, body)) = line.trim().split_once(':') {

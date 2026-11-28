@@ -17,6 +17,7 @@ screenshots-source.workspace = true
 source-counters.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+regex = "1"
 jiff = { version = "1.0.0", default-features = false, features = ["alloc"] }
 solstone-folder-sync.workspace = true
 tracing.workspace = true

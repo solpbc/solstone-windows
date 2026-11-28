@@ -15,6 +15,7 @@ pub mod note_diff;
 pub mod platform;
 pub mod stamp;
 mod structured_exports;
+mod text_exports;
 pub mod types;
 pub mod wire;
 pub mod worker;
