@@ -418,6 +418,30 @@ mod tests {
         assert_eq!(d2.events.len(), 1);
         assert_eq!(d2.events[0].verb, ActivityVerb::Revised);
         assert!(d2.events[0].is_revision);
+        engine.record_outcome(&d2, DeliveryOutcome::Delivered);
+        let revision = folder.join("spec.pdf");
+        write_settled(&revision, b"%PDF-1.7\nv3\n");
+        fs::File::options()
+            .write(true)
+            .open(&revision)
+            .unwrap()
+            .set_modified(
+                std::time::UNIX_EPOCH
+                    + std::time::Duration::from_millis((platform.now_ms() - 60_000) as u64),
+            )
+            .unwrap();
+        engine.scan_all();
+        assert!(
+            engine.folders()[0].files["spec.pdf"]
+                .pending_revision_save_ms
+                .is_some()
+        );
+        assert!(engine.turn_off_folder(&id));
+        assert!(
+            engine.folders()[0].files["spec.pdf"]
+                .pending_revision_save_ms
+                .is_none()
+        );
     }
 
     #[test]
@@ -620,6 +644,82 @@ mod tests {
         delivery.folder_name = "日".repeat(100);
         let (meta, _) = stage_delivery(&delivery, &*platform).unwrap();
         assert_eq!(meta.name, "日".repeat(42));
+    }
+
+    #[test]
+    fn disabling_a_kind_downgrades_or_drops_confirmed_waiting_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("source");
+        write_settled(&root.join("private.md"), b"confirmed then deselected");
+        let platform = FakePlatform::new(2_000_000_000_000, 0, dir.path().to_owned());
+        let mut engine = Engine::open(dir.path().join("app"), platform);
+        let id = engine.begin_setup(&root, None).unwrap();
+        engine.confirm_folder(&id, Span::All).unwrap();
+        let mut kinds = FolderKinds {
+            notes: false,
+            ..Default::default()
+        };
+        engine.set_kinds(&id, kinds);
+        let details = engine.next_delivery(false).unwrap();
+        assert!(details.content_files.is_empty());
+        assert!(details.events[0].note_payload.is_none());
+        kinds.other = false;
+        engine.set_kinds(&id, kinds);
+        assert!(engine.next_delivery(false).is_none());
+    }
+
+    #[test]
+    fn selected_refusals_keep_details_with_other_off_across_restart() {
+        for mixed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("selected");
+            let state = dir.path().join("app");
+            let platform = FakePlatform::new(2_000_000_000_000, 0, dir.path().to_owned());
+            write_settled(&root.join("refused.pdf"), b"test document");
+            if mixed {
+                write_settled(&root.join("accepted.txt"), b"separate note");
+            }
+            let mut engine = Engine::open(state.clone(), platform.clone());
+            let id = engine.begin_setup(&root, None).unwrap();
+            let kinds = FolderKinds {
+                other: false,
+                ..FolderKinds::default()
+            };
+            engine.set_kinds(&id, kinds);
+            engine.confirm_folder(&id, Span::All).unwrap();
+            let delivery = engine.next_delivery(false).unwrap();
+            let refused = vec!["refused.pdf".to_string()];
+            let outcome = if mixed {
+                DeliveryOutcome::DeliveredWithRefusedContent(refused)
+            } else {
+                DeliveryOutcome::AllFilesRefused(refused)
+            };
+            engine.record_outcome(&delivery, outcome);
+            let mut reopened = Engine::open(state, platform);
+            let mut rules = SupportedList::default();
+            rules.document_extensions.insert("docx".into());
+            reopened.set_supported_list(rules.clone());
+            let fallback = reopened.next_delivery(false).unwrap();
+            assert_eq!(fallback.events.len(), 1);
+            assert_eq!(fallback.events[0].delivery, DeliveryMode::MetadataOnly);
+            assert!(fallback.content_files.is_empty());
+            assert_eq!(
+                classify::classify_file(
+                    Some("pdf"),
+                    rules.max_content_bytes + 1,
+                    false,
+                    None,
+                    kinds,
+                    &rules
+                )
+                .1,
+                DeliveryMode::MetadataOnly
+            );
+            assert_eq!(
+                classify::classify_file(Some("bin"), 100, false, None, kinds, &rules).1,
+                DeliveryMode::Ignore
+            );
+        }
     }
 
     #[test]

@@ -323,7 +323,7 @@ m77696e646f77732e666f6c646572732e6a6f75726e616c757064617465 = waiting for a jour
 
 m77696e646f77732e666f6c646572732e6b696e642e646f63756d656e7473 = documents
 
-m77696e646f77732e666f6c646572732e6b696e642e646f63756d656e74732e64657363 = files such as PDFs and longer text documents. revisions come in after an hour without saves.
+m77696e646f77732e666f6c646572732e6b696e642e646f63756d656e74732e64657363 = files such as PDFs and longer text documents. revisions come in after an hour without changes to the document's contents.
 
 m77696e646f77732e666f6c646572732e6b696e642e6e6f746573 = notes
 
@@ -367,7 +367,7 @@ m77696e646f77732e666f6c646572732e6f6e65696e74726f = while this is on, the solsto
 
 m77696e646f77732e666f6c646572732e6f70656e666f6c646572 = open { $folder }
 
-m77696e646f77732e666f6c646572732e6f746865726f6666 = only files of the kinds you chose under 64 MB come in.
+m77696e646f77732e666f6c646572732e6f746865726f6666 = only the kinds you chose come in. if your journal can't read one of those files, it still gets the file's details.
 
 m77696e646f77732e666f6c646572732e6f746865726f6e = with other files on, kinds you turned off and files over 64 MB come in as names and details only.
 

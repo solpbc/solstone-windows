@@ -1590,7 +1590,7 @@ windows.folders.stays = what's already in your journal stays if you delete a fil
 
 windows.folders.otheron = with other files on, kinds you turned off and files over 64 MB come in as names and details only.
 
-windows.folders.otheroff = only files of the kinds you chose under 64 MB come in.
+windows.folders.otheroff = only the kinds you chose come in. if your journal can't read one of those files, it still gets the file's details.
 
 windows.folders.onedrivenote = files stored only in OneDrive stay online until you open them on this PC.
 
@@ -1630,7 +1630,7 @@ windows.folders.kind.notes.desc = markdown and text notes. changes come in as yo
 
 windows.folders.kind.documents = documents
 
-windows.folders.kind.documents.desc = files such as PDFs and longer text documents. revisions come in after an hour without saves.
+windows.folders.kind.documents.desc = files such as PDFs and longer text documents. revisions come in after an hour without changes to the document's contents.
 
 windows.folders.kind.transcripts = transcripts
 

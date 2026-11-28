@@ -43,7 +43,7 @@ const LEDGER_FILE: &str = "ledger.json";
 const LEDGER_VERSION: u32 = 1;
 const SETTLE_MS: i64 = 2_000;
 const TEXT_SAMPLE_LIMIT: u64 = 32 * 1024 * 1024;
-const DAY_MS: i64 = 86_400_000;
+
 const RETRY_MS: [i64; 4] = [30_000, 120_000, 600_000, 1_800_000];
 /// Maximum companion content files per protocol-v3 folder segment upload
 /// (64 files total including the activity JSONL).
@@ -84,6 +84,8 @@ pub struct PendingEvent {
     pub backfill: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_at_ms: Option<i64>,
+    #[serde(default)]
+    pub content_refused: bool,
     #[serde(default)]
     pub tries: u32,
 }
@@ -278,7 +280,7 @@ impl Engine {
         // Entries confirmed offline must obey the negotiated kinds before upload.
         for folder in &mut self.ledger.folders {
             folder.pending.retain_mut(|ev| {
-                if ev.verb == ActivityVerb::Removed {
+                if ev.verb == ActivityVerb::Removed || ev.content_refused {
                     return true;
                 }
                 let ext = ev.metadata.extension.as_deref();
@@ -484,6 +486,30 @@ impl Engine {
         let Some(folder) = self.ledger.folders.iter_mut().find(|f| f.id == folder_id) else {
             return false;
         };
+        folder.pending.retain_mut(|event| {
+            if kinds.enabled_for(event.kind) {
+                return true;
+            }
+            if !kinds.other {
+                return false;
+            }
+            event.delivery = DeliveryMode::MetadataOnly;
+            event.content_hash = None;
+            event.note_payload = None;
+            event.note_is_diff = false;
+            true
+        });
+        for tracked in folder.files.values_mut() {
+            if !kinds.enabled_for(tracked.kind) {
+                tracked.delivery = if kinds.other {
+                    DeliveryMode::MetadataOnly
+                } else {
+                    DeliveryMode::Ignore
+                };
+                tracked.pending_revision_save_ms = None;
+                tracked.pending_revision_hash = None;
+            }
+        }
         folder.kinds = kinds;
         folder.preview = None;
         let _ = self.save();
@@ -525,7 +551,7 @@ impl Engine {
             .collect();
 
         let stamp = self.platform.now_stamp();
-        let from_ms = span_start_ms(span, stamp);
+        let from_ms = span_start_ms(span, stamp, |seconds| self.platform.offset_s_at(seconds));
         let walk = match walk_folder(&root, &*self.platform) {
             Ok(w) => w,
             Err(_) => {
@@ -542,6 +568,8 @@ impl Engine {
         let mut summary = PreviewSummary {
             span: Some(span),
             unreadable: walk.unreadable,
+            first_date: (span != Span::All)
+                .then(|| self.platform.stamp_at(from_ms).rfc3339()[..10].to_owned()),
             ..PreviewSummary::default()
         };
         let mut windows: BTreeSet<Window> = BTreeSet::new();
@@ -668,7 +696,7 @@ impl Engine {
             return Err("no_kinds_selected".into());
         }
         let stamp = self.platform.now_stamp();
-        let from_ms = span_start_ms(span, stamp);
+        let from_ms = span_start_ms(span, stamp, |seconds| self.platform.offset_s_at(seconds));
         let root = self.ledger.folders[idx].path.clone();
         let kinds = self.ledger.folders[idx].kinds;
         let walk = walk_folder(&root, &*self.platform).map_err(|_| "unreadable".to_owned())?;
@@ -801,6 +829,7 @@ impl Engine {
                 is_revision: false,
                 backfill: is_backfill,
                 retry_at_ms: None,
+                content_refused: false,
                 tries: 0,
             });
             folder.files.insert(
@@ -867,7 +896,12 @@ impl Engine {
             return false;
         };
         folder.mode = FolderMode::Off;
+        folder.held_paused = false;
         folder.pending.clear();
+        for tracked in folder.files.values_mut() {
+            tracked.pending_revision_save_ms = None;
+            tracked.pending_revision_hash = None;
+        }
         folder.backfill_total = 0;
         folder.backfill_done = 0;
         folder.attention = None;
@@ -1099,6 +1133,7 @@ impl Engine {
                             is_revision: false,
                             backfill: false,
                             retry_at_ms: None,
+                            content_refused: false,
                             tries: 0,
                         });
                     }
@@ -1161,6 +1196,7 @@ impl Engine {
                         is_revision: false,
                         backfill: false,
                         retry_at_ms: None,
+                        content_refused: false,
                         tries: 0,
                     });
                     changed = true;
@@ -1239,6 +1275,7 @@ impl Engine {
                 is_revision: false,
                 backfill: false,
                 retry_at_ms: None,
+                content_refused: false,
                 tries: 0,
             });
             self.ledger.folders[idx].files.insert(
@@ -1368,6 +1405,7 @@ impl Engine {
                         is_revision: false,
                         backfill: false,
                         retry_at_ms: None,
+                        content_refused: false,
                         tries: 0,
                     });
                     changed = true;
@@ -1405,6 +1443,7 @@ impl Engine {
                         is_revision: false,
                         backfill: false,
                         retry_at_ms: None,
+                        content_refused: false,
                         tries: 0,
                     });
                     changed = true;
@@ -1432,6 +1471,7 @@ impl Engine {
                         is_revision: false,
                         backfill: false,
                         retry_at_ms: None,
+                        content_refused: false,
                         tries: 0,
                     });
                     changed = true;
@@ -1496,6 +1536,7 @@ impl Engine {
                 is_revision: true,
                 backfill: false,
                 retry_at_ms: None,
+                content_refused: false,
                 tries: 0,
             });
             if let Some(tracked) = self.ledger.folders[idx].files.get_mut(&rel_path) {
@@ -1659,6 +1700,7 @@ impl Engine {
                     {
                         let mut meta_only = ev.clone();
                         meta_only.delivery = DeliveryMode::MetadataOnly;
+                        meta_only.content_refused = true;
                         meta_only.content_hash = None;
                         meta_only.note_payload = None;
                         meta_only.retry_at_ms = None;
@@ -1708,6 +1750,7 @@ impl Engine {
                         && (refused_set.is_empty() || refused_set.contains(ev.rel_path.as_str()))
                     {
                         ev.delivery = DeliveryMode::MetadataOnly;
+                        ev.content_refused = true;
                         ev.content_hash = None;
                         ev.note_payload = None;
                         ev.retry_at_ms = None;
@@ -2091,14 +2134,39 @@ fn needs_text_sample(ext: Option<&str>, supported: &SupportedList) -> bool {
     })
 }
 
-fn span_start_ms(span: Span, now: Stamp) -> i64 {
-    match span {
-        Span::ThirtyDays => now.ms - 30 * DAY_MS,
-        Span::SixMonths => now.ms - 183 * DAY_MS,
-        Span::Year => now.ms - 365 * DAY_MS,
-        Span::All => i64::MIN,
-        Span::Nothing => now.local_midnight_ms(),
+fn span_start_ms(span: Span, now: Stamp, offset_at: impl Fn(i64) -> i32) -> i64 {
+    use jiff::{Span as CalendarSpan, Timestamp, tz::Offset};
+    let duration = match span {
+        Span::All => return i64::MIN,
+        Span::ThirtyDays => CalendarSpan::new().days(30),
+        Span::SixMonths => CalendarSpan::new().months(6),
+        Span::Year => CalendarSpan::new().years(1),
+        Span::Nothing => CalendarSpan::new(),
+    };
+    let start = Timestamp::from_millisecond(now.ms).ok().and_then(|ts| {
+        let today = Offset::from_seconds(now.offset_s)
+            .ok()?
+            .to_datetime(ts)
+            .date();
+        let first = today.checked_sub(duration).ok()?;
+        Offset::UTC.to_timestamp(first.at(0, 0, 0, 0)).ok()
+    });
+    let Some(start) = start else {
+        return now.local_midnight_ms();
+    };
+    let wall = start.as_second();
+    // Locate the first instant of this civil day in the device's zone, including
+    // offset changes between now and the target day and skipped local midnight.
+    let (mut left, mut right) = (wall - 86_400, wall + 86_400);
+    while left < right {
+        let mid = left + (right - left) / 2;
+        if mid + i64::from(offset_at(mid)) < wall {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
     }
+    left * 1_000
 }
 
 /// Build a deterministic client-assigned folder ID matching
@@ -2268,4 +2336,47 @@ fn walk_folder(root: &Path, platform: &dyn FolderPlatform) -> Result<WalkOutcome
         }
     }
     Ok(out)
+}
+#[cfg(test)]
+mod range_tests {
+    use super::*;
+    fn stamp(utc: &str) -> i64 {
+        utc.parse::<jiff::Timestamp>().unwrap().as_millisecond()
+    }
+
+    #[test]
+    fn local_midnight_uses_calendar_days_clamped_months_and_the_offset_on_that_day() {
+        let spring = stamp("2024-03-10T07:00:00Z") / 1000;
+        let offset = |seconds| {
+            if seconds < spring {
+                -5 * 3600
+            } else {
+                -4 * 3600
+            }
+        };
+        for (span, today, first) in [
+            (
+                Span::ThirtyDays,
+                "2024-04-09T18:00:00Z",
+                "2024-03-10T05:00:00Z",
+            ),
+            (
+                Span::Nothing,
+                "2024-03-10T17:00:00Z",
+                "2024-03-10T05:00:00Z",
+            ),
+            (
+                Span::SixMonths,
+                "2024-08-31T16:00:00Z",
+                "2024-02-29T05:00:00Z",
+            ),
+            (Span::Year, "2024-02-29T16:00:00Z", "2023-02-28T05:00:00Z"),
+        ] {
+            let ms = stamp(today);
+            assert_eq!(
+                span_start_ms(span, Stamp::new(ms, offset(ms / 1000)), offset),
+                stamp(first)
+            );
+        }
+    }
 }

@@ -8,8 +8,8 @@ All notable changes to `solstone-windows` are recorded here. The format follows
 
 ### Added
 
-- you can choose a folder on this PC, pick a facet and preview file counts and dates. after you confirm the folder, changes come into your journal in five-minute segments if your journal supports folders. notes update as you edit them. document revisions come in after an hour without saves. screenshots and photos convert on this PC when needed. the other files switch starts on. turn it off to leave out names and details for files whose contents you leave out.
-- when you confirm your journal's mark while pairing, folder changes waiting to sync go into that journal unless the folder is paused. when you set up the folder for this journal, you choose how much older history to add.
+- you can choose a folder on this PC, preview file counts and dates, and pick a facet when your journal's facets are available. after you confirm the folder, changes come into your journal in five-minute segments when your journal supports folders and syncing is on. saved note changes go into those segments. document revisions come in after an hour without changes to the document's contents. the solstone app converts copies of screenshots and photos on this PC when needed.
+- when you confirm your journal's mark while pairing, folder changes waiting to sync go into that journal once it supports folders and neither the folder nor this PC is paused. when you set up the folder for this journal, you choose how much older history to add.
 
 ## [2.0.61] - 2026-11-27
 

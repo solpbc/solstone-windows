@@ -315,7 +315,7 @@ pub fn classify_file(
         }
     } else if kinds.enabled_for(file_kind) && within_size {
         DeliveryMode::Content
-    } else if kinds.other {
+    } else if kinds.enabled_for(file_kind) || kinds.other {
         DeliveryMode::MetadataOnly
     } else {
         DeliveryMode::Ignore

@@ -391,9 +391,10 @@ async fn run_loop<T: FolderTransport>(
                         .ok()
                         .flatten()
                         .flatten();
-                        if let Some((_summary, items)) = preview
+                        if let Some((summary, items)) = preview
                             && transport.is_paired()
                             && !items.is_empty()
+                            && items.len() as u64 == summary.total_items
                             && let Some(journal_est) =
                                 transport.fetch_estimate(id.clone(), items).await
                         {

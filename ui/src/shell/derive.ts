@@ -363,6 +363,7 @@ export type PreviewSummaryValue = {
   screenshots: number;
   photos: number;
   other: number;
+  first_date?: string | null;
   oldest_ms?: number | null;
   newest_ms?: number | null;
   unreadable: number;

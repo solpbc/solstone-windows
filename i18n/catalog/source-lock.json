@@ -3963,7 +3963,7 @@
     },
     {
       "id": "windows.folders.kind.documents.desc",
-      "source": "2baa615e3d98cbd77b17d19f3dd527e561d6d9740edfebe8eeb23a1024d6027e",
+      "source": "56b96c354160722830d34200e4684da0c16b6051ed8c34c87b4b63edadaa3b06",
       "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
       "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
       "locales": []
@@ -4117,7 +4117,7 @@
     },
     {
       "id": "windows.folders.otheroff",
-      "source": "cf81ca83506186b4a77c99d1ea38a46db8cf1c50ef8a5a54f008789019074f7d",
+      "source": "762c561687894eb85f60fd34c00f6ca42cbe885724ebec1875e173daf2c316b2",
       "contract": "8a5ccf516e1ddd1e6845a51578bf3090e7732eef71f84117434e952b20202586",
       "protected": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
       "locales": []

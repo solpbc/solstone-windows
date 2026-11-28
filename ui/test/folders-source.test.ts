@@ -318,6 +318,7 @@ describe("the folders page, detail view, and tile", () => {
         content_items: 12,
         metadata_only_items: 2,
         content_bytes: 2_621_440,
+        first_date: "2024-02-29",
         oldest_ms: Date.UTC(2026, 10, 1),
         newest_ms: Date.UTC(2026, 10, 27),
         estimate: { segments: 4, days: 3, thoughts: 9, from_journal: true },
@@ -332,6 +333,7 @@ describe("the folders page, detail view, and tile", () => {
     expect(radios()).toHaveLength(5);
     expect(radios()[0].checked).toBe(true);
 
+    expect(document.body.textContent?.toLowerCase()).toMatch(/from february 29, 2024/);
     const est = byId(ids["settings.sources.folders.estimate"]);
     expect(est).not.toBeNull();
     const estText = est?.textContent ?? "";

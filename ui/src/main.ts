@@ -9154,6 +9154,11 @@ function renderFolderPreviewCard(
     return card;
   }
 
+  if (preview.first_date) {
+    card.append(screenshotsLine(t("windows.ui.from", {
+      value: startedLabel(preview.first_date, new Date().getFullYear()),
+    })));
+  }
   if (preview.total_items === 0) {
     card.append(screenshotsLine(t("windows.folders.previewzero")));
   } else if (preview.oldest_ms != null && preview.newest_ms != null) {

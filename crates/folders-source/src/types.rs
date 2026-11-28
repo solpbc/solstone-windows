@@ -312,6 +312,8 @@ pub struct BackfillEstimate {
 /// Preview counts and range summary shown before confirmation.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PreviewSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_date: Option<String>,
     pub span: Option<Span>,
     pub total_items: u64,
     pub content_items: u64,
